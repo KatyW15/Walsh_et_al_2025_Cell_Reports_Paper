@@ -1,0 +1,27 @@
+#!/bin/bash
+
+#conda activate Bed_Tools
+
+
+date
+echo "KW: starting counting for gnbd (stranded-iso exp clean genes list)"
+bedtools coverage -s -a /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gene_annotation_bed_files/strandediso_exp_clean_genes_MANE_v095_gnbd.bed -b /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/05_evaluating_replicates/bed_files/rep1_HS_sorted.Bed > /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gnbd_counts_final_gene_list/rep1_HS_gnbd_counts.bed
+bedtools coverage -s -a /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gene_annotation_bed_files/strandediso_exp_clean_genes_MANE_v095_gnbd.bed -b /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/05_evaluating_replicates/bed_files/rep1_NHS_sorted.Bed > /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gnbd_counts_final_gene_list/rep1_NHS_gnbd_counts.bed
+bedtools coverage -s -a /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gene_annotation_bed_files/strandediso_exp_clean_genes_MANE_v095_gnbd.bed -b /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/05_evaluating_replicates/bed_files/rep2_HS_sorted.Bed > /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gnbd_counts_final_gene_list/rep2_HS_gnbd_counts.bed
+bedtools coverage -s -a /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gene_annotation_bed_files/strandediso_exp_clean_genes_MANE_v095_gnbd.bed -b /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/05_evaluating_replicates/bed_files/rep2_NHS_sorted.Bed > /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gnbd_counts_final_gene_list/rep2_NHS_gnbd_counts.bed
+bedtools coverage -s -a /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gene_annotation_bed_files/strandediso_exp_clean_genes_MANE_v095_gnbd.bed -b /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/05_evaluating_replicates/bed_files/rep3_HS_sorted.Bed > /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gnbd_counts_final_gene_list/rep3_HS_gnbd_counts.bed
+bedtools coverage -s -a /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gene_annotation_bed_files/strandediso_exp_clean_genes_MANE_v095_gnbd.bed -b /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/05_evaluating_replicates/bed_files/rep3_NHS_sorted.Bed > /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gnbd_counts_final_gene_list/rep3_NHS_gnbd_counts.bed
+
+echo ""
+date
+echo "KW: starting counting for 20kb ds (stranded-iso exp clean genes list)"
+bedtools coverage -s -a /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gene_annotation_bed_files/strandediso_exp_clean_genes_MANE_v095_20kb_ds.bed -b /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/05_evaluating_replicates/bed_files/rep1_HS_sorted.Bed > /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/20kb_ds_counts_final_gene_list/rep1_HS_20kbds_counts.bed
+bedtools coverage -s -a /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gene_annotation_bed_files/strandediso_exp_clean_genes_MANE_v095_20kb_ds.bed -b /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/05_evaluating_replicates/bed_files/rep1_NHS_sorted.Bed > /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/20kb_ds_counts_final_gene_list/rep1_NHS_20kbds_counts.bed
+bedtools coverage -s -a /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gene_annotation_bed_files/strandediso_exp_clean_genes_MANE_v095_20kb_ds.bed -b /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/05_evaluating_replicates/bed_files/rep2_HS_sorted.Bed > /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/20kb_ds_counts_final_gene_list/rep2_HS_20kbds_counts.bed
+bedtools coverage -s -a /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gene_annotation_bed_files/strandediso_exp_clean_genes_MANE_v095_20kb_ds.bed -b /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/05_evaluating_replicates/bed_files/rep2_NHS_sorted.Bed > /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/20kb_ds_counts_final_gene_list/rep2_NHS_20kbds_counts.bed
+bedtools coverage -s -a /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gene_annotation_bed_files/strandediso_exp_clean_genes_MANE_v095_20kb_ds.bed -b /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/05_evaluating_replicates/bed_files/rep3_HS_sorted.Bed > /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/20kb_ds_counts_final_gene_list/rep3_HS_20kbds_counts.bed
+bedtools coverage -s -a /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gene_annotation_bed_files/strandediso_exp_clean_genes_MANE_v095_20kb_ds.bed -b /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/05_evaluating_replicates/bed_files/rep3_NHS_sorted.Bed > /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/20kb_ds_counts_final_gene_list/rep3_NHS_20kbds_counts.bed
+
+echo ""
+echo "KW: ALL DONE"
+date
