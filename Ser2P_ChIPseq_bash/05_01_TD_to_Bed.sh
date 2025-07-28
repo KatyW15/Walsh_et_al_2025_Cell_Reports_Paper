@@ -1,0 +1,13 @@
+#!/bin/bash
+tagDir2bed.pl /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/03_tag_directories/HS_Rpb1_pooled_TD > /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/05_making_isolated_genes_list_hg38/tag_counts_bed_files/HS_Rpb1_pooled_counts.bed
+tagDir2bed.pl /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/03_tag_directories/HS_Rpb1_R6_TD > /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/05_making_isolated_genes_list_hg38/tag_counts_bed_files/HS_Rpb1_R6_counts.bed
+tagDir2bed.pl /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/03_tag_directories/HS_Rpb1_R8_TD > /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/05_making_isolated_genes_list_hg38/tag_counts_bed_files/HS_Rpb1_R8_counts.bed
+tagDir2bed.pl /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/03_tag_directories/NHS_Rpb1_pooled_TD > /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/05_making_isolated_genes_list_hg38/tag_counts_bed_files/NHS_Rpb1_pooled_counts.bed
+tagDir2bed.pl /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/03_tag_directories/NHS_Rpb1_R6_TD > /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/05_making_isolated_genes_list_hg38/tag_counts_bed_files/NHS_Rpb1_R6_counts.bed
+tagDir2bed.pl /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/03_tag_directories/NHS_Rpb1_R8_TD > /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/05_making_isolated_genes_list_hg38/tag_counts_bed_files/NHS_Rpb1_R8_counts.bed
+tagDir2bed.pl /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/03_tag_directories/HS_Ser2P_pooled_TD > /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/05_making_isolated_genes_list_hg38/tag_counts_bed_files/HS_Ser2P_pooled_counts.bed
+tagDir2bed.pl /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/03_tag_directories/HS_Ser2P_R6_TD > /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/05_making_isolated_genes_list_hg38/tag_counts_bed_files/HS_Ser2P_R6_counts.bed
+tagDir2bed.pl /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/03_tag_directories/HS_Ser2P_R8_TD > /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/05_making_isolated_genes_list_hg38/tag_counts_bed_files/HS_Ser2P_R8_counts.bed
+tagDir2bed.pl /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/03_tag_directories/NHS_Ser2P_pooled_TD > /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/05_making_isolated_genes_list_hg38/tag_counts_bed_files/NHS_Ser2P_pooled_counts.bed
+tagDir2bed.pl /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/03_tag_directories/NHS_Ser2P_R6_TD > /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/05_making_isolated_genes_list_hg38/tag_counts_bed_files/NHS_Ser2P_R6_counts.bed
+tagDir2bed.pl /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/03_tag_directories/NHS_Ser2P_R8_TD > /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/05_making_isolated_genes_list_hg38/tag_counts_bed_files/NHS_Ser2P_R8_counts.bed

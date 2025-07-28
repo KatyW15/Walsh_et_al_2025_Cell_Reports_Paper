@@ -1,0 +1,8 @@
+#!/bin/bash
+makeTagDirectory input_TD -unique -mapq 20 -genome /Seq_analysistools/anaconda3/envs/Homer/bin/data/genomes/hg38/genome.fa -checkGC /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/02_mapping_bowtie2_SAM_results/input.sam 
+makeTagDirectory HS_Rpb1_R6_TD -unique -mapq 20 -genome /Seq_analysistools/anaconda3/envs/Homer/bin/data/genomes/hg38/genome.fa -checkGC /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/02_mapping_bowtie2_SAM_results/HS_Rpb1_R6.sam 
+makeTagDirectory HS_Rpb1_R8_TD -unique -mapq 20 -genome /Seq_analysistools/anaconda3/envs/Homer/bin/data/genomes/hg38/genome.fa -checkGC /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/02_mapping_bowtie2_SAM_results/HS_Rpb1_R8.sam 
+makeTagDirectory NHS_Ser2P_R6_TD -unique -mapq 20 -genome /Seq_analysistools/anaconda3/envs/Homer/bin/data/genomes/hg38/genome.fa -checkGC /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/02_mapping_bowtie2_SAM_results/NHS_Ser2P_R6.sam 
+makeTagDirectory NHS_Ser2P_R8_TD -unique -mapq 20 -genome /Seq_analysistools/anaconda3/envs/Homer/bin/data/genomes/hg38/genome.fa -checkGC /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/02_mapping_bowtie2_SAM_results/NHS_Ser2P_R8.sam 
+makeTagDirectory HS_Ser2P_R6_TD -unique -mapq 20 -genome /Seq_analysistools/anaconda3/envs/Homer/bin/data/genomes/hg38/genome.fa -checkGC /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/02_mapping_bowtie2_SAM_results/HS_Ser2P_R6.sam 
+makeTagDirectory HS_Ser2P_R8_TD -unique -mapq 20 -genome /Seq_analysistools/anaconda3/envs/Homer/bin/data/genomes/hg38/genome.fa -checkGC /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/02_mapping_bowtie2_SAM_results/HS_Ser2P_R8.sam 
