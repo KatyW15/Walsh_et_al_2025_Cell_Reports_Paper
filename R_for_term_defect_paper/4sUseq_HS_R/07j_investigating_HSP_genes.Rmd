@@ -1,0 +1,568 @@
+---
+title: "07j_HSP_genes"
+author: "Katy Walsh"
+date: "1/23/2025"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup}
+library(tidyverse)
+library(grid)
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+library(ggfortify)
+library(gtable)
+
+setwd("/Users/goodrichlab/Desktop/Katy/")
+
+```
+setup plot settings:
+```{r plotting setup}
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+library(ggpmisc)
+
+theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+    )
+
+###defining plot histogram function###
+#testing
+#hist_df <- Rpb1_hist_data
+#plot_title <- "Metagene Analysis of Pol II ocupancy at the TTS"
+
+
+```
+
+
+load in general data:
+```{r}
+uncleaved_counts_df <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/categories_exp_avg_norm_uncleaved_counts.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+master_df <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/FINAL_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#HSP gene list
+HSP_gene_list <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07j_HSP_genes/HSP_gene_IDs_list.txt", header = FALSE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#by rep with stdev
+uncleaved_FC_df <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/uncleaved_reads_FC_by_rep_w_stdev.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+```
+
+Set up uncleaved reads by individual reps to be able to plot as avg and stdev
+```{r don't need to run again, just made uncleaved_FC_df that can be read-in above}
+#these dfs were made in 07h_counting_4sU_reads...
+#read-in uncleaved reads, already norm to seq depth
+uncleaved_reads_df <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/reps_norm_uncleaved_counts.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#same for gnbd
+gnbd_reads_df <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/exp_norm_gnbd_counts.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#calc RPK
+gnbd_RPK_df <- data.frame(gene_IDs = gnbd_reads_df$gene_IDs,
+                          rpk_NHS_r1 = gnbd_reads_df$NHS_rep1 / gnbd_reads_df$gene_length,
+                          rpk_NHS_r2 = gnbd_reads_df$NHS_rep2 / gnbd_reads_df$gene_length,
+                          rpk_NHS_r3 = gnbd_reads_df$NHS_rep3 / gnbd_reads_df$gene_length,
+                          rpk_HS_r1 = gnbd_reads_df$HS_rep1 / gnbd_reads_df$gene_length,
+                          rpk_HS_r2 = gnbd_reads_df$HS_rep2 / gnbd_reads_df$gene_length,
+                          rpk_HS_r3 = gnbd_reads_df$HS_rep3 / gnbd_reads_df$gene_length
+                          )
+
+#one df to make sure genes match
+uncleaved_gnbd_reps_df <- left_join(uncleaved_reads_df[c(1:7)], gnbd_RPK_df, by = "gene_IDs")
+
+#norm R1 uncleaved to R1 gnbbd etc
+uncleaved_gnbd_norm_df <- data.frame(transcriptID = uncleaved_gnbd_reps_df$gene_IDs,
+                                     uc_NHS_r1 = uncleaved_gnbd_reps_df$NHS_R1 / uncleaved_gnbd_reps_df$rpk_NHS_r1,
+                                     uc_NHS_r2 = uncleaved_gnbd_reps_df$NHS_R2 / uncleaved_gnbd_reps_df$rpk_NHS_r2,
+                                     uc_NHS_r3 = uncleaved_gnbd_reps_df$NHS_R3 / uncleaved_gnbd_reps_df$rpk_NHS_r3,
+                                     uc_HS_r1 = uncleaved_gnbd_reps_df$HS_R1 / uncleaved_gnbd_reps_df$rpk_HS_r1,
+                                     uc_HS_r2 = uncleaved_gnbd_reps_df$HS_R2 / uncleaved_gnbd_reps_df$rpk_HS_r2,
+                                     uc_HS_r3 = uncleaved_gnbd_reps_df$HS_R3 / uncleaved_gnbd_reps_df$rpk_HS_r3
+                                     )
+
+#calc FC per rep
+uncleaved_FC_df <- data.frame(transcriptID = uncleaved_gnbd_norm_df$transcriptID,
+                              uc_FC_r1 = uncleaved_gnbd_norm_df$uc_HS_r1 / uncleaved_gnbd_norm_df$uc_NHS_r1,
+                              uc_FC_r2 = uncleaved_gnbd_norm_df$uc_HS_r2 / uncleaved_gnbd_norm_df$uc_NHS_r2,
+                              uc_FC_r3 = uncleaved_gnbd_norm_df$uc_HS_r3 / uncleaved_gnbd_norm_df$uc_NHS_r3
+                              )
+#avg
+uncleaved_FC_df$avg <- (uncleaved_FC_df$uc_FC_r1 + uncleaved_FC_df$uc_FC_r2 + uncleaved_FC_df$uc_FC_r3) /3
+
+#add stdev col
+uncleaved_FC_df$stdev <- apply(uncleaved_FC_df[c(2:4)], 1, sd, na.rm=TRUE)
+
+#save
+write_delim(uncleaved_FC_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/uncleaved_reads_FC_by_rep_w_stdev.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+look into genes in HSP genes list
+```{r}
+#filter for HSP genes
+HSP_uncleaved_df <- filter(uncleaved_counts_df, uncleaved_counts_df$gene_IDs %in% HSP_gene_list$V1)
+#add gene names
+geneID_conversion_df <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/geneID_conversion_table.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+t <- geneID_conversion_df[c(1,4,7)]
+colnames(t) <- c("gene_name", "gene_IDs", "NCBI_geneID")
+HSP_uncleaved_df <- inner_join(t, HSP_uncleaved_df, by = "gene_IDs")
+
+write_delim(HSP_uncleaved_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/uncleaved_reads_FC_gene_info.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+
+----------------------
+HSPs: uncleaved reads
+----------------------
+initial plotting (without stdev)
+```{r plot defect length vs FC uncleaved reads (scatterplot)}
+plot_df <- uncleaved_counts_df[c(1,5,7)]
+#filter for HSP genes
+HSP_plot_df <- filter(plot_df, plot_df$gene_IDs %in% HSP_gene_list$V1)
+
+ggplot(HSP_plot_df, aes(x=final_defect_length, y=gnbd_norm_FC) ) + 
+  geom_point(alpha=0.8, size=1, color = "#141414") + #696969 gray
+  #xlim(c(-2.5,2.5)) + 
+  ylim(c(0, 7.5)) +
+  scale_x_continuous(labels=c("3'end", "5 kb", "10 kb", "15 kb", "20 kb")) +
+  xlab("termination defect length") +
+  ylab("FC in uncleaved RNA accross the 3' end") +
+  geom_abline(color="black", lty=2, slope =  0, intercept =  1)  #line at 1
+  #geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  #geom_hline(yintercept=0) + geom_vline(xintercept=0)             #draw quadrents
+
+
+
+### counterpoint plot of all genes
+plot_df <- uncleaved_counts_df[c(1,5,7)]
+
+ggplot(plot_df, aes(x=final_defect_length, y=gnbd_norm_FC) ) + 
+  geom_point(alpha=0.8, size=1, color = "#141414") + #696969 gray
+  #xlim(c(-2.5,2.5)) + 
+  #ylim(c(0, 45)) +
+  scale_x_continuous(labels=c("3'end", "5 kb", "10 kb", "15 kb", "20 kb")) +
+  xlab("termination defect length") +
+  ylab("FC in uncleaved RNA accross the 3' end") +
+  geom_abline(color="black", lty=2, slope =  0, intercept =  1)  #line at 1
+  #geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  #geom_hline(yintercept=0) + geom_vline(xintercept=0)             #draw quadrents
+
+
+```
+
+
+plot points as avg and stdev between reps
+(and maybe order left->right in acending y-axis?)
+```{r}
+plot_df <- uncleaved_FC_df[c(1,5,6)]
+#add defect length
+plot_df <- left_join(plot_df, master_df[c(1,17)], by = "transcriptID")
+#clean up plot_df
+plot_df$over_2FC <- plot_df$avg >2 | plot_df$avg <0.5
+#remove inf and NAs
+plot_df <- filter(plot_df, is.finite(plot_df$avg))
+#convert negative RT length to 0 - all "no defect"
+plot_df$final_defect_length <- pmax(plot_df$final_defect_length, 0)
+
+#filter for HSP genes
+HSP_plot_df <- filter(plot_df, plot_df$transcriptID %in% HSP_gene_list$V1)
+
+
+HSP_stats_df <- filter(uncleaved_FC_df, uncleaved_FC_df$transcriptID %in% HSP_plot_df$transcriptID)
+#loop through each gene
+x <- vector()
+y <- vector()
+CI_ymin <- vector()
+CI_ymax <- vector()
+i=1
+while (i<=nrow(HSP_stats_df)) {
+  res <- t.test(HSP_stats_df[i,2:4], mu=1)
+  x<- append(x,res$p.value)
+  CI_ymin <- append(CI_ymin, res$conf.int[1])
+  CI_ymax <- append(CI_ymax, res$conf.int[2])
+  if (res$p.value < 0.05) {    #classify if pval <0.05
+    y<- append(y, "sig")
+  }
+  else{
+    y <- append(y, "ns")
+  }
+  i=i+1
+}
+#add as col
+HSP_stats_df$stats_v_FC1 <- x
+HSP_stats_df$stat_cat_v_FC1 <- y
+HSP_stats_df$CI_ymin <- CI_ymin
+HSP_stats_df$CI_ymax <- CI_ymax
+
+
+## add to plotting df
+HSP_plot_df <- inner_join(HSP_plot_df, HSP_stats_df[c(1,7:10)], by = "transcriptID")
+#save so can just re-load
+#write_delim(HSP_plot_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07j_HSP_genes/HSP_genes_plotting_df_with_stats.tsv", delim = "\t", col_names = TRUE)
+
+### READ IN PLOTTING DF ###
+HSP_plot_df <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07j_HSP_genes/HSP_genes_plotting_df_with_stats.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+#plot HSP genes
+ggplot(HSP_plot_df, aes(x=final_defect_length, y=avg, color = stat_cat_v_FC1) ) + 
+  geom_errorbar(aes(ymin=avg-stdev, ymax=avg+stdev), color="gray70") +
+  geom_point(alpha=0.8, size=2, color = "black") + #color = "#141414"
+  #xlim(c(-2.5,2.5)) + 
+  #ylim(c(0, 6)) +
+  theme( axis.text = element_text(size = 13),  #change axis title size
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        axis.title = element_text(size = 13),                               #y-axis label text size 
+        ) +    
+  scale_x_continuous(labels=c("0 kb", "", "10 kb", "", "20 kb")) +
+  scale_colour_manual(values=c("gray20", "darkred")) +                
+  xlab("RT Length") +
+  ylab("Uncleaved RNA\nFC with HS") +
+  geom_abline(color="black", lty=2, slope =  0, intercept =  1)  #line at 1
+  #annotate("rect",xmin=0,xmax=20000,ymin=0.5,ymax=2,alpha=0.2, fill = "grey1") #draw gray box
+
+#stdev is huge, boxplot instead?
+bp <- ggplot(  ) +
+  geom_boxplot(data=HSP_plot_df, aes(y=avg, x=1), width=0.75, outlier.shape = NA, lwd = 1.25) +
+  geom_jitter(data=HSP_plot_df, aes(y=avg, x=1), color="gray40", size=1.5, width = 0.05) +
+  #geom_boxplot(data=plot_df, aes(y=avg, x=2), width=0.75, outlier.shape = NA, lwd = 1.25) +
+  coord_cartesian(ylim = c(0,6)) +
+  theme(axis.text.x = element_blank(), axis.ticks.x=element_blank(),  #clear x-axis labels
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(10, 20, 10, 10),                                 #add white space
+        axis.title= element_text(size = 13),                               #y-axis label text size 
+        axis.text= element_text(size = 12)
+        ) +  
+  xlab("HSP genes") +
+  ylab("Uncleaved RNA\nFC with HS") +
+  geom_abline(color="gray60", lty=2, slope =  0, intercept =  1) +  #line at 1
+  annotate("text", x=1, y=6, label= "****", colour = "gray40", size = 6) 
+
+
+#stats vs FC 1
+a_res <- wilcox.test(as.numeric(HSP_plot_df[,2]), mu = 1)
+a_res$p.value #3.266335e-05 ****
+
+jpeg("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07j_HSP_genes/figures/HSPs_boxplot_plus_points.jpeg", width=2, height=3, units="in", res=300)
+print(bp)
+dev.off()
+
+
+#all genes counterpoint
+a <- ggplot(plot_df, aes(x=final_defect_length, y=avg) ) + 
+  #geom_errorbar(aes(ymin=avg-(stdev/2), ymax=avg+(stdev/2)), color="gray70") +
+  geom_point(alpha=0.2, size=2) + #color = "#141414"
+  #xlim(c(0,20000)) + 
+  #ylim(c(0, 6)) +
+  theme(axis.text = element_text(size = 13),  #change axis title size
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(10, 20, 10, 10),                                 #add white space
+        axis.title= element_text(size = 13),                               #y-axis label text size 
+        ) +    
+  scale_x_continuous(limits = c(0,20000), labels=c("0kb", "", "10kb", "", "20kb")) +
+  scale_colour_manual(values=c("gray20", "darkred")) +                
+  xlab("RT Length") +
+  ylab("Uncleaved RNA\nFC with HS") +
+  geom_abline(color="gray80", lty=2, slope =  0, intercept =  1)  #line at 1
+  #annotate("rect",xmin=0,xmax=20000,ymin=0.5,ymax=2,alpha=0.2, fill = "grey1") #draw gray box
+
+jpeg("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07j_HSP_genes/figures/all_genes_scatterplot_not_colored_no_error_bars.jpeg", width=2.2, height=2.75, units="in", res=300)
+print(a)
+dev.off()
+
+##what if I plot the uncleaved reads avg for each RT length?
+#calc avg per RT length
+a <- filter(plot_df, plot_df$final_defect_length == 1000)
+mean(a$avg) #1.588412
+
+##now do this for every defect length
+x <- vector()
+i=0
+while (i<=20000) {
+  temp <- filter(plot_df, plot_df$final_defect_length == i)
+  x <- append(x, mean(temp[,2]))
+  i=i+1000
+}
+
+avg_plot_df <- data.frame(final_defect_length = seq(0, 20000, by=1000),
+                          avg_uc_reads_by_RT = x)
+
+#plot as line
+ggplot(avg_plot_df, aes(x=final_defect_length, y=avg_uc_reads_by_RT) ) + 
+  geom_line(alpha=0.2, size=1) + #color = "#141414"
+  ylim(c(0, 6)) +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13),  #change axis title size
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        ) +    
+  scale_x_continuous(limits = c(0,20000), labels=c("0 kb", "", "10 kb", "", "20 kb")) +
+  xlab("Termination Defect Length") +
+  ylab("Uncleaved RNA\nFC with HS") +
+  geom_abline(color="black", lty=2, slope =  0, intercept =  1)  #line at 1
+  #annotate("rect",xmin=0,xmax=20000,ymin=0.5,ymax=2,alpha=0.2, fill = "grey1") #draw gray box
+
+
+###plot all together ###
+#color by if over or under the avg for that RT length
+i=1
+x <- vector()
+while (i<= nrow(HSP_plot_df)) { #pulls out RT length for each gene in HSP_plot_df and looks up what the avg uc is for that RT length
+  temp <- HSP_plot_df$final_defect_length[i]
+  temp2 <- filter(avg_plot_df, avg_plot_df$final_defect_length == temp )
+  x <- append(x, temp2[,2])
+  i=i+1
+}
+HSP_plot_df$avg_for_RT_length <- x #add avgs to df
+#add col for color in plot
+HSP_plot_df$over_avg <- HSP_plot_df$avg > HSP_plot_df$avg_for_RT_length
+
+p <- ggplot() + 
+  geom_line(data = avg_plot_df, aes(x=final_defect_length, y=avg_uc_reads_by_RT), alpha=0.5, size=1) + #color = "#141414"
+  geom_errorbar(data=HSP_plot_df, aes(x=final_defect_length, y=avg, ymin=avg-(stdev), ymax=avg+(stdev)), color="gray70") +
+  geom_point(data=HSP_plot_df, aes(x=final_defect_length, y=avg), size=1) + #color = "#141414"
+  #xlim(c(-2.5,2.5)) + 
+  #ylim(c(0, 11)) +
+  theme(axis.text = element_text(size = 13),  #change axis title size
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(10, 20, 10, 10),                                 #add white space
+        axis.title = element_text(size = 13),                                 #both axis label text size 
+        ) +    
+  scale_x_continuous(labels=c("0kb", "", "10kb", "", "20kb")) +
+  scale_colour_manual(values=c("black", "darkred")) +                
+  xlab("RT Length") +
+  ylab("Uncleaved RNA\nFC with HS") +
+  geom_abline(color="black", lty=2, slope =  0, intercept =  1)  #line at 1
+  #annotate("rect",xmin=0,xmax=20000,ymin=0.5,ymax=2,alpha=0.2, fill = "grey1") #draw gray box
+
+jpeg("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07j_HSP_genes/figures/HSP_scatterplot_not_colored.jpeg", width=2.2, height=2.75, units="in", res=300)
+print(p)
+dev.off()
+
+```
+
+
+representative HSPs: DNAJB1 (HSP40) and HSP90AA1 (HSP90)
+  *DNAJB1 can be analyzed, another gene is 18kb ds which is why it was filtered out*
+  counting uncleaved reads for DNAJB1:
+```{r DNAJB1 counting uncleaved reads annotation bed}
+#all genes
+all_genes_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v095_whole_gene_cols1to6.bed", header = FALSE, sep="\t", stringsAsFactors = FALSE, quote = "")
+colnames(all_genes_bed) <- c("chr", "start", "end", "id", "score", "strand")
+
+#pull out DNAJB1
+DNAJB1_gene_bed <- filter(all_genes_bed, all_genes_bed$id == "ENST00000254322.3")
+#save gene annotation for whole gene counts
+write_delim(DNAJB1_gene_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/gene_annotation_DNAJB1.bed", delim = "\t", col_names = FALSE)
+
+
+#make TTS +-5bp window bed
+DNAJB1_uncleaved_bed <- DNAJB1_gene_bed
+i=1
+while(i <= nrow(DNAJB1_uncleaved_bed)){
+  #if on + strand, start = TSS and end = TTS
+  if(DNAJB1_uncleaved_bed$strand[i]=="+"){
+    DNAJB1_uncleaved_bed$start[i] = DNAJB1_gene_bed$end[i] - 5 #using orignial df so don't accidentally use changed coordinate
+    DNAJB1_uncleaved_bed$end[i] = DNAJB1_gene_bed$end[i] + 5
+  } 
+  #if on - strand, end = TSS and start = TTS
+  else if(DNAJB1_uncleaved_bed$strand[i]=="-"){
+    DNAJB1_uncleaved_bed$start[i] = DNAJB1_gene_bed$start[i] - 5
+    DNAJB1_uncleaved_bed$end[i] = DNAJB1_gene_bed$start[i] + 5 
+    }
+  else{
+    print("no strand annotation!!")
+  }
+  i = i+1
+}
+
+summary(DNAJB1_uncleaved_bed$end - DNAJB1_uncleaved_bed$start == 10) #good, all have correct window size
+
+#save bed file
+write_delim(DNAJB1_uncleaved_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/TTS_10bp_window_DNAJB1.bed", delim = "\t", col_names = FALSE)
+
+```
+  
+
+
+Bedtools coverage
+#bedtools coverage -s -f 1 -a /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/TTS_10bp_window_DNAJB1.bed -b /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/05_evaluating_replicates/bed_files/rep1_NHS_sorted.Bed > uncleaved_NHS_rep1_DNAJB1.bed
+
+    bash script 07j_uncleaved_DNAJB1.sh and 07j_gene_counts_DNAJB1.sh
+    
+
+
+```{r formatting counts data into df's}
+fl_bed <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07j_HSP_genes/DNAJB1_uncleaved_counts", pattern = "*.bed", full.names = TRUE)
+uncleaved_TTS_beds <- lapply(fl_bed, read.table, header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(uncleaved_TTS_beds) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07j_HSP_genes/DNAJB1_uncleaved_counts/|_DNAJB1.bed", "", fl_bed)
+
+raw_counts_df <- data.frame(gene_IDs = uncleaved_TTS_beds$uncleaved_HS_rep1$V4,
+                        NHS_R1 = uncleaved_TTS_beds$uncleaved_NHS_rep1$V7,
+                        NHS_R2 = uncleaved_TTS_beds$uncleaved_NHS_rep2$V7,
+                        NHS_R3 = uncleaved_TTS_beds$uncleaved_NHS_rep3$V7,
+                        HS_R1 = uncleaved_TTS_beds$uncleaved_HS_rep1$V7,
+                        HS_R2 = uncleaved_TTS_beds$uncleaved_HS_rep2$V7,
+                        HS_R3 = uncleaved_TTS_beds$uncleaved_HS_rep3$V7 )
+
+#read in norm. factors for 4sU
+norm_factors_df <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/mapping_numbers.txt", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+norm_counts_df <- data.frame(gene_IDs = raw_counts_df$gene_IDs,
+                        NHS_R1 = raw_counts_df$NHS_R1 * norm_factors_df$mapping.normalization.factor[1],
+                        NHS_R2 = raw_counts_df$NHS_R2 * norm_factors_df$mapping.normalization.factor[3],
+                        NHS_R3 = raw_counts_df$NHS_R3 * norm_factors_df$mapping.normalization.factor[5],
+                        HS_R1 = raw_counts_df$HS_R1 * norm_factors_df$mapping.normalization.factor[2],
+                        HS_R2 = raw_counts_df$HS_R2 * norm_factors_df$mapping.normalization.factor[4],
+                        HS_R3 = raw_counts_df$HS_R3 * norm_factors_df$mapping.normalization.factor[6] )
+
+norm_counts_df$NHS_avg <- (norm_counts_df$NHS_R1 + norm_counts_df$NHS_R2 + norm_counts_df$NHS_R3) /3
+norm_counts_df$HS_avg <- (norm_counts_df$HS_R1 + norm_counts_df$HS_R2 + norm_counts_df$HS_R3) /3
+norm_counts_df$FC <- norm_counts_df$HS_avg / norm_counts_df$NHS_avg
+
+
+### repeat for gene
+fl_gene <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07j_HSP_genes/DNAJB1_gene_counts", pattern = "*.bed", full.names = TRUE)
+ls_gene <- lapply(fl_gene, read.table, header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ls_gene) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07j_HSP_genes/DNAJB1_gene_counts/|_DNAJB1.bed", "", fl_gene)
+
+DNAJB1_raw_counts_df <- data.frame(gene_IDs = ls_gene$uncleaved_HS_rep1$V4, #forgot to change file names from uncleaved
+                        NHS_R1 = ls_gene$uncleaved_NHS_rep1$V7,
+                        NHS_R2 = ls_gene$uncleaved_NHS_rep2$V7,
+                        NHS_R3 = ls_gene$uncleaved_NHS_rep3$V7,
+                        HS_R1 = ls_gene$uncleaved_HS_rep1$V7,
+                        HS_R2 = ls_gene$uncleaved_HS_rep2$V7,
+                        HS_R3 = ls_gene$uncleaved_HS_rep3$V7 )
+
+#read in norm. factors for 4sU
+DNAJB1_norm_counts_df <- data.frame(gene_IDs = DNAJB1_raw_counts_df$gene_IDs,
+                        NHS_R1 = DNAJB1_raw_counts_df$NHS_R1 * norm_factors_df$mapping.normalization.factor[1],
+                        NHS_R2 = DNAJB1_raw_counts_df$NHS_R2 * norm_factors_df$mapping.normalization.factor[3],
+                        NHS_R3 = DNAJB1_raw_counts_df$NHS_R3 * norm_factors_df$mapping.normalization.factor[5],
+                        HS_R1 = DNAJB1_raw_counts_df$HS_R1 * norm_factors_df$mapping.normalization.factor[2],
+                        HS_R2 = DNAJB1_raw_counts_df$HS_R2 * norm_factors_df$mapping.normalization.factor[4],
+                        HS_R3 = DNAJB1_raw_counts_df$HS_R3 * norm_factors_df$mapping.normalization.factor[6] )
+
+DNAJB1_norm_counts_df$NHS_avg <- (DNAJB1_norm_counts_df$NHS_R1 + DNAJB1_norm_counts_df$NHS_R2 + DNAJB1_norm_counts_df$NHS_R3) /3
+DNAJB1_norm_counts_df$HS_avg <- (DNAJB1_norm_counts_df$HS_R1 + DNAJB1_norm_counts_df$HS_R2 + DNAJB1_norm_counts_df$HS_R3) /3
+DNAJB1_norm_counts_df$FC <- DNAJB1_norm_counts_df$HS_avg / DNAJB1_norm_counts_df$NHS_avg
+
+
+
+###calc norm to gene
+norm_counts_df$FC_gene_norm <- norm_counts_df$FC / DNAJB1_norm_counts_df$FC 
+
+norm_counts_df$FC_gene_norm #3-fold
+norm_counts_df$FC #11-fold
+DNAJB1_norm_counts_df$FC #4-fold increase in exp after HS
+
+```
+
+
+--------------
+histone genes:
+--------------
+found list of histone genes from https://www.genenames.org/data/genegroup/#!/group/864
+```{r}
+histone_gene_list <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07j_HSP_genes/histone_genes_list.txt", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#lets just see how many overlap
+master_df <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/FINAL_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#need to convert ENST to ENSG
+conversion_df <-  read.table("/Users/goodrichlab/Desktop/Katy/NHS_txn_termination_investigation/gene_lists/geneID_conversion_table.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+t <- conversion_df[c(1,3,4)]
+colnames(t) <- c("geneName", "ENSEMBL_gene_ID", "transcriptID")
+conversion_master_df <- left_join(master_df, t, by = "transcriptID")
+#now have to remove decimals
+t <- strsplit(conversion_master_df$ENSEMBL_gene_ID, split = "\\.")
+i=1
+x <- vector()
+while (i<=length(t)) {
+  x <- append(x, t[[i]][1])
+  i=i+1
+}
+conversion_master_df$short_ENSEMBL_gene_ID <- x
+
+histone_genes_master_df <- filter(conversion_master_df, conversion_master_df$short_ENSEMBL_gene_ID %in% histone_gene_list$Ensembl.gene.ID )
+#ok that's 27 genes out of 118, not the worst
+
+```
+
+
+```{r plot same uncleaved vs RT length as HSP genes}
+plot_df <- uncleaved_FC_df[c(1,5,6)]
+#add defect length
+plot_df <- left_join(plot_df, master_df[c(1,17)], by = "transcriptID")
+#clean up plot_df
+plot_df$over_2FC <- plot_df$avg >2 | plot_df$avg <0.5
+#remove inf and NAs
+plot_df <- filter(plot_df, is.finite(plot_df$avg))
+#convert negative RT length to 0 - all "no defect"
+plot_df$final_defect_length <- pmax(plot_df$final_defect_length, 0)
+
+#filter for HSP genes
+histone_plot_df <- filter(plot_df, plot_df$transcriptID %in% histone_genes_master_df$transcriptID)
+
+
+
+###plot all together ###
+#color by if over or under the avg for that RT length
+i=1
+x <- vector()
+while (i<= nrow(histone_plot_df)) { #pulls out RT length for each gene in histone_plot_df and looks up what the avg uc is for that RT length
+  temp <- histone_plot_df$final_defect_length[i]
+  temp2 <- filter(avg_plot_df, avg_plot_df$final_defect_length == temp )
+  x <- append(x, temp2[,2])
+  i=i+1
+}
+histone_plot_df$avg_for_RT_length <- x #add avgs to df
+#add col for color in plot
+histone_plot_df$over_avg <- histone_plot_df$avg > histone_plot_df$avg_for_RT_length
+
+ggplot() + 
+  geom_errorbar(data=histone_plot_df, aes(x=final_defect_length, y=avg, ymin=avg-(stdev/2), ymax=avg+(stdev/2)), color="gray70") +
+  geom_point(data=histone_plot_df, aes(x=final_defect_length, y=avg, color = over_avg), alpha=0.8, size=2) + #color = "#141414"
+  geom_line(data = avg_plot_df, aes(x=final_defect_length, y=avg_uc_reads_by_RT), alpha=0.5, size=1) + #color = "#141414"
+  #xlim(c(-2.5,2.5)) + 
+  ylim(c(0, 8)) +
+  theme(axis.text = element_text(size = 13),  #change axis title size
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(10, 20, 10, 10),                                 #add white space
+        axis.title = element_text(size = 13),                                 #both axis label text size 
+        ) +    
+  scale_x_continuous(labels=c("0 kb", "", "10 kb", "", "20 kb")) +
+  scale_colour_manual(values=c("black", "darkred")) +                
+  xlab("RT Length") +
+  ylab("Uncleaved RNA\nFC with HS") +
+  geom_abline(color="black", lty=2, slope =  0, intercept =  1)  #line at 1
+  #annotate("rect",xmin=0,xmax=20000,ymin=0.5,ymax=2,alpha=0.2, fill = "grey1") #draw gray box
+
+
+```
+
+want to ghist histone genes and HSP genes and show RT length or RT length change heatmap
+
+

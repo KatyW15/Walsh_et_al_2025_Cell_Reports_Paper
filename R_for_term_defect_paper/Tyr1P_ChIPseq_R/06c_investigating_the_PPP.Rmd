@@ -1,0 +1,66 @@
+---
+title: "06c_investigating_the_PPP"
+author: "Katy Walsh"
+date: "4/11/2024"
+output: html_document
+---
+
+
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(grid)
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+library(ggfortify)
+library(gtable)
+library(ggpmisc)
+#install.packages("VennDiagram")
+library(VennDiagram)
+
+#wd: 
+setwd("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/06_analysis/PPP")
+
+```
+setup plot settings:
+```{r plotting setup}
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+library(ggpmisc)
+
+theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+    )
+
+###defining plot histogram function###
+#testing
+#hist_df <- Rpb1_hist_data
+#plot_title <- "Metagene Analysis of Pol II ocupancy at the TTS"
+
+    
+plot_hist_function <- function(hist_df, plot_title, subt = "isolated genes"){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line() +
+    labs(subtitle = subt, x= "distance from TTS", y="avg norm tag coverage") +
+    ggtitle(plot_title) +
+    scale_color_manual(values=c("black", "red", "grey"))
+}
+
+```
+

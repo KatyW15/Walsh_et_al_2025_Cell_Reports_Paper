@@ -1,0 +1,1433 @@
+---
+title: "04c_OE_defining_RT_length"
+author: "Katy Walsh"
+date: "5/28/2025"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+________________________________________________________________________________________________________________________
+defining termination defect as "increased signal downstream of genes", specifically "increase in length of ds region with signal"
+"an increase in length, or appearance, of read-through transcription due to HS"
+
+Steps to identify genes with defects:
+(using iso(stranded)_exp_clean genes)
+1. Do genes have signal in the 5kb immediatly ds of TTS? (NHS and HS, avg reps, >80% base coverage)
+2. If yes, how far does that signal extend ds? (NHS and HS, avg reps, homer hist function to sum reads by 1kb bins and find first bin where signal dips below 25% of initial 5kb signal (*check for less than 25% signal in 2 consecutive bins) = end of read-through)
+3. Does length of read-through increase with HS? (HS-NHS length >= 1kb = term defect)
+extra step: filter out genes that have rpk < 50 in NHS condition (nothing to compare so can't say if has defect or not)
+
+bonus: look into genes where r-t length doesn't change with HS -> check if signal increases or looks like they have defects
+________________________________________________________________________________________________________________________
+
+
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(grid)
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+library(ggfortify)
+library(gtable)
+
+#wd: setwd("~/Desktop/Katy/HS_4sU-Seq_2021")
+
+```
+
+
+1. assessing signal 5kb ds of TTS for iso_exp_clean genes (stranded)
+bedtools coverage command for 5kb ds of genes
+--> first, need to make bed file for 5kb windows
+#07_analysis/07d_read_through_length_and_term_defects/bed_files/ds_5kb_window_stranded_iso_exp_clean_genes.bed
+
+--> now run bedtools coverage command
+#<Bed_Tools> bedtools coverage -s -a <bed annotation file> -b <reads bed file> > output.bed
+    
+    already ran using bash script 04d_5kb_ds_counts.sh
+    /Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/ds_counts/bedtools_outputs
+
+bedtools coverage output:
+After each interval in A, bedtools coverage will report:
+V7: The number of features in B that overlapped (by at least one base pair) the A interval.
+V8: The number of bases in A that had non-zero coverage from features in B.
+V9: The length of the entry in A.
+V10: The fraction of bases in A that had non-zero coverage from features in B.
+(A = gnbd or 20kb ds bed file, B = reads bed file)
+
+
+--> then ask if coverage for that 5kb is >80%
+```{r ask if coverage >80%}
+#read in bedtools outputs
+fl <- list.files("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/ds_counts/bedtools_outputs/5kb_ds_counts", 
+                  pattern = "*.bed",
+                  full.names = TRUE)
+coverage <- lapply(fl, read.table, header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(coverage) <- gsub("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/ds_counts/bedtools_outputs/5kb_ds_counts/|_5kb_ds_counts.bed", "", fl)
+
+#make one DF of coverage numbers
+ds_5kb_coverage_df <- data.frame(transcriptID = coverage$ctl_NHS_pooled$V4,
+                                 ctl_NHS = coverage$ctl_NHS_pooled[,10],
+                                 ctl_HS = coverage$ctl_HS_pooled[,10] ,
+                                 OE_NHS = coverage$OE_NHS_pooled[,10],
+                                 OE_HS = coverage$OE_HS_pooled[,10]
+                                 )
+  #### USING POOLED BED FILES FOR COVERAGE AND RT ANALYSIS DUE TO LOW SEQ DEPTH ###
+
+
+#is coverage >80% column (aka is there read-through)
+ds_5kb_coverage_df$ctl_NHS_RT <- ds_5kb_coverage_df$ctl_NHS >= 0.8
+ds_5kb_coverage_df$ctl_HS_RT <- ds_5kb_coverage_df$ctl_HS >= 0.8
+ds_5kb_coverage_df$OE_NHS_RT <- ds_5kb_coverage_df$OE_NHS >= 0.8
+ds_5kb_coverage_df$OE_HS_RT <- ds_5kb_coverage_df$OE_HS >= 0.8
+
+table(ds_5kb_coverage_df[6])
+#NHS ~1500, HS ~4000 genes for both ctl and OE
+
+summary(ds_5kb_coverage_df$ctl_NHS)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.0000  0.1346  0.3670  0.4325  0.7334  1.0000 
+summary(ds_5kb_coverage_df$ctl_HS)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.0000  0.7005  0.8800  0.7987  0.9586  1.0000 
+
+
+
+#add to master RT df
+RT_master_df <- ds_5kb_coverage_df[c(1,6:9)]
+colnames(RT_master_df) <- c("transcriptID", "c5kb_ctl_NHS_RT", "c5kb_ctl_HS_RT", "c5kb_OE_NHS_RT", "c5kb_OE_HS_RT"  )
+
+```
+
+
+
+
+
+2. If yes, how far does that signal extend ds? (NHS and HS, avg reps, homer hist function to sum reads by 1kb bins and find first bin where signal dips below 25% of initial 5kb signal (*check for less than 25% signal in 2 consecutive bins) = end of read-through)
+
+
+--> homer annotatePeaks.pl -ghist
+#annotatePeaks.pl <bed file of TTS> hg38 -size 40000 -hist 1000 -norm 4E7 -ghist -strand + -d <tag directory> > <output file>
+    bed file should have start and end both = TTS and then size gives the window to count over (20kb)
+        "peak" = TTS to get this to do what we want (not what it's really designed for)
+        -strand + should count reads only on same strand as gene/TTS annotation but should double check that genes on - strand still have counts
+*homer centers on TTS so need window to be -40000 to get 20kb ds*
+notes about ghist output:
+    (when using TTS annotation input) gene body is always annotated in the -kb (left) of 0 and ds is always +kb, no matter what strand the gene is on
+    the 0 column is sum of reads -1kb (or whatever bin size) to the TTS, so for looking at reads ds of the TTS you want to start at the bin after 0 (i.e. 1kb-20kb for this) **actually the bin centers on the label, so bin 0 = -500 to +500bp ds, keeping the same to stay consistent with original 4sU HS RT length analysis (corect way would be to shift TTS.bed annotations by 1/2 of bin size so it starts/ends on the bin label and doesn't span the TTS)**
+    
+    see bash script 04c_ghist.sh
+    (using pooled TDs for better coverage)
+
+--> find end of RT
+```{r setup: read-in ghist outputs}
+#read in results
+fl <- list.files("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/ghist_output", 
+                  pattern = "*.tsv", full.names = TRUE)
+ghist_results <- lapply(fl, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ghist_results) <- gsub("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/ghist_output/|_pooled_ghist.tsv", "", fl)
+
+#fix col names
+colnames(ghist_results$ctl_NHS) <- c("transcriptID", seq(-20000, 20000, by = 1000))
+colnames(ghist_results$ctl_HS) <- c("transcriptID", seq(-20000, 20000, by = 1000))
+colnames(ghist_results$OE_NHS) <- c("transcriptID", seq(-20000, 20000, by = 1000))
+colnames(ghist_results$OE_HS) <- c("transcriptID", seq(-20000, 20000, by = 1000))
+
+
+nrow(ghist_results$ctl_NHS) #all have 6014 genes, good
+table(ghist_results$ctl_HS$transcriptID == ghist_results$OE_HS$transcriptID) #good, in same order
+
+```
+
+
+```{r find signal drop off}
+#avg first 5kb and put in refrence df
+first_5kb_signal <- data.frame(transcriptID = ghist_results$ctl_NHS$transcriptID, 
+                               ctl_NHS = rowSums(ghist_results$ctl_NHS[,23:27]) / 4,
+                               ctl_HS = rowSums(ghist_results$ctl_HS[,23:27]) / 4,
+                               OE_NHS = rowSums(ghist_results$OE_NHS[,23:27]) / 4,
+                               OE_HS = rowSums(ghist_results$OE_HS[,23:27]) / 4
+                                 )
+
+
+# ask if signal is >25% of first 5kb signal
+## ctl
+ctl_NHS_boolean_df <- data.frame(transcriptID = ghist_results$ctl_NHS$transcriptID)
+i=28 
+while (i<=ncol(ghist_results[["ctl_NHS"]])) {
+  #pull out name for col
+  c_name <- colnames(ghist_results[["ctl_NHS"]])[i]
+  #make col of T/F for all genes for that bin
+  ctl_NHS_boolean_df[,c_name] <- ghist_results[["ctl_NHS"]][,i] > (0.25 * first_5kb_signal$ctl_NHS) 
+    #named cols in first_5kb df the same as names in ghist_results so can use the same variable here
+  
+  i=i+1
+}
+
+## repeat for OE
+OE_NHS_boolean_df <- data.frame(transcriptID = ghist_results$OE_NHS$transcriptID)
+i=28 
+while (i<=ncol(ghist_results[["OE_NHS"]])) {
+  #pull out name for col
+  c_name <- colnames(ghist_results[["OE_NHS"]])[i]
+  #make col of T/F for all genes for that bin
+  OE_NHS_boolean_df[,c_name] <- ghist_results[["OE_NHS"]][,i] > (0.25 * first_5kb_signal$OE_NHS) 
+    #named cols in first_5kb df the same as names in ghist_results so can use the same variable here
+  
+  i=i+1
+}
+
+
+#repeat for HS
+## ctl
+ctl_HS_boolean_df <- data.frame(transcriptID = ghist_results$ctl_HS$transcriptID)
+i=28
+while (i<=ncol(ghist_results[["ctl_HS"]])) {
+  #pull out name for col
+  c_name <- colnames(ghist_results[["ctl_HS"]])[i]
+  #make col of T/F for all genes for that bin
+  ctl_HS_boolean_df[,c_name] <- ghist_results[["ctl_HS"]][,i] > (0.25 * first_5kb_signal$ctl_HS) 
+    #named cols in first_5kb df the same as names in ghist_results so can use the same variable here
+  
+  i=i+1
+}
+
+## OE
+OE_HS_boolean_df <- data.frame(transcriptID = ghist_results$OE_HS$transcriptID)
+i=28
+while (i<=ncol(ghist_results[["OE_HS"]])) {
+  #pull out name for col
+  c_name <- colnames(ghist_results[["OE_HS"]])[i]
+  #make col of T/F for all genes for that bin
+  OE_HS_boolean_df[,c_name] <- ghist_results[["OE_HS"]][,i] > (0.25 * first_5kb_signal$OE_HS) 
+    #named cols in first_5kb df the same as names in ghist_results so can use the same variable here
+  
+  i=i+1
+}
+
+#make list of df's for organization
+is_signal_list <- list(ctl_NHS = ctl_NHS_boolean_df, ctl_HS = ctl_HS_boolean_df, OE_NHS = OE_NHS_boolean_df, OE_HS = OE_HS_boolean_df)
+```
+
+```{r annotate end of RT}
+#filter out genes w/o 5kb coverage >80%
+ctl_NHS_RT_genes <- filter(ds_5kb_coverage_df, ds_5kb_coverage_df$ctl_NHS_RT == TRUE) #1223 genes
+ctl_HS_RT_genes <- filter(ds_5kb_coverage_df, ds_5kb_coverage_df$ctl_HS_RT == TRUE) #3847 genes
+OE_NHS_RT_genes <- filter(ds_5kb_coverage_df, ds_5kb_coverage_df$OE_NHS_RT == TRUE) #1512 genes
+OE_HS_RT_genes <- filter(ds_5kb_coverage_df, ds_5kb_coverage_df$OE_HS_RT == TRUE) #3792 genes
+
+ctl_NHS_is_signal <- filter(is_signal_list$ctl_NHS, is_signal_list$ctl_NHS$transcriptID %in% ctl_NHS_RT_genes$transcriptID)
+ctl_HS_is_signal <- filter(is_signal_list$ctl_HS, is_signal_list$ctl_HS$transcriptID %in% ctl_HS_RT_genes$transcriptID)
+OE_NHS_is_signal <- filter(is_signal_list$OE_NHS, is_signal_list$OE_NHS$transcriptID %in% OE_NHS_RT_genes$transcriptID)
+OE_HS_is_signal <- filter(is_signal_list$OE_HS, is_signal_list$OE_HS$transcriptID %in% OE_HS_RT_genes$transcriptID)
+
+
+####
+#ctl
+####
+
+#now check how far ds signal is
+NHS_RT_end_ls <- vector()
+r=1
+while (r<=nrow(ctl_NHS_is_signal)) {
+  c=2
+  while (c<=ncol(ctl_NHS_is_signal)) {
+    if (c<(ncol(ctl_NHS_is_signal)) && ctl_NHS_is_signal[r,c] == FALSE && ctl_NHS_is_signal[r,c+1] == FALSE) { #find two FALSE in a row
+      bp <- colnames(ctl_NHS_is_signal)[(c-1)] #RT end is last TRUE bin
+      if (bp == "transcriptID") { #if RT is 5kb, replace c-1 (which would be "transcriptID") with 5kb
+        bp <- 5000
+      }
+      NHS_RT_end_ls <- append(NHS_RT_end_ls, bp)
+      print("option 1")
+      break #stops the loop looking at columns so only one annotation will be made per gene
+    }
+    else if (c==ncol(ctl_NHS_is_signal) && ctl_NHS_is_signal[r,c] == FALSE) { #if there aren't two FALSE in a row but the last bin is FALSE, assign RT end as 19kb
+      bp <- colnames(ctl_NHS_is_signal)[(c-1)]
+      NHS_RT_end_ls <- append(NHS_RT_end_ls, bp)
+      print("option 2")
+      break
+    }
+    else if (c==ncol(ctl_NHS_is_signal) && ctl_NHS_is_signal[r,c] == TRUE) { #RT over 20kb (record as 20kb)
+      bp <- colnames(ctl_NHS_is_signal)[(c)]
+      NHS_RT_end_ls <- append(NHS_RT_end_ls, bp) #if 16 is recorded, it reached 20kb without having two FALSE in a row
+      print("option 3")
+      break
+    }
+    #print(c)
+    #print(NHS_is_signal[r,c]) 
+    #print(NHS_is_signal[r,c+1])
+    c=c+1
+  }
+  r=r+1
+}
+
+#make df
+ctl_NHS_end_points_df <- data.frame(transcriptID = ctl_NHS_is_signal$transcriptID, ctl_NHS_end_point = NHS_RT_end_ls)
+
+#repeat for HS
+HS_RT_end_ls <- vector()
+r=1
+while (r<=nrow(ctl_HS_is_signal)) {
+  c=2
+  while (c<=ncol(ctl_HS_is_signal)) {
+    if (c<(ncol(ctl_HS_is_signal)) && ctl_HS_is_signal[r,c] == FALSE && ctl_HS_is_signal[r,c+1] == FALSE) {
+      bp <- colnames(ctl_HS_is_signal)[(c-1)]
+      if (bp == "transcriptID") {
+        bp <- 5000
+      }
+      HS_RT_end_ls <- append(HS_RT_end_ls, bp)
+      print("option 1")
+      break #stops the loop looking at columns so only one annotation will be made per gene
+    }
+    else if (c==ncol(ctl_HS_is_signal) && ctl_HS_is_signal[r,c] == FALSE) {
+      bp <- colnames(ctl_HS_is_signal)[(c-1)]
+      HS_RT_end_ls <- append(HS_RT_end_ls, bp)
+      print("option 2")
+      break
+    }
+    else if (c==ncol(ctl_HS_is_signal) && ctl_HS_is_signal[r,c] == TRUE) {
+      bp <- colnames(ctl_HS_is_signal)[(c)]
+      HS_RT_end_ls <- append(HS_RT_end_ls, bp) #if 16 is recorded, it reached 20kb without having two FALSE in a row
+      print("option 3")
+      break
+    }
+    #print(c)
+    #print(ctl_HS_is_signal[r,c]) 
+    #print(ctl_HS_is_signal[r,c+1])
+    c=c+1
+  }
+  r=r+1
+}
+
+ctl_HS_end_points_df <- data.frame(transcriptID = ctl_HS_is_signal$transcriptID, ctl_HS_end_point = HS_RT_end_ls)
+
+
+####
+#repeat for OE
+####
+NHS_RT_end_ls <- vector()
+r=1
+while (r<=nrow(OE_NHS_is_signal)) {
+  c=2
+  while (c<=ncol(OE_NHS_is_signal)) {
+    if (c<(ncol(OE_NHS_is_signal)) && OE_NHS_is_signal[r,c] == FALSE && OE_NHS_is_signal[r,c+1] == FALSE) {
+      bp <- colnames(OE_NHS_is_signal)[(c-1)]
+      if (bp == "transcriptID") {
+        bp <- 5000
+      }
+      NHS_RT_end_ls <- append(NHS_RT_end_ls, bp)
+      print("option 1")
+      break #stops the loop looking at columns so only one annotation will be made per gene
+    }
+    else if (c==ncol(OE_NHS_is_signal) && OE_NHS_is_signal[r,c] == FALSE) {
+      bp <- colnames(OE_NHS_is_signal)[(c-1)]
+      NHS_RT_end_ls <- append(NHS_RT_end_ls, bp)
+      print("option 2")
+      break
+    }
+    else if (c==ncol(OE_NHS_is_signal) && OE_NHS_is_signal[r,c] == TRUE) {
+      bp <- colnames(OE_NHS_is_signal)[(c)]
+      NHS_RT_end_ls <- append(NHS_RT_end_ls, bp) #if 16 is recorded, it reached 20kb without having two FALSE in a row
+      print("option 3")
+      break
+    }
+    #print(c)
+    #print(NHS_is_signal[r,c]) 
+    #print(NHS_is_signal[r,c+1])
+    c=c+1
+  }
+  r=r+1
+}
+
+#make df
+OE_NHS_end_points_df <- data.frame(transcriptID = OE_NHS_is_signal$transcriptID, OE_NHS_end_point = NHS_RT_end_ls)
+
+#repeat for HS
+HS_RT_end_ls <- vector()
+r=1
+while (r<=nrow(OE_HS_is_signal)) {
+  c=2
+  while (c<=ncol(OE_HS_is_signal)) {
+    if (c<(ncol(OE_HS_is_signal)) && OE_HS_is_signal[r,c] == FALSE && OE_HS_is_signal[r,c+1] == FALSE) {
+      bp <- colnames(OE_HS_is_signal)[(c-1)]
+      if (bp == "transcriptID") {
+        bp <- 5000
+      }
+      HS_RT_end_ls <- append(HS_RT_end_ls, bp)
+      print("option 1")
+      break #stops the loop looking at columns so only one annotation will be made per gene
+    }
+    else if (c==ncol(OE_HS_is_signal) && OE_HS_is_signal[r,c] == FALSE) {
+      bp <- colnames(OE_HS_is_signal)[(c-1)]
+      HS_RT_end_ls <- append(HS_RT_end_ls, bp)
+      print("option 2")
+      break
+    }
+    else if (c==ncol(OE_HS_is_signal) && OE_HS_is_signal[r,c] == TRUE) {
+      bp <- colnames(OE_HS_is_signal)[(c)]
+      HS_RT_end_ls <- append(HS_RT_end_ls, bp) #if 16 is recorded, it reached 20kb without having two FALSE in a row
+      print("option 3")
+      break
+    }
+    #print(c)
+    #print(OE_HS_is_signal[r,c]) 
+    #print(OE_HS_is_signal[r,c+1])
+    c=c+1
+  }
+  r=r+1
+}
+
+OE_HS_end_points_df <- data.frame(transcriptID = OE_HS_is_signal$transcriptID, OE_HS_end_point = HS_RT_end_ls)
+
+
+#now need to add to the master df and fill in for missing genes
+RT_master_df <- ds_5kb_coverage_df[c(1,6:9)]
+colnames(RT_master_df) <- c("transcriptID", "c5kb_ctl_NHS_RT", "c5kb_ctl_HS_RT", "c5kb_OE_NHS_RT", "c5kb_OE_HS_RT"  )
+
+RT_master_df <- RT_master_df %>% 
+                full_join(ctl_NHS_end_points_df, by = "transcriptID") %>%
+                full_join(ctl_HS_end_points_df, by="transcriptID") %>% 
+                full_join(OE_NHS_end_points_df, by="transcriptID") %>% 
+                full_join(OE_HS_end_points_df, by="transcriptID")
+  
+#replace NAs with 0
+RT_master_df[is.na(RT_master_df)] <- 0 
+
+
+#save
+#write_delim(RT_master_df, "/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/OE_RT_length_master_df.tsv", delim = "\t", col_names = TRUE)
+```
+
+
+
+
+3. how much more RT is there after HS?
+HS - NHS
+```{r HS-NHS}
+#read in master_df if needed
+RT_master_df <- read.table( "/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/OE_RT_length_master_df_expressed.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+#add onto master_df
+RT_master_df$ctl_5kb_defect_length <- RT_master_df$ctl_HS_end_point - RT_master_df$ctl_NHS_end_point
+RT_master_df$OE_5kb_defect_length <- RT_master_df$OE_HS_end_point - RT_master_df$OE_NHS_end_point
+
+
+#term defect Y/N col (5kb method)
+RT_master_df$ctl_term_defect_5kb_method <- RT_master_df$ctl_5kb_defect_length >0
+RT_master_df$OE_term_defect_5kb_method <- RT_master_df$OE_5kb_defect_length >0
+
+
+#save (will overwrite previous version to add a column)
+write_delim(RT_master_df, "/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/OE_RT_length_master_df.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+
+
+1kb defect and no defect definitinons:
+-------------------------------------
+
+now let's add another filter to better categorize these into defect and true no defect genes
+    look at ghist signal and ask when it drops below the signal of the first 1kb bin
+```{r further filtering of "no defect" genes}
+#ghist data: ghist_results
+RT_master_df <- read.table( "/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/OE_RT_length_master_df.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+
+#### 
+#filter out genes that don't have signal in first 1kb 
+#### 
+signal_ghist_results <- ghist_results
+signal_ghist_results[["ctl_NHS"]] <- filter(signal_ghist_results[["ctl_NHS"]], signal_ghist_results[["ctl_NHS"]]$`1000` >= 10) #5053
+signal_ghist_results[["ctl_HS"]] <- filter(signal_ghist_results[["ctl_HS"]], signal_ghist_results[["ctl_HS"]]$`1000` >= 10) #5616
+signal_ghist_results[["OE_NHS"]] <- filter(signal_ghist_results[["OE_NHS"]], signal_ghist_results[["OE_NHS"]]$`1000` >= 10) #5047
+signal_ghist_results[["OE_HS"]] <- filter(signal_ghist_results[["OE_HS"]], signal_ghist_results[["OE_HS"]]$`1000` >= 10) #5555
+
+
+#### 
+#find end of RT for 5kb method "no defect" genes based on dropping below 25% of first kb ds of genes 
+#### 
+
+### ctl
+# ask if signal is >25% of first 1kb signal
+ctl_NHS_boolean_df <- data.frame(transcriptID = signal_ghist_results$ctl_NHS$transcriptID)
+i=24 #col 23 = 0-1kb counts
+while (i<=ncol(signal_ghist_results[["ctl_NHS"]])) {
+  #pull out name for col
+  c_name <- colnames(signal_ghist_results[["ctl_NHS"]])[i]
+  #make col of T/F for all genes for that bin
+  ctl_NHS_boolean_df[,c_name] <- signal_ghist_results[["ctl_NHS"]][,i] > (0.25 * signal_ghist_results[["ctl_NHS"]][,23]) #col 23 = 0-1kb counts
+  i=i+1
+}
+
+#repeat for HS
+ctl_HS_boolean_df <- data.frame(transcriptID = signal_ghist_results$ctl_HS$transcriptID)
+i=24
+while (i<=ncol(signal_ghist_results[["ctl_HS"]])) {
+  #pull out name for col
+  c_name <- colnames(signal_ghist_results[["ctl_HS"]])[i]
+  #make col of T/F for all genes for that bin
+  ctl_HS_boolean_df[,c_name] <- signal_ghist_results[["ctl_HS"]][,i] > (0.25 * signal_ghist_results[["ctl_HS"]][,23]) 
+  i=i+1
+}
+
+### OE
+# ask if signal is >25% of first 1kb signal
+OE_NHS_boolean_df <- data.frame(transcriptID = signal_ghist_results$OE_NHS$transcriptID)
+i=24 #col 23 = 0-1kb counts
+while (i<=ncol(signal_ghist_results[["OE_NHS"]])) {
+  #pull out name for col
+  c_name <- colnames(signal_ghist_results[["OE_NHS"]])[i]
+  #make col of T/F for all genes for that bin
+  OE_NHS_boolean_df[,c_name] <- signal_ghist_results[["OE_NHS"]][,i] > (0.25 * signal_ghist_results[["OE_NHS"]][,23]) #col 23 = 0-1kb counts
+  i=i+1
+}
+
+
+#repeat for HS
+OE_HS_boolean_df <- data.frame(transcriptID = signal_ghist_results$OE_HS$transcriptID)
+i=24
+while (i<=ncol(signal_ghist_results[["OE_HS"]])) {
+  #pull out name for col
+  c_name <- colnames(signal_ghist_results[["OE_HS"]])[i]
+  #make col of T/F for all genes for that bin
+  OE_HS_boolean_df[,c_name] <- signal_ghist_results[["OE_HS"]][,i] > (0.25 * signal_ghist_results[["OE_HS"]][,23]) 
+  i=i+1
+}
+
+
+
+#### 
+#find end of RT (for all genes as long as they have signal in the first kb downstream)
+####
+
+### ctl
+#now check how far ds there is still signal
+NHS_is_signal <- ctl_NHS_boolean_df #T/F for each bin, assign to new temp label so matches code below
+NHS_RT_end_ls <- vector()
+r=1
+while (r<=nrow(NHS_is_signal)) {
+  c=2
+  while (c<=ncol(NHS_is_signal)) {
+    if (c<(ncol(NHS_is_signal)) && NHS_is_signal[r,c] == FALSE && NHS_is_signal[r,c+1] == FALSE) {
+      bp <- colnames(NHS_is_signal)[(c-1)]
+      if (bp == "transcriptID") {
+        bp <- 1000
+      }
+      NHS_RT_end_ls <- append(NHS_RT_end_ls, bp)
+      print("option 1")
+      break #stops the loop looking at columns so only one annotation will be made per gene
+    }
+    else if (c==ncol(NHS_is_signal) && NHS_is_signal[r,c] == FALSE) {
+      bp <- colnames(NHS_is_signal)[(c-1)]
+      NHS_RT_end_ls <- append(NHS_RT_end_ls, bp)
+      print("option 2")
+      break
+    }
+    else if (c==ncol(NHS_is_signal) && NHS_is_signal[r,c] == TRUE) {
+      bp <- colnames(NHS_is_signal)[(c)]
+      NHS_RT_end_ls <- append(NHS_RT_end_ls, bp) #if 16 is recorded, it reached 20kb without having two FALSE in a row
+      print("option 3")
+      break
+    }
+    #print(c)
+    #print(NHS_is_signal[r,c]) 
+    #print(NHS_is_signal[r,c+1])
+    c=c+1
+  }
+  r=r+1
+}
+#make df
+ctl_NHS_1kb_end_points_df <- data.frame(transcriptID = NHS_is_signal$transcriptID, ctl_NHS_end_point_1kb_method = as.numeric(NHS_RT_end_ls))
+
+
+#repeat for HS
+HS_is_signal <- ctl_HS_boolean_df
+HS_RT_end_ls <- vector()
+r=1
+while (r<=nrow(HS_is_signal)) {
+  c=2
+  while (c<=ncol(HS_is_signal)) {
+    if (c<(ncol(HS_is_signal)) && HS_is_signal[r,c] == FALSE && HS_is_signal[r,c+1] == FALSE) {
+      bp <- colnames(HS_is_signal)[(c-1)]
+      if (bp == "transcriptID") {
+        bp <- 5000
+      }
+      HS_RT_end_ls <- append(HS_RT_end_ls, bp)
+      print("option 1")
+      break #stops the loop looking at columns so only one annotation will be made per gene
+    }
+    else if (c==ncol(HS_is_signal) && HS_is_signal[r,c] == FALSE) {
+      bp <- colnames(HS_is_signal)[(c-1)]
+      HS_RT_end_ls <- append(HS_RT_end_ls, bp)
+      print("option 2")
+      break
+    }
+    else if (c==ncol(HS_is_signal) && HS_is_signal[r,c] == TRUE) {
+      bp <- colnames(HS_is_signal)[(c)]
+      HS_RT_end_ls <- append(HS_RT_end_ls, bp) #if 16 is recorded, it reached 20kb without having two FALSE in a row
+      print("option 3")
+      break
+    }
+    #print(c)
+    #print(HS_is_signal[r,c]) 
+    #print(HS_is_signal[r,c+1])
+    c=c+1
+  }
+  r=r+1
+}
+ctl_HS_1kb_end_points_df <- data.frame(transcriptID = HS_is_signal$transcriptID, ctl_HS_end_point_1kb_method = as.numeric(HS_RT_end_ls))
+
+
+
+### OE
+#now check how far ds there is still signal
+NHS_is_signal <- OE_NHS_boolean_df #T/F for each bin, assign to new temp label so matches code below
+NHS_RT_end_ls <- vector()
+r=1
+while (r<=nrow(NHS_is_signal)) {
+  c=2
+  while (c<=ncol(NHS_is_signal)) {
+    if (c<(ncol(NHS_is_signal)) && NHS_is_signal[r,c] == FALSE && NHS_is_signal[r,c+1] == FALSE) {
+      bp <- colnames(NHS_is_signal)[(c-1)]
+      if (bp == "transcriptID") {
+        bp <- 1000
+      }
+      NHS_RT_end_ls <- append(NHS_RT_end_ls, bp)
+      print("option 1")
+      break #stops the loop looking at columns so only one annotation will be made per gene
+    }
+    else if (c==ncol(NHS_is_signal) && NHS_is_signal[r,c] == FALSE) {
+      bp <- colnames(NHS_is_signal)[(c-1)]
+      NHS_RT_end_ls <- append(NHS_RT_end_ls, bp)
+      print("option 2")
+      break
+    }
+    else if (c==ncol(NHS_is_signal) && NHS_is_signal[r,c] == TRUE) {
+      bp <- colnames(NHS_is_signal)[(c)]
+      NHS_RT_end_ls <- append(NHS_RT_end_ls, bp) #if 16 is recorded, it reached 20kb without having two FALSE in a row
+      print("option 3")
+      break
+    }
+    #print(c)
+    #print(NHS_is_signal[r,c]) 
+    #print(NHS_is_signal[r,c+1])
+    c=c+1
+  }
+  r=r+1
+}
+#make df
+OE_NHS_1kb_end_points_df <- data.frame(transcriptID = NHS_is_signal$transcriptID, OE_NHS_end_point_1kb_method = as.numeric(NHS_RT_end_ls))
+
+
+#repeat for HS
+HS_is_signal <- OE_HS_boolean_df
+HS_RT_end_ls <- vector()
+r=1
+while (r<=nrow(HS_is_signal)) {
+  c=2
+  while (c<=ncol(HS_is_signal)) {
+    if (c<(ncol(HS_is_signal)) && HS_is_signal[r,c] == FALSE && HS_is_signal[r,c+1] == FALSE) {
+      bp <- colnames(HS_is_signal)[(c-1)]
+      if (bp == "transcriptID") {
+        bp <- 5000
+      }
+      HS_RT_end_ls <- append(HS_RT_end_ls, bp)
+      print("option 1")
+      break #stops the loop looking at columns so only one annotation will be made per gene
+    }
+    else if (c==ncol(HS_is_signal) && HS_is_signal[r,c] == FALSE) {
+      bp <- colnames(HS_is_signal)[(c-1)]
+      HS_RT_end_ls <- append(HS_RT_end_ls, bp)
+      print("option 2")
+      break
+    }
+    else if (c==ncol(HS_is_signal) && HS_is_signal[r,c] == TRUE) {
+      bp <- colnames(HS_is_signal)[(c)]
+      HS_RT_end_ls <- append(HS_RT_end_ls, bp) #if 16 is recorded, it reached 20kb without having two FALSE in a row
+      print("option 3")
+      break
+    }
+    #print(c)
+    #print(HS_is_signal[r,c]) 
+    #print(HS_is_signal[r,c+1])
+    c=c+1
+  }
+  r=r+1
+}
+OE_HS_1kb_end_points_df <- data.frame(transcriptID = HS_is_signal$transcriptID, OE_HS_end_point_1kb_method = as.numeric(HS_RT_end_ls))
+
+
+
+
+#now need to add to the master df and fill in for missing genes
+RT_master_df <- read.table( "/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/OE_RT_length_master_df.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+new_RT_master_df <- RT_master_df %>% 
+                    full_join(ctl_NHS_1kb_end_points_df, by = "transcriptID") %>% 
+                    full_join(ctl_HS_1kb_end_points_df, by = "transcriptID") %>%
+                    full_join(OE_NHS_1kb_end_points_df, by = "transcriptID") %>%
+                    full_join(OE_HS_1kb_end_points_df, by = "transcriptID") 
+
+#replace NAs with 0 (NAs = no significant signal in first kb)
+new_RT_master_df[is.na(new_RT_master_df)] <- 0
+
+
+####
+#calc change in RT length
+####
+new_RT_master_df$ctl_defect_length_1kb_method <- new_RT_master_df$ctl_HS_end_point_1kb_method - new_RT_master_df$ctl_NHS_end_point_1kb_method
+new_RT_master_df$OE_defect_length_1kb_method <- new_RT_master_df$OE_HS_end_point_1kb_method - new_RT_master_df$OE_NHS_end_point_1kb_method
+
+
+####
+#cat as defect or no defect again
+####
+new_RT_master_df$ctl_term_defect_1kb_method <- new_RT_master_df$ctl_defect_length_1kb_method >0
+new_RT_master_df$OE_term_defect_1kb_method <- new_RT_master_df$OE_defect_length_1kb_method >0
+
+#save OVERRIDES OLD FILE
+write_delim(new_RT_master_df, "/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/OE_RT_length_master_df.tsv", delim = "\t", col_names = TRUE)
+```
+
+
+
+Merge methods
+--------------
+need to make a master_df with the actual end points used for each gene
+  also add actual final term defect definition to new_master_df
+```{r add final term defect col to new_master_df}
+RT_master_df <- read.table( "/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/OE_RT_length_master_df.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+#pick which end point to use
+  #if 5kb and 1kb term defect definitions match, use 5kb end point
+  #if 5kb term_defect = FALSE and 1kb term defect = TRUE, use 1kb end point
+  #if 5kb term_defect = TRUE and 1kb term defect = FALSE, use 5kb end point
+
+### ctl
+#set up variables
+NHS_term_defect_end_point <- vector()
+HS_term_defect_end_point <- vector()
+final_defect_length <- vector()
+r=1
+while (r<=nrow(RT_master_df)) {
+  if (RT_master_df$ctl_term_defect_5kb_method[r] == RT_master_df$ctl_term_defect_1kb_method[r] | #both TRUE or both FALSE
+      (RT_master_df$ctl_term_defect_5kb_method[r] == TRUE & RT_master_df$ctl_term_defect_1kb_method[r] == FALSE)) { #or if 5kb shows RT
+    NHS_term_defect_end_point[r] <- RT_master_df$ctl_NHS_end_point[r] #use 5kb end point definition
+    HS_term_defect_end_point[r] <- RT_master_df$ctl_HS_end_point[r]
+    final_defect_length[r] <- RT_master_df$ctl_5kb_defect_length[r] # and 5kb defect length
+    print(c("5kb: ", r))
+  }
+  else if (RT_master_df$ctl_term_defect_5kb_method[r] == FALSE & RT_master_df$ctl_term_defect_1kb_method[r] == TRUE) { #if 5kb doesn't show RT, go to 1kb definition
+    NHS_term_defect_end_point[r] <- RT_master_df$ctl_NHS_end_point_1kb_method[r]
+    HS_term_defect_end_point[r] <- RT_master_df$ctl_HS_end_point_1kb_method[r]
+    final_defect_length[r] <- RT_master_df$ctl_defect_length_1kb_method[r]
+    print(c("1kb: ", r))
+  }
+  r=r+1
+}
+
+#add cols to master DF
+RT_master_df$ctl_NHS_RT_end_point <- NHS_term_defect_end_point
+RT_master_df$ctl_HS_RT_end_point <- HS_term_defect_end_point
+RT_master_df$ctl_final_defect_length <- final_defect_length
+RT_master_df$ctl_final_defect <- RT_master_df$ctl_final_defect_length>0
+
+
+
+### OE
+#set up variables
+NHS_term_defect_end_point <- vector()
+HS_term_defect_end_point <- vector()
+final_defect_length <- vector()
+r=1
+while (r<=nrow(RT_master_df)) {
+  if (RT_master_df$OE_term_defect_5kb_method[r] == RT_master_df$OE_term_defect_1kb_method[r] | #both TRUE or both FALSE
+      (RT_master_df$OE_term_defect_5kb_method[r] == TRUE & RT_master_df$OE_term_defect_1kb_method[r] == FALSE)) { #or if 5kb shows RT
+    NHS_term_defect_end_point[r] <- RT_master_df$OE_NHS_end_point[r] #use 5kb end point definition
+    HS_term_defect_end_point[r] <- RT_master_df$OE_HS_end_point[r]
+    final_defect_length[r] <- RT_master_df$OE_5kb_defect_length[r] # and 5kb defect length
+    print(c("5kb: ", r))
+  }
+  else if (RT_master_df$OE_term_defect_5kb_method[r] == FALSE & RT_master_df$OE_term_defect_1kb_method[r] == TRUE) { #if 5kb doesn't show RT, go to 1kb definition
+    NHS_term_defect_end_point[r] <- RT_master_df$OE_NHS_end_point_1kb_method[r]
+    HS_term_defect_end_point[r] <- RT_master_df$OE_HS_end_point_1kb_method[r]
+    final_defect_length[r] <- RT_master_df$OE_defect_length_1kb_method[r]
+    print(c("1kb: ", r))
+  }
+  r=r+1
+}
+
+#add cols to master DF
+RT_master_df$OE_NHS_RT_end_point <- NHS_term_defect_end_point
+RT_master_df$OE_HS_RT_end_point <- HS_term_defect_end_point
+RT_master_df$OE_final_defect_length <- final_defect_length
+RT_master_df$OE_final_defect <- RT_master_df$OE_final_defect_length>0
+
+
+
+#add NHS_longRT col to RT_master_df
+RT_master_df$ctl_NHS_longRT <- RT_master_df$ctl_NHS_RT_end_point == 20000
+RT_master_df$OE_NHS_longRT <- RT_master_df$OE_NHS_RT_end_point == 20000
+
+#save OVERRIDES OLD FILE
+write_delim(RT_master_df, "/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/OE_RT_length_master_df.tsv", delim = "\t", col_names = TRUE)
+
+
+
+```
+
+
+make final df with only final RT cols
+```{r make final RT df}
+RT_master_df <- read.table( "/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/OE_RT_length_master_df.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+#make just final RT df
+final_RT_df <- RT_master_df[c(1,22:31)]
+
+# make all negatives -> 0
+for (row in 1:nrow(final_RT_df)) {
+  if (final_RT_df$ctl_final_defect_length[row] <0) { #find negative RT entries
+    print(paste0(row, ": ctl is neg ", final_RT_df$ctl_final_defect_length[row]))
+    final_RT_df$ctl_final_defect_length[row] <- 0 #assign 0 RT instead
+  }
+  if (final_RT_df$OE_final_defect_length[row] <0) {
+    print(paste0(row, ": OE is neg ", final_RT_df$OE_final_defect_length[row]))
+    final_RT_df$OE_final_defect_length[row] <- 0
+  }
+}
+
+#save final df
+write_delim(final_RT_df, "/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/OE_final_RT_length_df.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+
+Filter for exp genes: remove genes not expressed in all conditions
+```{r remove unexpressed genes}
+
+#read in rpk data
+gene_rpk_df <- read.table("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/ds_counts/whole_gene_RPK.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+#
+
+#now fileter master_df based on expression data
+t <- filter(gene_rpk_df, gene_rpk_df$ctl_NHS >= 10 & gene_rpk_df$ctl_HS >= 10 & gene_rpk_df$OE_NHS >=10 & gene_rpk_df$OE_HS >=10 ) #removed 228 genes
+final_RT_df_filtered <- filter(final_RT_df, final_RT_df$transcriptID %in% t$transcriptID)
+
+
+#save
+write_delim(final_RT_df_filtered, "/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/OE_final_RT_length_df_expressed.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+```{r change in RT length after OE}
+final_RT_df_filtered <- read.table("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/OE_final_RT_length_df_expressed.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+#change in RT length after OE
+final_RT_df_filtered$RT_length_change_w_OE <- final_RT_df_filtered$OE_final_defect_length - final_RT_df_filtered$ctl_final_defect_length
+
+
+summary(final_RT_df_filtered$RT_length_change_w_OE)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# -20000   -3000       0   -1558       0   20000 
+
+```
+
+
+
+DIDN'T DO!!!!!
+-------------------------------------------
+
+Add RT length categories:
+make moderate and severe defect categories
+```{r make moderate and severe defect lists}
+moderate_defect_genes <- filter(RT_master_df, RT_master_df$term_defect_final == TRUE & RT_master_df$final_defect_length < 10000)
+moderate_defect_gene_IDs <- as.data.frame(moderate_defect_genes$transcriptID)
+
+severe_defect_genes <- filter(final_master_df, final_master_df$term_defect_final == TRUE & final_master_df$final_defect_length > 10000 & final_master_df$final_defect_length <20000)
+severe_defect_gene_IDs <- as.data.frame(severe_defect_genes$transcriptID)
+
+max_defect_genes <- filter(final_master_df, final_master_df$final_defect_length == 20000)
+max_defect_gene_IDs <- as.data.frame(max_defect_genes$transcriptID)
+
+```
+
+update master df with sharp/leaky and moderate/severe/max defect
+```{r update master df}
+
+
+#make "defect_cat" col (no/moderate/severe/max)
+defect_cat <- vector()
+i=1
+while (i <= nrow(final_master_df)) {
+  if (final_master_df$final_defect_length[i] <= 0) { #no defect
+    defect_cat[i] <- "no defect"
+  }
+  else if (final_master_df$final_defect_length[i] > 0 & final_master_df$final_defect_length[i] < 10000) {
+    defect_cat[i] <- "moderate defect"
+  }
+  else if (final_master_df$final_defect_length[i] >= 10000 & final_master_df$final_defect_length[i] < 20000) {
+    defect_cat[i] <- "severe defect"
+  }
+  else if (final_master_df$final_defect_length[i] == 20000) {
+    defect_cat[i] <- "max defect"
+  }  
+  else {
+    print("Something went wrong...")
+    print(i)
+  }
+  i=i+1
+}
+#add col to master df
+final_master_df$defect_cat <- defect_cat
+
+table(final_master_df$defect_cat)
+
+#save master df
+write_delim(final_master_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/FINAL_master_df.tsv", delim = "\t", col_names = TRUE)
+
+```
+-------------------------------------------
+
+
+
+
+
+
+
+###
+---------------------------------------
+Method 2. NHS 25% of gene signal method
+---------------------------------------
+###
+```{r setup: read-in ghist outputs}
+#read in results
+fl <- list.files("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/percent_of_gene_txn_method/ghist_output_TTSish", 
+                  pattern = "*.tsv", full.names = TRUE)
+ghist_results <- lapply(fl, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ghist_results) <- gsub("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/percent_of_gene_txn_method/ghist_output_TTSish/|_pooled_ghist.tsv", "", fl)
+
+#fix col names
+colnames(ghist_results$ctl_NHS) <- c("transcriptID", seq(-20000, 20000, by = 1000))
+colnames(ghist_results$ctl_HS) <- c("transcriptID", seq(-20000, 20000, by = 1000))
+colnames(ghist_results$OE_NHS) <- c("transcriptID", seq(-20000, 20000, by = 1000))
+colnames(ghist_results$OE_HS) <- c("transcriptID", seq(-20000, 20000, by = 1000))
+
+
+#limit to 1kb upstream and 20kb ds (21 bins; 0-20)
+  ## bin 0 = -1kb to 
+ghist_results$ctl_HS <- ghist_results$ctl_HS[c(1,22:42)]
+ghist_results$ctl_NHS <- ghist_results$ctl_NHS[c(1,22:42)]
+ghist_results$OE_HS <- ghist_results$OE_HS[c(1,22:42)]
+ghist_results$OE_NHS <- ghist_results$OE_NHS[c(1,22:42)]
+
+
+```
+
+look at ghist signal and ask when it drops below the signal of the first 1kb bin 
+```{r define RT length}
+#ghist data: ghist_results
+
+#### 
+#filter out genes that don't have signal in gene 
+  #last 1kb of gene RPK >=20 (different requirement than exon RPK >=50)
+  #previously used RPK >=10, increased to make sure have good quality genes since coverage is more spotty
+  #filtered out 382 genes 
+ #need this so that can define genes that 
+#### 
+a <- filter(ghist_results$ctl_NHS, ghist_results$ctl_NHS$`0` >= 20)
+b <- filter(ghist_results$ctl_HS, ghist_results$ctl_HS$`0` >= 20)
+c <- filter(ghist_results$OE_NHS, ghist_results$OE_NHS$`0` >= 20)
+d <- filter(ghist_results$OE_HS, ghist_results$OE_HS$`0` >= 20)
+
+exp_IDs <- inner_join(a[1], b[1], by = "transcriptID") %>% inner_join(c[1], by = "transcriptID") %>% inner_join(d[1], by = "transcriptID")
+6901-nrow(exp_IDs) #filtered out 382 genes without high enough coverage
+
+#make exp df list
+defining_RT_df <- list(filter(ghist_results$ctl_NHS, ghist_results$ctl_NHS$transcriptID %in% exp_IDs$transcriptID), 
+                       filter(ghist_results$ctl_HS, ghist_results$ctl_HS$transcriptID %in% exp_IDs$transcriptID), 
+                       filter(ghist_results$OE_NHS, ghist_results$OE_NHS$transcriptID %in% exp_IDs$transcriptID), 
+                       filter(ghist_results$OE_HS, ghist_results$OE_HS$transcriptID %in% exp_IDs$transcriptID))
+names(defining_RT_df) <- c("ctl_NHS", "ctl_HS", "OE_NHS", "OE_HS")
+
+
+
+#### 
+#find end of RT based on dropping below 25% of "1 kb ds "0" bin (aka when is there less than 25% RT?)
+#### 
+
+# ask if signal is >25% of first 1kb signal
+l=1
+OE_boolean_RT_lengths_ls <- list()
+while (l<=length(defining_RT_df)) {
+RT_boolean_df <- data.frame(transcriptID = defining_RT_df[[l]]$transcriptID)
+temp_df <- defining_RT_df[[l]]
+i=3 #col 3 = first kb ds
+  while (i<=ncol(defining_RT_df[[l]])) {
+    #pull out name for col
+    c_name <- colnames(temp_df)[i]
+    #make col of T/F for all genes for that bin
+    RT_boolean_df[,c_name] <- temp_df[,i] > (0.25 * temp_df[,2]) #col 2 = last 1kb of gnbd
+    i=i+1
+  }
+OE_boolean_RT_lengths_ls[[l]] <-  RT_boolean_df
+l=l+1
+}
+names(OE_boolean_RT_lengths_ls) <- names(defining_RT_df)
+
+```
+
+Checking individual genes:
+                    ctl_NHS    ctl_HS    OE_NHS     OE_HS
+ENST00000304952.11  good       good      2kb short  good
+ENST00000421241.7   good       OK        good       OK     *low RT signal, didn't call as RT in HS but I'm ok with that
+ENST00000378546.9   good       good      good       good
+ENST00000378156.9   meh        good      meh        good   *boolean calling is decent but has two false bins in a row early which makes it look like 3kb when it should be closer to 11kb in NHS, which is where the true bins stop
+ENST00000377223.6   good       OK        good       OK     *low RT signal, didn't call as RT in HS but I'm ok with that
+ENST00000375743.9   good       good      good       good
+
+
+
+
+```{r assign RT end}
+#### 
+#find end of RT
+####
+
+l=1
+#RT_end_points_df_ls <- list()
+RT_end_points_df <- data.frame(transcriptID = OE_boolean_RT_lengths_ls[[l]]$transcriptID)
+while (l <= length(OE_boolean_RT_lengths_ls)) {
+#move to new variable to match code written in previous section, copied below
+RT_end_df <- OE_boolean_RT_lengths_ls[[l]]
+
+  #now check how far ds there is still signal
+  RT_end_ls <- vector()
+  r=1
+  while (r<=nrow(RT_end_df)) {
+    c=2
+    while (c<=ncol(RT_end_df)) { #cycle through each col (aka move down 1kb at a time)
+      if (c<(ncol(RT_end_df)) && RT_end_df[r,c] == FALSE && RT_end_df[r,c+1] == FALSE) { #need two false bins in a row to end RT
+        bp <- colnames(RT_end_df)[(c-1)]
+        if (bp == "transcriptID") {
+          bp <- 0 #no defect, don't have 0 col so need to override
+        }
+        RT_end_ls <- append(RT_end_ls, bp)
+        print("option 1")
+        break #stops the loop looking at columns so only one annotation will be made per gene
+      }
+      else if (c==ncol(RT_end_df) && RT_end_df[r,c] == FALSE) { #if just last bin is false, count that as RT end 19kb ds
+        bp <- colnames(RT_end_df)[(c-1)]
+        RT_end_ls <- append(RT_end_ls, bp)
+        print("option 2")
+        break
+      }
+      else if (c==ncol(RT_end_df) && RT_end_df[r,c] == TRUE) { #if last bin is True an hasn't hit two false in a row by last bin, RT is 20kb
+        bp <- colnames(RT_end_df)[(c)]
+        RT_end_ls <- append(RT_end_ls, bp) #if 16 is recorded, it reached 20kb without having two FALSE in a row
+        print("option 3")
+        break
+      }
+      ##troubleshooting
+      #print(c)
+      #print(RT_end_df[r,c]) 
+      #print(RT_end_df[r,c+1])
+      c=c+1 #move to next col
+    } 
+    r=r+1 #move on to next row and check for RT end for next gene
+  }
+#make df
+RT_end_points_df <- cbind(RT_end_points_df, RT_end_ls)
+##make end point length numeric
+RT_end_points_df[,(l+1)] <- as.numeric(RT_end_points_df[,(l+1)])
+l=l+1
+}
+#fix names
+colnames(RT_end_points_df) <- c("transcriptID", names(OE_boolean_RT_lengths_ls))
+
+
+
+#
+### look at gene distibution
+hist(as.numeric(RT_end_points_df$ctl_HS), breaks = 21, freq=TRUE)
+## beautiful, distribution shifts with HS
+
+
+
+####
+###calc RT due to HS
+####
+RT_end_points_df$ctl_RT_length <- RT_end_points_df$ctl_HS - RT_end_points_df$ctl_NHS
+RT_end_points_df$OE_RT_length <- RT_end_points_df$OE_HS - RT_end_points_df$OE_NHS
+RT_end_points_df$change_RT_length_w_OE <- RT_end_points_df$OE_RT_length - RT_end_points_df$ctl_RT_length
+RT_end_points_df$change_HS_RT_length_w_OE <- RT_end_points_df$OE_HS - RT_end_points_df$ctl_HS
+
+
+#
+### does %RT genes look similar to other method?
+nrow(filter(RT_end_points_df, RT_end_points_df$ctl_RT_length > 0)) #4615 genes have RT (70%)
+nrow(filter(RT_end_points_df, RT_end_points_df$OE_RT_length > 0)) #4355 genes have RT (67%)
+
+#what does the distribution look like?
+hist(as.numeric(RT_end_points_df$ctl_RT_length), breaks = 41, freq=TRUE)
+hist(as.numeric(RT_end_points_df$OE_RT_length), breaks = 41, freq=TRUE)
+
+
+#does RT length decrease with OE?
+hist(as.numeric(RT_end_points_df$change_RT_length_w_OE), breaks = 41, freq=TRUE)
+
+summary(RT_end_points_df$change_RT_length_w_OE)
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+#-33000.0  -2000.0      0.0   -577.9   1000.0  29000.0 
+#maybe?? mean is below 0...
+summary(RT_end_points_df$change_HS_RT_length_w_OE)
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+#-20000.0  -1000.0      0.0   -746.6      0.0  20000.0 
+
+
+#save
+write_delim(RT_end_points_df, "/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/percent_of_gene_txn_method/RT_end_points.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+Checking RT length change after OE by eye at individual gene examples
+                    RT_length     HS_RT_end_points
+ENST00000304952.11  bad           meh (1kb difference, hard to say)
+ENST00000421241.7   bad           bad    *they both say -5kb, I don't see any difference by eye
+ENST00000378546.9   OK            OK     *don't see any difference which is what they both say
+ENST00000378156.9   bad           good   *RT goes far past 20kb in both OE and ctl HS so difference in RT_length came from NHS
+ENST00000377223.6   OK            OK     *all show no RT so change is 0 for both too, accurate but not a good test
+ENST00000375743.9   OK            OK     *both show 0 change in RT, which I would agree with
+ENST00000373210.4   bad           bad    *both show -20kb because most show 0 RT, however there is extensive RT, and it doesn't change with OE
+ENST00000389793.7
+
+** it's calling a lot of OE HS genes as 0 RT when there is RT...
+
+*filter for RBBP6 sensitive genes and assess again
+
+
+
+
+
+
+---------------------------------------
+Try Smoothing (boxcar smooth 5kb bins)
+---------------------------------------
+```{r setup: read-in ghist outputs}
+#read in results
+fl <- list.files("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/percent_of_gene_txn_method/ghist_output_TTSish", 
+                  pattern = "*.tsv", full.names = TRUE)
+ghist_results <- lapply(fl, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ghist_results) <- gsub("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/percent_of_gene_txn_method/ghist_output_TTSish/|_pooled_ghist.tsv", "", fl)
+
+#fix col names
+colnames(ghist_results$ctl_NHS) <- c("transcriptID", seq(-20000, 20000, by = 1000))
+colnames(ghist_results$ctl_HS) <- c("transcriptID", seq(-20000, 20000, by = 1000))
+colnames(ghist_results$OE_NHS) <- c("transcriptID", seq(-20000, 20000, by = 1000))
+colnames(ghist_results$OE_HS) <- c("transcriptID", seq(-20000, 20000, by = 1000))
+
+
+#limit to 1kb upstream and 20kb ds (21 bins; 0-20)
+  ## bin 0 = -1kb to 
+ghist_results$ctl_HS <- ghist_results$ctl_HS[c(1,22:42)]
+ghist_results$ctl_NHS <- ghist_results$ctl_NHS[c(1,22:42)]
+ghist_results$OE_HS <- ghist_results$OE_HS[c(1,22:42)]
+ghist_results$OE_NHS <- ghist_results$OE_NHS[c(1,22:42)]
+
+#ghist data: ghist_results
+
+#### 
+#filter out genes that don't have signal in gene 
+  #last 1kb of gene RPK >=20 (different requirement than exon RPK >=50)
+  #previously used RPK >=10, increased to make sure have good quality genes since coverage is more spotty
+  #filtered out 382 genes 
+ #need this so that can define genes that 
+#### 
+a <- filter(ghist_results$ctl_NHS, ghist_results$ctl_NHS$`0` >= 20)
+b <- filter(ghist_results$ctl_HS, ghist_results$ctl_HS$`0` >= 20)
+c <- filter(ghist_results$OE_NHS, ghist_results$OE_NHS$`0` >= 20)
+d <- filter(ghist_results$OE_HS, ghist_results$OE_HS$`0` >= 20)
+
+exp_IDs <- inner_join(a[1], b[1], by = "transcriptID") %>% inner_join(c[1], by = "transcriptID") %>% inner_join(d[1], by = "transcriptID")
+6901-nrow(exp_IDs) #filtered out 382 genes without high enough coverage
+
+#make exp df list
+defining_RT_df <- list(filter(ghist_results$ctl_NHS, ghist_results$ctl_NHS$transcriptID %in% exp_IDs$transcriptID), 
+                       filter(ghist_results$ctl_HS, ghist_results$ctl_HS$transcriptID %in% exp_IDs$transcriptID), 
+                       filter(ghist_results$OE_NHS, ghist_results$OE_NHS$transcriptID %in% exp_IDs$transcriptID), 
+                       filter(ghist_results$OE_HS, ghist_results$OE_HS$transcriptID %in% exp_IDs$transcriptID))
+names(defining_RT_df) <- c("ctl_NHS", "ctl_HS", "OE_NHS", "OE_HS")
+
+
+
+```
+
+
+smoothing
+```{r smooth function}
+smooth_defining_RT_df_A <- defining_RT_df$ctl_NHS
+smooth_defining_RT_df_A[,3] <- rowMeans(defining_RT_df$ctl_NHS[3:7])
+
+n=1
+smooth_defining_RT_ls <- list()
+while (n<=length(defining_RT_df)) {
+  temp_smooth_defining_RT_df <- defining_RT_df[[n]]
+  c=3
+  while (c<=ncol(temp_smooth_defining_RT_df)-4) {
+    temp_smooth_defining_RT_df[,c] <- rowMeans(defining_RT_df[[n]][,c:(c+4)]) #get average of bin through bin+5 for each row and sub into that bin col
+    c=c+1
+  } 
+  #now for the last 5 bins
+  temp_smooth_defining_RT_df[,19] <- rowMeans(defining_RT_df[[n]][,19:22]) #only use avg of last 4 bins
+  temp_smooth_defining_RT_df[,20] <- rowMeans(defining_RT_df[[n]][,20:22]) #only use avg of last 3 bins
+  temp_smooth_defining_RT_df[,21] <- rowMeans(defining_RT_df[[n]][,21:22]) #only use avg of last 2 bins
+  #don't need to replace last bin with itself
+    
+  #add to ls of dfs
+  smooth_defining_RT_ls <- append(smooth_defining_RT_ls, list(temp_smooth_defining_RT_df))
+  print(names(defining_RT_df[n])) #just make sure names are in the right order
+  n=n+1
+}
+#add df names
+names(smooth_defining_RT_ls) <- c("ctl_NHS", "ctl_HS", "OE_NHS", "OE_HS")
+
+```
+
+
+
+look at ghist signal and ask when it drops below the signal of the first 1kb bin 
+```{r smooth: make boolean df}
+
+#### 
+#find end of RT based on dropping below 25% of "1 kb ds "0" bin (aka when is there less than 25% RT?)
+#### 
+
+# ask if signal is >25% of first 1kb signal
+l=1
+smooth_OE_boolean_RT_lengths_ls <- list()
+while (l<=length(smooth_defining_RT_ls)) {
+RT_boolean_df <- data.frame(transcriptID = smooth_defining_RT_ls[[l]]$transcriptID)
+temp_df <- smooth_defining_RT_ls[[l]]
+i=3 #col 3 = first kb ds
+  while (i<=ncol(smooth_defining_RT_ls[[l]])) {
+    #pull out name for col
+    c_name <- colnames(temp_df)[i]
+    #make col of T/F for all genes for that bin
+    RT_boolean_df[,c_name] <- temp_df[,i] > (0.25 * temp_df[,2]) #col 2 = last 1kb of gnbd
+    i=i+1
+  }
+smooth_OE_boolean_RT_lengths_ls[[l]] <-  RT_boolean_df
+l=l+1
+}
+names(smooth_OE_boolean_RT_lengths_ls) <- names(smooth_defining_RT_ls)
+
+```
+
+
+```{r smooth: assign RT end}
+#### 
+#find end of RT
+####
+
+l=1
+#RT_end_points_df_ls <- list()
+smooth_RT_end_points_df <- data.frame(transcriptID = smooth_OE_boolean_RT_lengths_ls[[l]]$transcriptID)
+while (l <= length(smooth_OE_boolean_RT_lengths_ls)) {
+#move to new variable to match code written in previous section, copied below
+RT_end_df <- smooth_OE_boolean_RT_lengths_ls[[l]]
+
+  #now check how far ds there is still signal
+  RT_end_ls <- vector()
+  r=1
+  while (r<=nrow(RT_end_df)) {
+    c=2
+    while (c<=ncol(RT_end_df)) { #cycle through each col (aka move down 1kb at a time)
+      if (c<(ncol(RT_end_df)) && RT_end_df[r,c] == FALSE && RT_end_df[r,c+1] == FALSE) { #need two false bins in a row to end RT
+        bp <- colnames(RT_end_df)[(c-1)]
+        if (bp == "transcriptID") {
+          bp <- 0 #no defect, don't have 0 col so need to override
+        }
+        RT_end_ls <- append(RT_end_ls, bp)
+        print("option 1")
+        break #stops the loop looking at columns so only one annotation will be made per gene
+      }
+      else if (c==ncol(RT_end_df) && RT_end_df[r,c] == FALSE) { #if just last bin is false, count that as RT end 19kb ds
+        bp <- colnames(RT_end_df)[(c-1)]
+        RT_end_ls <- append(RT_end_ls, bp)
+        print("option 2")
+        break
+      }
+      else if (c==ncol(RT_end_df) && RT_end_df[r,c] == TRUE) { #if last bin is True an hasn't hit two false in a row by last bin, RT is 20kb
+        bp <- colnames(RT_end_df)[(c)]
+        RT_end_ls <- append(RT_end_ls, bp) #if 16 is recorded, it reached 20kb without having two FALSE in a row
+        print("option 3")
+        break
+      }
+      ##troubleshooting
+      #print(c)
+      #print(RT_end_df[r,c]) 
+      #print(RT_end_df[r,c+1])
+      c=c+1 #move to next col
+    } 
+    r=r+1 #move on to next row and check for RT end for next gene
+  }
+#make df
+smooth_RT_end_points_df <- cbind(smooth_RT_end_points_df, RT_end_ls)
+##make end point length numeric
+smooth_RT_end_points_df[,(l+1)] <- as.numeric(smooth_RT_end_points_df[,(l+1)])
+l=l+1
+}
+#fix names
+colnames(smooth_RT_end_points_df) <- c("transcriptID", names(OE_boolean_RT_lengths_ls))
+
+
+
+
+####
+###calc RT due to HS
+####
+smooth_RT_end_points_df$ctl_RT_length <- smooth_RT_end_points_df$ctl_HS - smooth_RT_end_points_df$ctl_NHS
+smooth_RT_end_points_df$OE_RT_length <- smooth_RT_end_points_df$OE_HS - smooth_RT_end_points_df$OE_NHS
+smooth_RT_end_points_df$change_RT_length_w_OE <- smooth_RT_end_points_df$OE_RT_length - smooth_RT_end_points_df$ctl_RT_length
+smooth_RT_end_points_df$change_HS_RT_length_w_OE <- smooth_RT_end_points_df$OE_HS - smooth_RT_end_points_df$ctl_HS
+
+
+
+#save
+write_delim(smooth_RT_end_points_df, "/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/percent_of_gene_txn_method/smooth_RT_end_points.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+check individual genes
+(-20kb change w/OE)
+ENST00000342232.5    JPH1    RT longer than 20kb in both ctl and OE HS, also long NHS RT that's not registering
+ENST00000375120.4    OTUD3   long RT, maybe shorter past 20kb but not within 20kb
+ENST00000370841.9    ACADM   doesn't look different with OE
+
+
+
+filter for RBBP6 sensitive genes
+```{r}
+#make df with RBBP6 sensitive genes
+UC_FC_df <- read.table("04_analysis/uncleaved_reads/FC_uncleaved_reads_gene_norm.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+t <- filter(UC_FC_df, UC_FC_df$RBBP6_sensitive == "sensitive")
+
+smooth_RBBP6_sensitive_RT_end_points_df <- filter(smooth_RT_end_points_df, smooth_RT_end_points_df$transcriptID %in% t$transcriptID)
+
+write_delim(smooth_RBBP6_sensitive_RT_end_points_df, "/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/percent_of_gene_txn_method/smooth_RBBP6_sensitive_RT_end_points.tsv", delim = "\t", col_names = TRUE)
+```
+
+
+check individual genes
+ENST00000342232.5    JPH1    -26kb    -20kb    RT longer than 20kb in both ctl and OE HS, also long NHS RT that's not registering
+ENST00000397130.8    LRRC5   -20kb    -20kb    long RT past 20kb, doesn't change with OE and certainly not to 0
+ENST00000261349.9    LRP6    -18kb    -19kb    long RT NHS and HS past 20kb, HS RT doesn't decrease with OE
+ENST00000312561.9    RESF1   -19kb    -19kb    long HS RT, maybe decreases with OE but not in 20kb ds window
+
+ENST00000244230.7 MPHOSPH10  -5kb     -5kb     long HS RT, maybe decreases with OE but not in 20kb ds window
+ENST00000355315.8   CHCHD7   -5kb     -5kb     long HS RT, maybe decreases with OE but not in 20kb ds window
+ENST00000286614.11   MMP16   -5kb     -5kb     actually looks like RT length increases with OE past the 20kb window
+
+*saved browser images to /Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/percent_of_gene_txn_method/smoothedRT_browser_traces AND OneDrive
+
+**Doesn't look like smoothing helped to more accurately label RT end**
+
+
+
+---------------------------------------
+Try requiring three FALSE bins in a row
+**doesn't work yet**
+```{r}
+#### 
+#find end of RT
+####
+
+l=1
+#RT_end_points_df_ls <- list()
+RT_end_points_df <- data.frame(transcriptID = RT_end_df$transcriptID)
+while (l <= length(OE_boolean_RT_lengths_ls)) {
+#move to new variable to match code written in previous section, copied below
+RT_end_df <- OE_boolean_RT_lengths_ls[[l]]
+
+  #now check how far ds there is still signal
+  RT_end_ls <- vector()
+  r=1
+  while (r<=nrow(RT_end_df)) {
+    c=2
+    while (c<=ncol(RT_end_df)-1) { #cycle through each col (aka move down 1kb at a time) max c=20 (18kb)
+      if (c<(ncol(RT_end_df)-2) && RT_end_df[r,c] == FALSE && RT_end_df[r,c+1] == FALSE && RT_end_df[r,c+2] == FALSE) { #need 3 false bins in a row to end RT
+        bp <- colnames(RT_end_df)[(c-1)]
+        if (bp == "transcriptID") {
+          bp <- 0 #no defect, don't have 0 col so need to override
+        }
+        temp_RT_end_df <- rbind(temp_RT_end_df, list(RT_end_df[r,1], ))
+        #RT_end_ls <- append(RT_end_ls, bp)
+        #print("option 1")
+        break #stops the loop looking at columns so only one annotation will be made per gene
+      }
+      else if (c==ncol(RT_end_df)-1 && RT_end_df[r,c] == FALSE && RT_end_df[r,c+1] == FALSE) { #if just last two bins are false, RT end = 18kb
+        bp <- colnames(RT_end_df)[(c-1)]
+        RT_end_ls <- append(RT_end_ls, bp)
+        #print("option 2")
+        break
+      }
+      else if (c==ncol(RT_end_df)-1 && RT_end_df[r,c+1] == FALSE) { #if just last bin is false, count that as RT end 19kb ds
+        bp <- colnames(RT_end_df)[(c-1)]
+        RT_end_ls <- append(RT_end_ls, bp)
+        #print("option 2")
+        break
+      }
+      else if (c==ncol(RT_end_df)-1 && RT_end_df[r,c] == TRUE) { #if last bin is True an hasn't hit 3 false in a row by last bin, RT is 20kb
+        bp <- colnames(RT_end_df)[(c)]
+        RT_end_ls <- append(RT_end_ls, bp) #if 16 is recorded, it reached 20kb without having 3 FALSE in a row
+        #print("option 3")
+        break
+      }
+      else {
+        bp <- 111
+        RT_end_ls <- append(RT_end_ls, bp)
+        print(paste0(RT_end_df[r,1], " ", colnames(RT_end_df)[(c)]))
+      }
+      ##troubleshooting
+      #print(c)
+      #print(RT_end_df[r,c]) 
+      #print(RT_end_df[r,c+1])
+      c=c+1 #move to next col
+    } 
+    r=r+1 #move on to next row and check for RT end for next gene
+  }
+#make df
+RT_end_points_df <- cbind(RT_end_points_df, RT_end_ls)
+##make end point length numeric
+RT_end_points_df[,(l+1)] <- as.numeric(RT_end_points_df[,(l+1)])
+l=l+1
+}
+
+#fix names
+colnames(RT_end_points_df) <- c("transcriptID", names(OE_boolean_RT_lengths_ls))
+
+
+
+#
+### look at gene distibution
+hist(as.numeric(RT_end_points_df$ctl_HS), breaks = 21, freq=TRUE)
+## beautiful, distribution shifts with HS
+
+
+
+####
+###calc RT due to HS
+####
+RT_end_points_df$ctl_RT_length <- RT_end_points_df$ctl_HS - RT_end_points_df$ctl_NHS
+RT_end_points_df$OE_RT_length <- RT_end_points_df$OE_HS - RT_end_points_df$OE_NHS
+RT_end_points_df$change_RT_length_w_OE <- RT_end_points_df$OE_RT_length - RT_end_points_df$ctl_RT_length
+RT_end_points_df$change_HS_RT_length_w_OE <- RT_end_points_df$OE_HS - RT_end_points_df$ctl_HS
+
+```
+

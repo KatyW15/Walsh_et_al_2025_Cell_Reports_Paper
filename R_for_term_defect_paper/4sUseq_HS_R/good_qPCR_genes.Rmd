@@ -1,0 +1,102 @@
+---
+title: "good_qPCR_genes"
+author: "Katy Walsh"
+date: "6/5/2023"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+putting together data to select good example genes for qPCR analysis of CPSF73 OE and ChIP
+requirements:
+1. Signal in gnbd for both NHS and HS (gnbd RPK)
+2. High “percentage” read through (magnitude of ds/gnbd)
+3. High uncleaved reads
+4. Can see end of defect (HS defect length <20kb? Manually check some max defect ones to see if can see just out of range?)
+5. Clear Pol II profile (check manually when have short list)
+6. variety of term defect and no defect genes for comparison (MALAT1 or non-CPSF73 gene for control?)
+
+```{r setup}
+library(tidyverse)
+library(grid)
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+library(ggfortify)
+library(gtable)
+
+setwd("~/Desktop/Katy/HS_4sU-Seq_2021")
+
+```
+
+
+```{r read in files needed}
+#starting master df:
+master_df <- read_tsv("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/FINAL_master_df.tsv", col_names = TRUE)
+#list of genes with signal in both NHS and HS for 4sU data (from 06a):
+AND_expressed_genes_rpk <- read_tsv("06_defining_gene_lists/defining_expressed_genes/AND_method_expressed_genes_test.tsv", col_names = TRUE)
+#magnitude of RT (from 07d):
+mag_defect_df <- read_tsv("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/defect_magnatude/magnatude_defect_by_gene.tsv", col_names = TRUE)
+
+#uncleaved reads from 07h
+uncleaved_reads_df <- read_tsv("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/exp_avg_norm_uncleaved_counts.tsv", col_names = TRUE)
+
+#gnbd RPK
+exp_norm_gnbd_counts_df <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/exp_norm_gnbd_counts.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+```
+
+```{r make one df to assess all 6 metrics}
+
+picking_genes_df <- data.frame(gene_ID = master_df$transcriptID, 
+                term_defect = master_df$term_defect_final,
+                defect_length = master_df$final_defect_length,
+                defect_cat = master_df$defect_cat,
+                long_NHS_term = master_df$longRT,
+                NHS_term_length = master_df$NHS_end_point.1kb_method,
+                uncleaved_reads_cat = master_df$cleaved_cat                )
+
+#add uncleaved reads FC numbers
+picking_genes_df$uncleaved_reads_FC <- uncleaved_reads_df$FC
+
+#add mag defect
+# genes in same order?
+j <- mag_defect_df[c(1,7,8)]
+picking_genes_df <- left_join(picking_genes_df, j)
+
+
+#add gnbd RPK
+temp <- exp_norm_gnbd_counts_df[c(1,12,13)]
+colnames(temp) <- c("gene_ID", "NHS_gnbd_RPK", "HS_gnbd_RPK")
+picking_genes_df <- left_join(picking_genes_df, temp, by = "gene_ID")
+
+#save
+write_delim(picking_genes_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/good_qPCR_genes/data_for_picking_genes.tsv", delim = "\t", col_names = TRUE)
+```
+
+
+```{r filter out some of the genes}
+#run whole section at once if change any thresholds
+good_genes_df <- picking_genes_df
+
+#RPK
+good_genes_df <- filter(good_genes_df, good_genes_df$NHS_gnbd_RPK >= 100) #random threshold
+good_genes_df <- filter(good_genes_df, good_genes_df$HS_gnbd_RPK >= 100)
+
+#defect magnitude
+good_genes_df <- filter(good_genes_df, good_genes_df$mag_FC > 2) #random threshold
+good_genes_df <- filter(good_genes_df, good_genes_df$HS_ds_d_gnbd > 1000 & good_genes_df$HS_ds_d_gnbd < 7000) #checking random genes, looks like >6000 has more signal ds than in gnbd and around 5/6k is where signal is even through gnbd into ds, around 3000 ds starts being less than gnbd
+
+#uncleaved reads
+good_genes_df <- filter(good_genes_df, is.finite(good_genes_df$uncleaved_reads_FC)) #remove any NA and INF for uncleaved reads
+good_genes_df <- filter(good_genes_df, good_genes_df$uncleaved_reads_FC > 5) #want high uncleaved reads, randomly chosen threshold
+
+#export to excel and check other metrics mannually
+write_delim(good_genes_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/good_qPCR_genes/filtered_candidate_gene_list.tsv", delim = "\t", col_names = TRUE)
+```
+
+
+
+*need to pick from different list for nd controls
+
+

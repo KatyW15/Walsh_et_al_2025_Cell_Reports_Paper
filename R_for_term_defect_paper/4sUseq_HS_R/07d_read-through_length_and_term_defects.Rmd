@@ -1,0 +1,2476 @@
+---
+title: "07d_read-through_length_and_term_defects"
+author: "Katy Walsh"
+date: "2/8/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+________________________________________________________________________________________________________________________
+defining termination defect as "increased signal downstream of genes", specifically "increase in length of ds region with signal"
+"an increase in length, or appearance, of read-through transcription due to HS"
+
+Steps to identify genes with defects:
+(using iso(stranded)_exp_clean genes)
+1. Do genes have signal in the 5kb immediatly ds of TTS? (NHS and HS, avg reps, >80% base coverage)
+2. If yes, how far does that signal extend ds? (NHS and HS, avg reps, homer hist function to sum reads by 1kb bins and find first bin where signal dips below 25% of initial 5kb signal (*check for less than 25% signal in 2 consecutive bins) = end of read-through)
+3. Does length of read-through increase with HS? (HS-NHS length >= 1kb = term defect)
+extra step: filter out genes that have rpk < 50 in NHS condition (nothing to compare so can't say if has defect or not)
+
+bonus: look into genes where r-t length doesn't change with HS -> check if signal increases or looks like they have defects
+________________________________________________________________________________________________________________________
+
+
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(grid)
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+library(ggfortify)
+library(gtable)
+
+#wd: setwd("~/Desktop/Katy/HS_4sU-Seq_2021")
+
+```
+
+
+1. assessing signal 5kb ds of TTS for iso_exp_clean genes (stranded)
+bedtools coverage command for 5kb ds of genes
+--> first, need to make bed file for 5kb windows
+```{r make bed file for 5kb ds TTS}
+#read in iso_exp_clean_genes
+iso_exp_clean_genes_ls <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/06_defining_gene_lists/FINAL_clean_genes_list_strandediso_exp_genes.txt", header = FALSE, sep="\n", stringsAsFactors = FALSE, quote = "")
+
+#read in all MANE genes bed file
+MANE_all_gnbd_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v095_whole_gene.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+MANE_all_gnbd_bed <- MANE_all_gnbd_bed[1:6]
+colnames(MANE_all_gnbd_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+#make iso_exp_clean_genes_bed
+iso_exp_clean_genes_bed <- filter(MANE_all_gnbd_bed, MANE_all_gnbd_bed$id %in% iso_exp_clean_genes_ls$V1)
+
+
+
+#make 5kb bed windows
+ds_5kb_window_bed <- iso_exp_clean_genes_bed #so we don't accidentally overwrite the gnbd bed file
+
+i=1
+while(i <= nrow(ds_5kb_window_bed)){
+  #if on + strand, start = TSS and end = TTS
+  #for downstream window: start = end & end = end - 5kb
+  if(ds_5kb_window_bed$strand[i]=="+"){
+    ds_5kb_window_bed$start[i] = ds_5kb_window_bed$end[i]
+    ds_5kb_window_bed$end[i] = ds_5kb_window_bed$end[i] + 5000
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #for downstream window: start = start - 5000 & end = start (remeber to set end = start before changing start to not = TTS anymore)
+  else if(ds_5kb_window_bed$strand[i]=="-"){
+    ds_5kb_window_bed$end[i] = ds_5kb_window_bed$start[i]
+    ds_5kb_window_bed$start[i] = ds_5kb_window_bed$start[i] - 5000
+    }
+  else{
+    print("no strand annotation!!")
+  }
+  i = i+1
+}
+#remove any negative values
+ds_5kb_window_bed <- filter(ds_5kb_window_bed, ds_5kb_window_bed$start >= 0)
+ds_5kb_window_bed <- filter(ds_5kb_window_bed, ds_5kb_window_bed$end >= 0)
+#check window size
+x<- abs(ds_5kb_window_bed$start - ds_5kb_window_bed$end) == 5000
+stopifnot(x)
+summary(x) #all true
+
+
+#save
+write_delim(ds_5kb_window_bed, "07_analysis/07d_read_through_length_and_term_defects/bed_files/ds_5kb_window_stranded_iso_exp_clean_genes.bed", delim = "\t", col_names = FALSE)
+```
+
+--> now run bedtools coverage command
+#<Bed_Tools> bedtools coverage -s -a <bed annotation file> -b <reads bed file> > output.bed
+    
+    see bash script 07d_5kb_ds_bedtools_coverage.sh
+
+bedtools coverage output:
+After each interval in A, bedtools coverage will report:
+V7: The number of features in B that overlapped (by at least one base pair) the A interval.
+V8: The number of bases in A that had non-zero coverage from features in B.
+V9: The length of the entry in A.
+V10: The fraction of bases in A that had non-zero coverage from features in B.
+(A = gnbd or 20kb ds bed file, B = reads bed file)
+
+
+--> then ask if coverage for that 5kb is >80%
+```{r ask if coverage >80%}
+#read in bedtools outputs
+fl <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/bed_files/ds_5kb_coverage_outputs", 
+                  pattern = "*_counts.bed",
+                  full.names = TRUE)
+coverage <- lapply(fl, read.table, header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(coverage) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/bed_files/ds_5kb_coverage_outputs/|_gnbd_counts.bed", "", fl)
+#these say gnbd because I forgot to change that in the bash script but they're for 5kb ds
+
+#make one DF of coverage numbers
+ds_5kb_coverage_df <- data.frame(transcriptID = coverage$rep1_NHS$V4,
+                                 rep1_NHS = coverage$rep1_NHS[,10],
+                                 rep2_NHS = coverage$rep2_NHS[,10],
+                                 rep3_NHS = coverage$rep3_NHS[,10],
+                                 rep1_HS = coverage$rep1_HS[,10],
+                                 rep2_HS = coverage$rep2_HS[,10],
+                                 rep3_HS = coverage$rep3_HS[,10])
+#make avg for reps
+ds_5kb_coverage_df$NHS_avg <- (ds_5kb_coverage_df$rep1_NHS + ds_5kb_coverage_df$rep2_NHS + ds_5kb_coverage_df$rep3_NHS) /3
+ds_5kb_coverage_df$HS_avg <- (ds_5kb_coverage_df$rep1_HS + ds_5kb_coverage_df$rep2_HS + ds_5kb_coverage_df$rep3_HS) /3
+
+
+#is coverage >80% column (aka is there read-through)
+ds_5kb_coverage_df$NHS_RT <- ds_5kb_coverage_df$NHS_avg >= 0.8
+ds_5kb_coverage_df$HS_RT <- ds_5kb_coverage_df$HS_avg >= 0.8
+```
+
+```{r start master df}
+master_df <- ds_5kb_coverage_df[c(1,8:11)]
+colnames(master_df) <- c("transcriptID", "NHS_5kb_coverage_avg", "HS_5kb_coverage_avg", "NHS_5kb_read-through", "HS_5kb_read-through")
+```
+
+
+
+
+2. If yes, how far does that signal extend ds? (NHS and HS, avg reps, homer hist function to sum reads by 1kb bins and find first bin where signal dips below 25% of initial 5kb signal (*check for less than 25% signal in 2 consecutive bins) = end of read-through)
+
+--> get list of genes with NHS or HS having R-T
+```{r list of genes with R-T}
+RT_genes <- filter(ds_5kb_coverage_df, ds_5kb_coverage_df$NHS_RT == TRUE | ds_5kb_coverage_df$HS_RT == TRUE)
+#check
+nrow(filter(ds_5kb_coverage_df, ds_5kb_coverage_df$NHS_RT == FALSE & ds_5kb_coverage_df$HS_RT == FALSE))
+1527 + 4487 == 6014 # good, all genes accounted for
+
+#RT_genes_IDs <- RT_genes$transcriptID  #don't need this
+```
+
+--> make GTF file of those genes for homer command
+```{r filter GTF file}
+#import MANE GTF with IDs already in separate col
+MANE_GTF <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/06_defining_gene_lists/custom_MANE_GTF_files/MANE_GTF_with_ID_names_col.gtf", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+RT_MANE_GTF <- filter(MANE_GTF, MANE_GTF$IDs %in% RT_genes$transcriptID)
+#check
+length(unique(RT_MANE_GTF$IDs)) #good, 4487 unique gene IDs which matches num of RT genes
+#get rid of IDs col because not part of official GTF format, just useful for filtering
+RT_MANE_GTF <- RT_MANE_GTF[1:9]
+
+write_delim(RT_MANE_GTF, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/genes_w_read_through_MANE_v095.gtf", delim = "\t", col_names = FALSE)
+```
+
+JK actually need bed file of TTS coordinates
+```{r make TTS bed file}
+#import bed file of all MANE genes (same as in step 1)
+MANE_all_gnbd_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v095_whole_gene.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+MANE_all_gnbd_bed <- MANE_all_gnbd_bed[1:6]
+colnames(MANE_all_gnbd_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+#filter for iso_exp_clean genes (same as step 1)
+iso_exp_clean_genes_bed <- filter(MANE_all_gnbd_bed, MANE_all_gnbd_bed$id %in% iso_exp_clean_genes_ls$V1)
+
+#make start and end both = TTS
+TTS_bed <- iso_exp_clean_genes_bed
+
+i=1
+while(i <= nrow(TTS_bed)){
+  #if on + strand, start = TSS and end = TTS
+  if(TTS_bed$strand[i]=="+"){
+    TTS_bed$start[i] = TTS_bed$end[i]
+  } 
+  #if on - strand, end = TSS and start = TTS
+  else if(TTS_bed$strand[i]=="-"){
+    TTS_bed$end[i] = TTS_bed$start[i]
+    }
+  else{
+    print("no strand annotation!!")
+  }
+  i = i+1
+}
+
+#check 
+summary(TTS_bed$start == TTS_bed$end) #good, all true
+
+#save
+write_delim(TTS_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/annotation_bed_files/iso_exp_clean_genes_TTS.bed", delim = "\t", col_names = FALSE)
+```
+
+
+
+--> homer annotatePeaks.pl -ghist
+#annotatePeaks.pl <bed file of TTS> hg38 -size 40000 -hist 1000 -norm 1E8 -ghist -strand + -d <tag directory> > <output file>
+    bed file should have start and end both = TTS and then size gives the window to count over (20kb)
+        "peak" = TTS to get this to do what we want (not what it's really designed for)
+        -strand + should count reads only on same strand as gene/TTS annotation but should double check that genes on - strand still have counts
+*homer centers on TTS so need window to be -40000 to get 20kb ds*
+notes about ghist output:
+    (when using TTS annotation input) gene body is always annotated in the -kb (left) of 0 and ds is always +kb, no matter what strand the gene is on
+    the 0 column is sum of reads -1kb (or whatever bin size) to the TTS, so for looking at reads ds of the TTS you want to start at the bin after 0 (i.e. 1kb-20kb for this)
+    
+    see bash script 07d_ghist.sh
+
+--> find end of RT
+```{r setup: read-in ghist outputs}
+#read in results
+fl <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/ghist_size20kb_outputs", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+ghist_results <- lapply(fl, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ghist_results) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/ghist_size20kb_outputs/|.tsv", "", fl)
+
+#fix col names
+colnames(ghist_results$rep1_HS) <- c("transcriptID", seq(-20000, 20000, by = 1000))
+colnames(ghist_results$rep2_HS) <- c("transcriptID", seq(-20000, 20000, by = 1000))
+colnames(ghist_results$rep3_HS) <- c("transcriptID", seq(-20000, 20000, by = 1000))
+colnames(ghist_results$rep1_NHS) <- c("transcriptID", seq(-20000, 20000, by = 1000))
+colnames(ghist_results$rep2_NHS) <- c("transcriptID", seq(-20000, 20000, by = 1000))
+colnames(ghist_results$rep3_NHS) <- c("transcriptID", seq(-20000, 20000, by = 1000))
+
+nrow(ghist_results$rep1_HS)
+nrow(ghist_results$rep1_NHS)
+nrow(ghist_results$rep2_HS)
+nrow(ghist_results$rep2_NHS)
+nrow(ghist_results$rep3_HS)
+nrow(ghist_results$rep3_NHS) #all have 6014 genes, good
+```
+
+```{r avg replicates}
+NHS_avg_ghist_results <- data.frame(transcriptID = ghist_results$rep1_NHS$transcriptID)
+HS_avg_ghist_results <- data.frame(transcriptID = ghist_results$rep1_NHS$transcriptID)
+
+i=2
+while (i<=ncol(ghist_results$rep1_NHS)) {
+  c_name <- colnames(ghist_results$rep1_NHS)[i]
+  NHS_avg_ghist_results[,c_name] <- (ghist_results$rep1_NHS[,i] + ghist_results$rep2_NHS[,i] + ghist_results$rep3_NHS[,i]) / 3
+  HS_avg_ghist_results[,c_name] <- (ghist_results$rep1_HS[,i] + ghist_results$rep2_HS[,i] + ghist_results$rep3_HS[,i]) / 3
+  i=i+1
+}
+
+#make list to keep them together
+avg_ghist_results <- list(NHS = NHS_avg_ghist_results, HS = HS_avg_ghist_results)
+```
+
+
+```{r find signal drop off}
+#avg first 5kb and put in refrence df
+first_5kb_signal <- data.frame(transcriptID = avg_ghist_results$NHS$transcriptID, 
+                               NHS = rowSums(avg_ghist_results$NHS[,23:27]) / 4,
+                               HS = rowSums(avg_ghist_results$HS[,23:27]) / 4)
+
+first_1kb_signal <- data.frame(transcriptID = avg_ghist_results$NHS$transcriptID, 
+                               NHS = avg_ghist_results$NHS[,23],
+                               HS = avg_ghist_results$HS[,23])
+
+gene_last_1kb_signal <- data.frame(transcriptID = avg_ghist_results$NHS$transcriptID, 
+                               NHS = avg_ghist_results$NHS[,22],
+                               HS = avg_ghist_results$HS[,22])
+
+
+
+# ask if signal is >25% of first 5kb signal
+NHS_boolean_df <- data.frame(IDs = avg_ghist_results$NHS$transcriptID)
+
+i=28 
+while (i<=ncol(avg_ghist_results[["NHS"]])) {
+  #pull out name for col
+  c_name <- colnames(avg_ghist_results[["NHS"]])[i]
+  #make col of T/F for all genes for that bin
+  NHS_boolean_df[,c_name] <- avg_ghist_results[["NHS"]][,i] > (0.25 * first_5kb_signal$NHS) 
+    #did something clever and named cols in first_5kb df the same as names in avg_ghist_results so can use the same variable here
+  
+  i=i+1
+}
+
+
+#repeat for HS
+HS_boolean_df <- data.frame(IDs = avg_ghist_results$HS$transcriptID)
+
+i=28
+while (i<=ncol(avg_ghist_results[["HS"]])) {
+  #pull out name for col
+  c_name <- colnames(avg_ghist_results[["HS"]])[i]
+  #make col of T/F for all genes for that bin
+  HS_boolean_df[,c_name] <- avg_ghist_results[["HS"]][,i] > (0.25 * first_5kb_signal$HS) 
+    #did something clever and named cols in first_5kb df the same as names in avg_ghist_results so can use the same variable here
+  
+  i=i+1
+}
+
+
+#put both in list
+is_signal_list <- list(NHS = NHS_boolean_df, HS = HS_boolean_df)
+```
+
+```{r annotate end of RT}
+#filter out genes w/o 5kb R-T
+NHS_RT_genes <- filter(master_df, master_df$`NHS_5kb_read-through` == TRUE) #1646 genes
+HS_RT_genes <- filter(master_df, master_df$`HS_5kb_read-through` == TRUE) #4398 genes
+
+NHS_is_signal <- filter(is_signal_list$NHS, is_signal_list$NHS$IDs %in% NHS_RT_genes$transcriptID)
+HS_is_signal <- filter(is_signal_list$HS, is_signal_list$HS$IDs %in% HS_RT_genes$transcriptID)
+
+#now check how far ds signal is
+NHS_RT_end_ls <- vector()
+r=1
+while (r<=nrow(NHS_is_signal)) {
+  c=2
+  while (c<=ncol(NHS_is_signal)) {
+    if (c<(ncol(NHS_is_signal)) && NHS_is_signal[r,c] == FALSE && NHS_is_signal[r,c+1] == FALSE) {
+      bp <- colnames(NHS_is_signal)[(c-1)]
+      if (bp == "IDs") {
+        bp <- 5000
+      }
+      NHS_RT_end_ls <- append(NHS_RT_end_ls, bp)
+      print("option 1")
+      break #stops the loop looking at columns so only one annotation will be made per gene
+    }
+    else if (c==ncol(NHS_is_signal) && NHS_is_signal[r,c] == FALSE) {
+      bp <- colnames(NHS_is_signal)[(c-1)]
+      NHS_RT_end_ls <- append(NHS_RT_end_ls, bp)
+      print("option 2")
+      break
+    }
+    else if (c==ncol(NHS_is_signal) && NHS_is_signal[r,c] == TRUE) {
+      bp <- colnames(NHS_is_signal)[(c)]
+      NHS_RT_end_ls <- append(NHS_RT_end_ls, bp) #if 16 is recorded, it reached 20kb without having two FALSE in a row
+      print("option 3")
+      break
+    }
+    #print(c)
+    #print(NHS_is_signal[r,c]) 
+    #print(NHS_is_signal[r,c+1])
+    c=c+1
+  }
+  r=r+1
+}
+
+#make df
+NHS_end_points_df <- data.frame(transcriptID = NHS_is_signal$IDs, NHS_end_point = NHS_RT_end_ls)
+
+
+#repeat for HS
+HS_RT_end_ls <- vector()
+r=1
+while (r<=nrow(HS_is_signal)) {
+  c=2
+  while (c<=ncol(HS_is_signal)) {
+    if (c<(ncol(HS_is_signal)) && HS_is_signal[r,c] == FALSE && HS_is_signal[r,c+1] == FALSE) {
+      bp <- colnames(HS_is_signal)[(c-1)]
+      if (bp == "IDs") {
+        bp <- 5000
+      }
+      HS_RT_end_ls <- append(HS_RT_end_ls, bp)
+      print("option 1")
+      break #stops the loop looking at columns so only one annotation will be made per gene
+    }
+    else if (c==ncol(HS_is_signal) && HS_is_signal[r,c] == FALSE) {
+      bp <- colnames(HS_is_signal)[(c-1)]
+      HS_RT_end_ls <- append(HS_RT_end_ls, bp)
+      print("option 2")
+      break
+    }
+    else if (c==ncol(HS_is_signal) && HS_is_signal[r,c] == TRUE) {
+      bp <- colnames(HS_is_signal)[(c)]
+      HS_RT_end_ls <- append(HS_RT_end_ls, bp) #if 16 is recorded, it reached 20kb without having two FALSE in a row
+      print("option 3")
+      break
+    }
+    #print(c)
+    #print(HS_is_signal[r,c]) 
+    #print(HS_is_signal[r,c+1])
+    c=c+1
+  }
+  r=r+1
+}
+
+HS_end_points_df <- data.frame(transcriptID = HS_is_signal$IDs, HS_end_point = HS_RT_end_ls)
+
+
+#now need to add to the master df and fill in for missing genes
+master_df <- full_join(master_df, NHS_end_points_df, by = "transcriptID")
+master_df <- full_join(master_df, HS_end_points_df, by="transcriptID")
+#replace NAs with 0
+master_df[is.na(master_df)] <- 0
+
+#save
+write_delim(master_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/master_df.tsv", delim = "\t", col_names = TRUE)
+```
+
+
+Filter: remove genes not expressed in NHS or HS
+```{r remove unexpressed genes}
+#read in rpk data
+rpk_df <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/06_defining_gene_lists/defining_expressed_genes/ALL_MANE_avg_exon_rpk_norm.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+filtered_rpk_df <- filter(rpk_df, (rpk_df$MANE_ID %in% master_df$transcriptID))
+
+#now fileter master_df based on expression data
+t <- filter(filtered_rpk_df, filtered_rpk_df$NHS_exon_rpk >= 10 & filtered_rpk_df$HS_exon_rpk >= 10) #removed just under 1000 genes
+master_df_filtered <- filter(master_df, master_df$transcriptID %in% t$MANE_ID)
+
+
+#save
+write_delim(master_df_filtered, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/master_df_expressed_genes.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+
+3. how much more RT is there after HS?
+HS - NHS
+```{r HS-NHS}
+#read in master_df if needed
+master_df <- read.table( "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/master_df.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+#add onto master_df
+master_df$defect_length <- master_df$HS_end_point - master_df$NHS_end_point
+
+#save (will overwrite previous version to add a column)
+write_delim(master_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/master_df.tsv", delim = "\t", col_names = TRUE)
+
+
+###repeat for expressed genes only
+#read in master_df_filtered if needed
+master_df_filtered <- read.table( "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/master_df_expressed_genes.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+#add onto master_df_filtered
+master_df_filtered$defect_length <- master_df_filtered$HS_end_point - master_df_filtered$NHS_end_point
+
+#save (will overwrite previous version to add a column)
+write_delim(master_df_filtered, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/master_df_expressed_genes.tsv", delim = "\t", col_names = TRUE)
+
+
+#term defect Y/N col
+master_df_filtered$term_defect <- master_df_filtered$defect_length >0
+
+#save (will overwrite previous version to add a column)
+write_delim(master_df_filtered, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/master_df_expressed_genes.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+export results:
+```{r making term defect and no defect lists and bed files}
+#pull out defect and no defect gene IDs
+term_defect_genes <- filter(master_df_filtered, master_df_filtered$term_defect == TRUE)
+term_defect_IDs <- as.data.frame(term_defect_genes$transcriptID) #3959 genes
+
+no_defect_genes <- filter(master_df_filtered, master_df_filtered$term_defect == FALSE)
+no_defect_IDs <- as.data.frame(no_defect_genes$transcriptID) #2019 genes
+
+#write-out
+write_delim(term_defect_IDs, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/term_defect_genes_expressed_genes.txt", delim = "\n", col_names = FALSE)
+write_delim(no_defect_IDs, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/no_defect_genes_expressed_genes.txt", delim = "\n", col_names = FALSE)
+
+
+### make bed files ###
+MANE_all_gnbd_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v095_whole_gene.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+MANE_all_gnbd_bed <- MANE_all_gnbd_bed[1:6]
+colnames(MANE_all_gnbd_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+#term defect genes bed file
+term_defect_bed <- filter(MANE_all_gnbd_bed, MANE_all_gnbd_bed$id %in% term_defect_IDs[,1])
+#no defect genes bed file
+no_defect_bed <- filter(MANE_all_gnbd_bed, MANE_all_gnbd_bed$id %in% no_defect_IDs[,1])
+
+#write-out
+write_delim(term_defect_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/term_defect_genes_expressed_genes.bed", delim = "\t", col_names = FALSE)
+write_delim(no_defect_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/no_defect_genes_expressed_genes.bed", delim = "\t", col_names = FALSE)
+
+
+
+### 20kb ds bed files ###
+MANE_all_20kbds_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v095_20kb_ds.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+colnames(MANE_all_20kbds_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+#term defect genes bed file
+ds_term_defect_bed <- filter(MANE_all_20kbds_bed, MANE_all_20kbds_bed$id %in% term_defect_IDs[,1])
+#no defect genes bed file
+ds_no_defect_bed <- filter(MANE_all_20kbds_bed, MANE_all_20kbds_bed$id %in% no_defect_IDs[,1])
+
+#write-out
+write_delim(ds_term_defect_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/term_defect_20kbds_expressed_genes.bed", delim = "\t", col_names = FALSE)
+write_delim(ds_no_defect_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/no_defect_20kbds_expressed_genes.bed", delim = "\t", col_names = FALSE)
+
+
+
+### TTS bed files ###
+TTS_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/annotation_bed_files/iso_exp_clean_genes_TTS.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+colnames(TTS_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+#term defect genes bed file
+TTS_term_defect_bed <- filter(TTS_bed, TTS_bed$id %in% term_defect_IDs[,1])
+#no defect genes bed file
+TTS_no_defect_bed <- filter(TTS_bed, TTS_bed$id %in% no_defect_IDs[,1])
+
+#write-out
+write_delim(TTS_term_defect_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/term_defect_TTS_expressed_genes.bed", delim = "\t", col_names = FALSE)
+write_delim(TTS_no_defect_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/no_defect_TTS_expressed_genes.bed", delim = "\t", col_names = FALSE)
+
+```
+
+
+
+
+V2 defect and no defect definitinons:
+-------------------------------------
+```{r looking at genes}
+#master_df_filtered
+master_df_filtered <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/master_df_expressed_genes.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+short_RT_master_df <- filter(master_df_filtered, master_df_filtered$NHS_end_point <= 5000 | master_df_filtered$HS_end_point <= 5000)
+#how many genes have no change in RT length and 5kb or 0kb RT length
+short_no_defect_master_df <- filter(short_RT_master_df, short_RT_master_df$term_defect==FALSE)
+#by hand, plenty of genes with defects in the "no defect" category
+
+no_defect_master_df <- filter(master_df_filtered, master_df_filtered$term_defect==FALSE)
+
+
+```
+
+now let's add another filter to better categorize these into defect and true no defect genes
+    just look at ghist signal and ask when it drops below the signal of the first 1kb bin - does that work?
+```{r further filtering of "no defect" genes}
+#ghist data: avg_ghist_results
+#"no defect" genes = no_defect_master_df
+
+#### 
+#filter out unexpressed genes 
+#### 
+  #can just use list of IDs from before
+avg_ghist_results[["NHS"]] <- filter(avg_ghist_results[["NHS"]], avg_ghist_results[["NHS"]]$transcriptID %in% master_df_filtered$transcriptID)
+nrow(avg_ghist_results[["NHS"]]) #6014 genes pre-filter, 5978 post-filter (good same as filtered master_df)
+#repeat for HS
+avg_ghist_results[["HS"]] <- filter(avg_ghist_results[["HS"]], avg_ghist_results[["HS"]]$transcriptID %in% master_df_filtered$transcriptID)
+nrow(avg_ghist_results[["HS"]]) #checks out
+
+
+#### 
+#filter out genes that don't have signal in first 1kb 
+#### 
+signal_avg_ghist_results <- avg_ghist_results
+signal_avg_ghist_results[["NHS"]] <- filter(signal_avg_ghist_results[["NHS"]], signal_avg_ghist_results[["NHS"]]$`1000` >= 10)
+signal_avg_ghist_results[["HS"]] <- filter(signal_avg_ghist_results[["HS"]], signal_avg_ghist_results[["HS"]]$`1000` >= 10)
+
+
+#### 
+#find end of RT for "no defect" genes based on dropping below 25% of first kb ds of genes 
+#### 
+
+# ask if signal is >25% of first 1kb signal
+NHS_boolean_df <- data.frame(IDs = signal_avg_ghist_results$NHS$transcriptID)
+
+i=24 #col 23 = 0-1kb counts
+while (i<=ncol(signal_avg_ghist_results[["NHS"]])) {
+  #pull out name for col
+  c_name <- colnames(signal_avg_ghist_results[["NHS"]])[i]
+  #make col of T/F for all genes for that bin
+  NHS_boolean_df[,c_name] <- signal_avg_ghist_results[["NHS"]][,i] > (0.25 * signal_avg_ghist_results[["NHS"]][,23]) #col 23 = 0-1kb counts
+
+  i=i+1
+}
+
+
+#repeat for HS
+HS_boolean_df <- data.frame(IDs = signal_avg_ghist_results$HS$transcriptID)
+
+i=24
+while (i<=ncol(signal_avg_ghist_results[["HS"]])) {
+  #pull out name for col
+  c_name <- colnames(signal_avg_ghist_results[["HS"]])[i]
+  #make col of T/F for all genes for that bin
+  HS_boolean_df[,c_name] <- signal_avg_ghist_results[["HS"]][,i] > (0.25 * signal_avg_ghist_results[["NHS"]][,23]) 
+  
+  i=i+1
+}
+
+
+
+#### 
+#find end of RT
+####
+
+#move to new variable to match code written in previous section, copied below
+NHS_is_signal <- NHS_boolean_df
+HS_is_signal <- HS_boolean_df
+
+
+#now check how far ds there is still signal
+NHS_RT_end_ls <- vector()
+r=1
+while (r<=nrow(NHS_is_signal)) {
+  c=2
+  while (c<=ncol(NHS_is_signal)) {
+    if (c<(ncol(NHS_is_signal)) && NHS_is_signal[r,c] == FALSE && NHS_is_signal[r,c+1] == FALSE) {
+      bp <- colnames(NHS_is_signal)[(c-1)]
+      if (bp == "IDs") {
+        bp <- 1000
+      }
+      NHS_RT_end_ls <- append(NHS_RT_end_ls, bp)
+      print("option 1")
+      break #stops the loop looking at columns so only one annotation will be made per gene
+    }
+    else if (c==ncol(NHS_is_signal) && NHS_is_signal[r,c] == FALSE) {
+      bp <- colnames(NHS_is_signal)[(c-1)]
+      NHS_RT_end_ls <- append(NHS_RT_end_ls, bp)
+      print("option 2")
+      break
+    }
+    else if (c==ncol(NHS_is_signal) && NHS_is_signal[r,c] == TRUE) {
+      bp <- colnames(NHS_is_signal)[(c)]
+      NHS_RT_end_ls <- append(NHS_RT_end_ls, bp) #if 16 is recorded, it reached 20kb without having two FALSE in a row
+      print("option 3")
+      break
+    }
+    #print(c)
+    #print(NHS_is_signal[r,c]) 
+    #print(NHS_is_signal[r,c+1])
+    c=c+1
+  }
+  r=r+1
+}
+
+#make df
+NHS_end_points_df <- data.frame(transcriptID = NHS_is_signal$IDs, NHS_end_point = NHS_RT_end_ls)
+
+
+#repeat for HS
+HS_RT_end_ls <- vector()
+r=1
+while (r<=nrow(HS_is_signal)) {
+  c=2
+  while (c<=ncol(HS_is_signal)) {
+    if (c<(ncol(HS_is_signal)) && HS_is_signal[r,c] == FALSE && HS_is_signal[r,c+1] == FALSE) {
+      bp <- colnames(HS_is_signal)[(c-1)]
+      if (bp == "IDs") {
+        bp <- 5000
+      }
+      HS_RT_end_ls <- append(HS_RT_end_ls, bp)
+      print("option 1")
+      break #stops the loop looking at columns so only one annotation will be made per gene
+    }
+    else if (c==ncol(HS_is_signal) && HS_is_signal[r,c] == FALSE) {
+      bp <- colnames(HS_is_signal)[(c-1)]
+      HS_RT_end_ls <- append(HS_RT_end_ls, bp)
+      print("option 2")
+      break
+    }
+    else if (c==ncol(HS_is_signal) && HS_is_signal[r,c] == TRUE) {
+      bp <- colnames(HS_is_signal)[(c)]
+      HS_RT_end_ls <- append(HS_RT_end_ls, bp) #if 16 is recorded, it reached 20kb without having two FALSE in a row
+      print("option 3")
+      break
+    }
+    #print(c)
+    #print(HS_is_signal[r,c]) 
+    #print(HS_is_signal[r,c+1])
+    c=c+1
+  }
+  r=r+1
+}
+
+HS_end_points_df <- data.frame(transcriptID = HS_is_signal$IDs, HS_end_point = HS_RT_end_ls)
+
+
+#now need to add to the master df and fill in for missing genes
+new_master_df <- full_join(master_df_filtered, NHS_end_points_df, by = "transcriptID")
+new_master_df <- full_join(new_master_df, HS_end_points_df, by="transcriptID")
+#replace NAs with 0 (NAs = no significant signal in first kb)
+new_master_df[is.na(new_master_df)] <- 0
+#rename columns
+colnames(new_master_df) <- c("transcriptID", "NHS_5kb_coverage_avg", "HS_5kb_coverage_avg", "NHS_5kb_read.through", "HS_5kb_read.through", "NHS_end_point.5kb_method", "HS_end_point.5kb_method", "defect_length", "term_defect", "NHS_end_point.1kb_method", "HS_end_point.1kb_method" )
+
+
+#save
+write_delim(new_master_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/v2_master_df.tsv", delim = "\t", col_names = TRUE)
+
+
+####
+#check genes that have 20kb RT lengths to make sure they're correct
+####
+check_me <- filter(new_master_df, new_master_df$NHS_end_point.1kb_method == 20000 | new_master_df$HS_end_point.1kb_method == 20000 )
+#all seem correctly categorized
+  #note to self: should these genes be thrown out? can't analyze if there are defects unless change approach
+
+
+####
+#calc change in RT length
+####
+new_master_df$defect_length.1kb_method <- new_master_df$HS_end_point.1kb_method - new_master_df$NHS_end_point.1kb_method
+
+
+####
+#cat as defect or no defect again
+####
+new_master_df$term_defect.1kb_method <- new_master_df$defect_length.1kb_method >0
+
+#save
+write_delim(new_master_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/v2_master_df.tsv", delim = "\t", col_names = TRUE)
+
+
+####
+#how do the two methods compare?
+####
+
+#how many match original term defect classification?
+summary(new_master_df$term_defect.1kb_method == new_master_df$term_defect) #4539 are the same (75%)
+
+#how many "no defect" genes are defect genes with 1kb method?
+check_new_defect_genes <- filter(new_master_df, new_master_df$term_defect == FALSE & new_master_df$term_defect.1kb_method == TRUE) #1114 genes were switched from no defect to defect using 1kb method <<<<<< LOOK INTO THESE!!!!!
+
+#how many "no defect genes are still no defect?
+summary(new_master_df$term_defect.1kb_method == FALSE & new_master_df$term_defect == FALSE) #905 are no defect in both methods
+summary(new_master_df$term_defect.1kb_method == FALSE) #1230 are no defect with 1kb method
+summary(new_master_df$term_defect == FALSE) #2019 are no defect with 5kb method
+
+#so then how many defect genes with original 5kb method were determined no defect with 1kb method?
+check_new_no_defect_genes <- filter(new_master_df, new_master_df$term_defect.1kb_method == FALSE & new_master_df$term_defect == TRUE) #325 <<<<<< LOOK INTO THESE!!!!!
+
+#all genes that change classification
+check_all_changes <- filter(new_master_df, !(new_master_df$term_defect == new_master_df$term_defect.1kb_method)) #1439 genes change classification, let's see which one I aggree with more
+#write out as tsv so can record which definition I aggree with for each
+write_delim(check_all_changes, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/check_changed_classifications_master_df.tsv", delim = "\t", col_names = TRUE)
+
+
+#how many genes have NHS and HS RT window of 20kb?
+all_long_RT_genes <- filter(new_master_df, new_master_df$NHS_end_point.5kb_method == 20000 & new_master_df$HS_end_point.5kb_method == 20000 & new_master_df$NHS_end_point.1kb_method == 20000 & new_master_df$HS_end_point.1kb_method == 20000)
+
+#5kb method = 350 genes
+#1kb method = 396 genes
+#both = 279 genes
+
+#save
+write_delim(all_long_RT_genes, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/long_RT_genes_master_df.tsv", delim = "\t", col_names = TRUE)
+
+
+```
+
+checked genes by hand -> generally aggree with the 5kb definitions and then the 1kb definitions for the "no defect" genes
+  lets make lists and see how the meta plots look
+```{r update defect and no defect lists}
+#read in "new_master_df"
+new_master_df <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/v2_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#make definitions list
+  #defect genes = 5kb defect genes + 5kb no defect genes that were deemed defect genes with 1kb definition
+  #no defect genes = genes deemed no defect by both 5kb and 1kb
+
+#make no defect list first
+no_defect_gene_IDs <- filter(new_master_df, new_master_df$term_defect == FALSE & new_master_df$term_defect.1kb_method == FALSE) #905 genes
+no_defect_gene_IDs <- as.data.frame(no_defect_gene_IDs$transcriptID)
+
+no_defect_no_long_RT_gene_IDs <- filter(new_master_df, new_master_df$term_defect == FALSE & 
+                                                       new_master_df$term_defect.1kb_method == FALSE & 
+                                                      !(new_master_df$NHS_end_point.5kb_method == 20000 & 
+                                                       new_master_df$HS_end_point.5kb_method == 20000 & 
+                                                       new_master_df$NHS_end_point.1kb_method == 20000 & 
+                                                       new_master_df$HS_end_point.1kb_method == 20000)
+                                        )
+no_defect_no_long_RT_gene_IDs <- as.data.frame(no_defect_no_long_RT_gene_IDs$transcriptID)
+
+
+#now all genes left have defects
+defect_gene_IDs <- filter(new_master_df, !(new_master_df$transcriptID %in% no_defect_gene_IDs$`no_defect_gene_IDs$transcriptID`))
+defect_gene_IDs <- as.data.frame(defect_gene_IDs$transcriptID)
+
+
+
+
+#save
+write_delim(no_defect_gene_IDs, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/no_defect_gene_IDs.txt", delim = "\t", col_names = FALSE)
+
+write_delim(no_defect_no_long_RT_gene_IDs, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/no_defect_no_long_RT_gene_IDs.txt", delim = "\t", col_names = FALSE)
+
+write_delim(defect_gene_IDs, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/defect_gene_IDs.txt", delim = "\t", col_names = FALSE)
+
+```
+
+
+need to make a master_df with tee actual end points used for each gene
+  also add actual final term defect definition to new_master_df
+```{r add final term defect col to new_master_df}
+
+new_master_df$term_defect_final <- new_master_df$transcriptID %in% defect_gene_IDs[,1]
+
+#save (overwrites previous version)
+write_delim(new_master_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/v2_master_df.tsv", delim = "\t", col_names = TRUE)
+
+
+#make final master_df
+final_master_df <- new_master_df
+
+#figure out which end point to use
+  #if 5kb and 1kb term defect definitions match, use 5kb end point
+  #if 5kb term_defect = FALSE and 1kb term defect = TRUE, use 1kb end point
+  #if 5kb term_defect = TRUE and 1kb term defect = FALSE, use 5kb end point
+
+NHS_term_defect_end_point <- vector()
+HS_term_defect_end_point <- vector()
+final_defect_length <- vector()
+
+r=1
+while (r<=nrow(final_master_df)) {
+  if (final_master_df$term_defect[r] == final_master_df$term_defect.1kb_method[r] | 
+      (final_master_df$term_defect[r] == TRUE & final_master_df$term_defect.1kb_method[r] == FALSE)) {
+    
+    NHS_term_defect_end_point[r] <- final_master_df$NHS_end_point.5kb_method[r]
+    HS_term_defect_end_point[r] <- final_master_df$HS_end_point.5kb_method[r]
+    final_defect_length[r] <- final_master_df$defect_length[r]
+    print(c("5kb: ", r))
+  }
+  else if (final_master_df$term_defect[r] == FALSE & final_master_df$term_defect.1kb_method[r] == TRUE) {
+    NHS_term_defect_end_point[r] <- final_master_df$NHS_end_point.1kb_method[r]
+    HS_term_defect_end_point[r] <- final_master_df$HS_end_point.1kb_method[r]
+    final_defect_length[r] <- final_master_df$defect_length.1kb_method[r]
+    print(c("1kb: ", r))
+  }
+  r=r+1
+}
+#add cols
+final_master_df$NHS_RT_end_point <- NHS_term_defect_end_point
+final_master_df$HS_RT_end_point <- HS_term_defect_end_point
+final_master_df$final_defect_length <- final_defect_length
+
+
+#clean up final df
+final_df <- final_master_df[c(1,14:17)]
+colnames(final_df) <- c("transcriptID", "term_defect", "NHS_RT_end_point",  "HS_RT_end_point", "defect_length")
+
+#remove long_RT genes from final_df
+final_df <- filter(final_df, !(final_df$transcriptID %in% all_long_RT_genes$transcriptID) )
+#add longRT col to final_master_df
+final_master_df$longRT <- final_master_df$transcriptID %in% all_long_RT_genes$transcriptID
+
+#save both updated master_df and final_df
+write_delim(final_master_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/v2_master_df.tsv", delim = "\t", col_names = TRUE)
+write_delim(final_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/final_term_defct_df.tsv", delim = "\t", col_names = TRUE)
+
+
+```
+
+
+```{r make bed files for the lists}
+### TTS bed files ###
+TTS_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/annotation_bed_files/iso_exp_clean_genes_TTS.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+colnames(TTS_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+#term defect genes bed file
+TTS_term_defect_bed_v2 <- filter(TTS_bed, TTS_bed$id %in% defect_gene_IDs[,1])
+#no defect genes bed file
+TTS_no_defect_bed_v2 <- filter(TTS_bed, TTS_bed$id %in% no_defect_gene_IDs[,1])
+#no defect genes - no long RT genes - bed file
+TTS_no_defect_no_long_RT_bed_v2 <- filter(TTS_bed, TTS_bed$id %in% no_defect_no_long_RT_gene_IDs[,1])
+
+#write-out
+write_delim(TTS_term_defect_bed_v2, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/V2_term_defect_TTS_expressed_genes.bed", delim = "\t", col_names = FALSE)
+write_delim(TTS_no_defect_bed_v2, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/V2_no_defect_TTS_expressed_genes.bed", delim = "\t", col_names = FALSE)
+write_delim(TTS_no_defect_no_long_RT_bed_v2, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/V2_no_defect_TTS_expressed_genes_no_long_RT_genes.bed", delim = "\t", col_names = FALSE)
+
+```
+-------------------------------------
+
+
+
+looking into different categories of genes:
+-------------------------------------------
+make moderate and severe defect categories
+```{r make moderate and severe defect lists}
+moderate_defect_genes <- filter(final_master_df, final_master_df$term_defect_final == TRUE & final_master_df$final_defect_length < 10000)
+moderate_defect_gene_IDs <- as.data.frame(moderate_defect_genes$transcriptID)
+
+severe_defect_genes <- filter(final_master_df, final_master_df$term_defect_final == TRUE & final_master_df$final_defect_length > 10000 & final_master_df$final_defect_length <20000)
+severe_defect_gene_IDs <- as.data.frame(severe_defect_genes$transcriptID)
+
+max_defect_genes <- filter(final_master_df, final_master_df$final_defect_length == 20000)
+max_defect_gene_IDs <- as.data.frame(max_defect_genes$transcriptID)
+
+
+#write out
+write_delim(moderate_defect_genes, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/moderate_defect_genes.tsv", delim = "\t", col_names = TRUE)
+write_delim(severe_defect_genes, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/severe_defect_genes.tsv", delim = "\t", col_names = TRUE)
+write_delim(max_defect_genes, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/max_defect_genes.tsv", delim = "\t", col_names = TRUE)
+
+write_delim(moderate_defect_gene_IDs, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/moderate_defect_gene_IDs.txt", delim = "\t", col_names = FALSE)
+write_delim(severe_defect_gene_IDs, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/severe_defect_gene_IDs.txt", delim = "\t", col_names = FALSE)
+write_delim(max_defect_gene_IDs, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/max_defect_gene_IDs.txt", delim = "\t", col_names = FALSE)
+
+```
+
+
+define genes that terminate cleanly in NHS and "leaky" genes (might be useful for Ser2P analysis)
+```{r sharp and leaky NHS termination}
+#sharp
+sharp_NHS_term <- filter(final_master_df, final_master_df$NHS_end_point.1kb_method <= 2000) #1444
+sharp_NHS_term_5kb_method <- filter(final_master_df, final_master_df$NHS_end_point.5kb_method == 0) #4332
+
+#leaky 
+leaky_NHS_term <- filter(final_master_df, final_master_df$NHS_end_point.1kb_method >=10000) #1609
+leaky_NHS_term_5kb_method <- filter(final_master_df, final_master_df$NHS_end_point.5kb_method >=10000) #1212
+
+#save
+write_delim(sharp_NHS_term, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/leaky_and_sharp_NHS_termination_gene_lists/sharp_NHS_term_1kb_method_master_df.tsv", delim = "\t", col_names = TRUE)
+write_delim(sharp_NHS_term_5kb_method, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/leaky_and_sharp_NHS_termination_gene_lists/sharp_NHS_term_5kb_method_master_df.tsv", delim = "\t", col_names = TRUE)
+write_delim(leaky_NHS_term, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/leaky_and_sharp_NHS_termination_gene_lists/leaky_NHS_term_1kb_method_master_df.tsv", delim = "\t", col_names = TRUE)
+write_delim(leaky_NHS_term_5kb_method, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/leaky_and_sharp_NHS_termination_gene_lists/leaky_NHS_term_5kb_method_master_df.tsv", delim = "\t", col_names = TRUE)
+
+#save just gene IDs
+write_delim(as.data.frame(sharp_NHS_term$transcriptID), "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/leaky_and_sharp_NHS_termination_gene_lists/sharp_NHS_term_1kb_method_IDs.txt", delim = "\t", col_names = FALSE)
+write_delim(as.data.frame(sharp_NHS_term_5kb_method$transcriptID), "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/leaky_and_sharp_NHS_termination_gene_lists/sharp_NHS_term_5kb_method_IDs.txt", delim = "\t", col_names = FALSE)
+write_delim(as.data.frame(leaky_NHS_term$transcriptID), "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/leaky_and_sharp_NHS_termination_gene_lists/leaky_NHS_term_1kb_method_IDs.txt", delim = "\t", col_names = FALSE)
+write_delim(as.data.frame(leaky_NHS_term_5kb_method$transcriptID), "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/leaky_and_sharp_NHS_termination_gene_lists/leaky_NHS_term_5kb_method_IDs.txt", delim = "\t", col_names = FALSE)
+
+```
+
+```{r nevermind... don't like the fraction of gene length filter}
+
+### nevermind... don't like the fraction of gene length filter
+
+##as a fraction of gene length
+#import/make gene lengths from bed file
+MANE_all_gnbd_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v095_whole_gene.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+MANE_all_gnbd_bed <- MANE_all_gnbd_bed[1:6]
+colnames(MANE_all_gnbd_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+#filter for only genes in master_df
+filtered_MANE_gnbd_bed <- filter(MANE_all_gnbd_bed, MANE_all_gnbd_bed$id %in% final_master_df$transcriptID)
+
+
+final_master_df$gene_length <- abs( filtered_MANE_gnbd_bed$start - filtered_MANE_gnbd_bed$end )
+
+#save
+write_delim(final_master_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/v2_master_df.tsv", delim = "\t", col_names = TRUE)
+
+
+#relative to gene length
+sharp_NHS_term_percent <- filter(final_master_df, (final_master_df$NHS_end_point.1kb_method / final_master_df$gene_length) > 0.05)
+#not a fan of percentage becuase RT length is all in 1kb incraments so a 10kb gene with the 5% cutoff would be a 500bp defect but that's not an option
+
+```
+
+are sharp NHS terminating genes less likely to have defects or have shorter defects?
+  using 1kb method only because it can actually identify sharp termination within 1-2kb whereas 5kb method can only be specific to <4kb termination windows
+  *see excel file "07d_read_through_length_and_term_defects/V2_gene_lists/leaky_and_sharp_NHS_termination_gene_lists/leaky_vs_sharp_analysis.xlsx"*
+```{r make bed files for homer hist}
+#read in TTS bed file
+TTS_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/annotation_bed_files/iso_exp_clean_genes_TTS.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+colnames(TTS_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+#filter for sharp or leaky genes
+sharp_TTS_bed <- filter(TTS_bed, TTS_bed$id %in% sharp_NHS_term$transcriptID)
+leaky_TTS_bed <- filter(TTS_bed, TTS_bed$id %in% leaky_NHS_term$transcriptID) 
+#good, both have same number of genes as original leaky or sharp _NHS_term
+
+#save
+write_delim(sharp_TTS_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/leaky_and_sharp_NHS_termination_gene_lists/sharp_NHS_term_genes_TTS.bed", delim = "\t", col_names = FALSE)
+write_delim(leaky_TTS_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/leaky_and_sharp_NHS_termination_gene_lists/leaky_NHS_term_genes_TTS.bed", delim = "\t", col_names = FALSE)
+
+```
+
+#run homer hist command 
+
+    see bash script 07d_TTS_hist_leaky_and_sharp_NHS_term.sh
+
+set up data:
+```{r plot homer hist}
+#read-in hist outputs
+fl_sharp <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/leaky_and_sharp_NHS_termination_gene_lists/homer_hist_outputs/sharp", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+sharp_hist <- lapply(fl_sharp, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(sharp_hist) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/leaky_and_sharp_NHS_termination_gene_lists/homer_hist_outputs/sharp/|.tsv", "", fl_sharp)
+
+fl_leaky <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/leaky_and_sharp_NHS_termination_gene_lists/homer_hist_outputs/leaky", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+leaky_hist <- lapply(fl_leaky, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(leaky_hist) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/leaky_and_sharp_NHS_termination_gene_lists/homer_hist_outputs/leaky/|.tsv", "", fl_leaky)
+
+
+
+## care about col 1 (distance from TTS) and col 2 (avg accross all given genes, normalized coverage)
+#make avg of reps
+sharp_hist_df <-data.frame(distance_from_TTS = sharp_hist$rep1_HS[,1], 
+                NHS = ((sharp_hist$rep1_NHS[,2] + sharp_hist$rep2_NHS[,2] + sharp_hist$rep3_NHS[,2])/3),
+                HS = ((sharp_hist$rep1_HS[,2] + sharp_hist$rep2_HS[,2] + sharp_hist$rep3_HS[,2])/3) )
+
+leaky_hist_df <- data.frame(distance_from_TTS = leaky_hist$rep1_HS[,1], 
+                NHS = ((leaky_hist$rep1_NHS[,2] + leaky_hist$rep2_NHS[,2] + leaky_hist$rep3_NHS[,2])/3),
+                HS = ((leaky_hist$rep1_HS[,2] + leaky_hist$rep2_HS[,2] + leaky_hist$rep3_HS[,2])/3) )
+
+
+## trim off -20kb upstream ##
+#for 20kb ds had to also do 20kb upstream of the TTS, but we don't need to go that far into the gene so I'm trimming it to 2kb into the gene body
+
+sharp_hist_df <- filter(sharp_hist_df, distance_from_TTS >= -2000)
+leaky_hist_df <- filter(leaky_hist_df, distance_from_TTS >= -2000)
+
+write_delim(sharp_hist_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/hist_outputs_20kbds/TTS_hist_4sU_sharp_df.tsv", delim = "\t", col_names = FALSE)
+write_delim(leaky_hist_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/hist_outputs_20kbds/TTS_hist_4sU_leaky_df.tsv", delim = "\t", col_names = FALSE)
+
+
+
+
+
+#need both NHS and HS values in one col with corresponding ID so can plot both at once
+sharp_hist_df <- pivot_longer(sharp_hist_df, cols =2:3)
+leaky_hist_df <- pivot_longer(leaky_hist_df, cols =2:3)
+
+#needs to be factored to tell which one to show first
+sharp_hist_df$name <- factor(sharp_hist_df$name, levels = c('NHS', 'HS'))
+leaky_hist_df$name <- factor(leaky_hist_df$name, levels = c('NHS', 'HS'))
+
+```
+
+setup plot settings:
+```{r plotting setup}
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+
+###defining plot histogram function###
+#testing
+#hist_df <- Rpb1_hist_data
+#plot_title <- "Metagene Analysis of Pol II ocupancy at the TTS"
+
+plot_hist_function <- function(hist_df, plot_title, subt = "isolated genes"){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line() +
+    labs(subtitle = subt, x= "distance from TTS", y="avg norm tag coverage") +
+    ggtitle(plot_title) +
+    scale_color_manual(values=c("black", "red", "grey"))
+}
+
+```
+
+plot:
+```{r quick plot}
+#defect genes
+s <- plot_hist_function(sharp_hist_df, "Metagene Analysis of 4sU-RNA around the TTS", subt = "sharp NHS term genes")
+s
+
+#no defect genes
+l <- plot_hist_function(leaky_hist_df, "Metagene Analysis of 4sU-RNA around the TTS", subt = "leaky NHS term genes")
+l
+
+```
+
+```{r save figures}
+#sharp
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/figures/TTS_hist_sharp_NHS_term_genes.pdf", 5, 5)
+print(s)
+dev.off()
+
+#leaky
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/figures/TTS_hist_leaky_NHS_term_genes.pdf", 5, 5)
+print(l)
+dev.off()
+
+```
+
+-------------------------------------------
+
+update master df with sharp/leaky and moderate/severe/max defect
+```{r update master df}
+#most up-to-date version is final_master_df
+
+#make "NHS_term_cat" col (sharp/leaky)
+sharp_tf <- final_master_df$transcriptID %in% sharp_NHS_term$transcriptID #true = sharp
+#replace true/false with sharp/leaky
+i=1
+while (i <= length(sharp_tf)) {
+  if (sharp_tf[i] == TRUE) {
+    sharp_tf[i] <- "sharp"
+  }
+  else {
+    sharp_tf[i] <- "leaky"
+  }
+  i=i+1
+}
+#add col to master df
+final_master_df$cat_NHS_term <- sharp_tf
+
+
+#make "defect_cat" col (no/moderate/severe/max)
+defect_cat <- vector()
+i=1
+while (i <= nrow(final_master_df)) {
+  if (final_master_df$final_defect_length[i] <= 0) { #no defect
+    defect_cat[i] <- "no defect"
+  }
+  else if (final_master_df$final_defect_length[i] > 0 & final_master_df$final_defect_length[i] < 10000) {
+    defect_cat[i] <- "moderate defect"
+  }
+  else if (final_master_df$final_defect_length[i] >= 10000 & final_master_df$final_defect_length[i] < 20000) {
+    defect_cat[i] <- "severe defect"
+  }
+  else if (final_master_df$final_defect_length[i] == 20000) {
+    defect_cat[i] <- "max defect"
+  }  
+  else {
+    print("Something went wrong...")
+    print(i)
+  }
+  i=i+1
+}
+#add col to master df
+final_master_df$defect_cat <- defect_cat
+
+table(final_master_df$defect_cat)
+
+#save master df
+write_delim(final_master_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/FINAL_master_df.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+
+since we can't categorize genes with RT or defects beyond 20kb:
+  -if defect is 20kb or longer (all in 20kb bin) then if there's an increase in signal FC from HS/NHS of at least 1.5? 2? = defect
+  -or throw out those genes (how many are there?)
+  (currently just removed from no defect list)
+
+
+
+define moderate and strong defects
+cutoff defect length > 3kb? quartiles? make box plots to see?
+
+
+
+Now let's look into the data:
+
+```{r hist distribution of defect lengths}
+par(mfrow=c(1,1))
+hist(master_df$defect_length, breaks=40)
+
+ggplot(new_master_df, aes(x=defect_length)) +
+  geom_histogram( binwidth=40, fill="#69b3a2", color="#e9ecef", alpha=0.9)
+
+# Layout to split the screen
+layout(mat = matrix(c(1,2),2,1, byrow=TRUE),  height = c(1,8))
+ 
+# Draw the boxplot and the histogram 
+par(mar=c(0, 3.1, 1.1, 2.1))
+boxplot(master_df$defect_length , horizontal=TRUE , xaxt="n" , col=rgb(0.8,0.8,0,0.5) , frame=F)
+par(mar=c(4, 3.1, 1.1, 2.1))
+hist(master_df$defect_length , breaks=40 , col=rgb(0.2,0.8,0.5,0.5) , border=F)
+
+```
+
+
+hist metaplots term defect vs no defect
+---------------------------------------
+```{r plotting setup}
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+
+###defining plot histogram function###
+#testing
+#hist_df <- Rpb1_hist_data
+#plot_title <- "Metagene Analysis of Pol II ocupancy at the TTS"
+
+plot_hist_function <- function(hist_df, plot_title, subt = "isolated genes"){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line() +
+    labs(subtitle = subt, x= "distance from TTS", y="avg norm tag coverage") +
+    ggtitle(plot_title) +
+    scale_color_manual(values=c("#010d3d", "#a1003b", "#666666"))
+}
+
+```
+
+
+```{r set up data}
+#read-in each replicate and avg
+fl_defect <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/hist_outputs_v2_gene_lists/defect_genes", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+defect_hist <- lapply(fl_defect, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(defect_hist) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/hist_outputs_v2_gene_lists/defect_genes/|.tsv", "", fl_defect)
+
+fl_no_defect <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/hist_outputs_v2_gene_lists/no_defect_genes", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+no_defect_hist <- lapply(fl_no_defect, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(no_defect_hist) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/hist_outputs_v2_gene_lists/no_defect_genes/|.tsv", "", fl_no_defect)
+
+fl_no_long_RT_no_defect <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/hist_outputs_v2_gene_lists/no_defect_no_long_RT_genes", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+no_defect_no_longRT_hist <- lapply(fl_no_long_RT_no_defect, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(no_defect_no_longRT_hist) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/hist_outputs_v2_gene_lists/no_defect_no_long_RT_genes/|.tsv", "", fl_no_long_RT_no_defect)
+
+## care about col 1 (distance from TTS) and col 2 (avg accross all given genes, normalized coverage)
+#make avg of reps
+defect_hist_df <-data.frame(distance_from_TTS = defect_hist$rep1_HS[,1], 
+                NHS = ((defect_hist$rep1_NHS[,2] + defect_hist$rep2_NHS[,2] + defect_hist$rep3_NHS[,2])/3),
+                HS = ((defect_hist$rep1_HS[,2] + defect_hist$rep2_HS[,2] + defect_hist$rep3_HS[,2])/3) )
+
+no_defect_hist_df <- data.frame(distance_from_TTS = no_defect_hist$rep1_HS[,1], 
+      NHS = ((no_defect_hist$rep1_NHS[,2] + no_defect_hist$rep2_NHS[,2] + no_defect_hist$rep3_NHS[,2])/3),
+      HS = ((no_defect_hist$rep1_HS[,2] + no_defect_hist$rep2_HS[,2] + no_defect_hist$rep3_HS[,2])/3) )
+
+no_defect_no_longRT_hist_df <- data.frame(distance_from_TTS = no_defect_no_longRT_hist$rep1_HS[,1], 
+      NHS = ((no_defect_no_longRT_hist$rep1_NHS[,2] + no_defect_no_longRT_hist$rep2_NHS[,2] + no_defect_no_longRT_hist$rep3_NHS[,2])/3),
+      HS = ((no_defect_no_longRT_hist$rep1_HS[,2] + no_defect_no_longRT_hist$rep2_HS[,2] + no_defect_no_longRT_hist$rep3_HS[,2])/3) )
+
+## trim off -20kb upstream ##
+#for 20kb ds had to also do 20kb upstream of the TTS, but we don't need to go that far into the gene so I'm trimming it to 2kb into the gene body
+
+defect_hist_df <- filter(defect_hist_df, distance_from_TTS >= -2000)
+no_defect_hist_df <- filter(no_defect_hist_df, distance_from_TTS >= -2000)
+no_defect_no_longRT_hist_df <- filter(no_defect_no_longRT_hist_df, distance_from_TTS >= -2000)
+
+#need both NHS and HS values in one col with corresponding ID so can plot both at once
+defect_hist_df <- pivot_longer(defect_hist_df, cols =2:3)
+no_defect_hist_df <- pivot_longer(no_defect_hist_df, cols =2:3)
+no_defect_no_longRT_hist_df <- pivot_longer(no_defect_no_longRT_hist_df, cols =2:3)
+
+#needs to be factored to tell which one to show first
+defect_hist_df$name <- factor(defect_hist_df$name, levels = c('NHS', 'HS'))
+no_defect_hist_df$name <- factor(no_defect_hist_df$name, levels = c('NHS', 'HS'))
+no_defect_no_longRT_hist_df$name <- factor(no_defect_no_longRT_hist_df$name, levels = c('NHS', 'HS'))
+
+```
+
+```{r quick plot}
+#defect genes
+d <- plot_hist_function(defect_hist_df, "Metagene Analysis of 4sU-RNA around the TTS", subt = "termination defect genes")
+d
+
+#no defect genes
+nd <- plot_hist_function(no_defect_hist_df, "Metagene Analysis of 4sU-RNA around the TTS", subt = "no defect genes")
+nd
+
+#no defect - no long RT - genes
+ndRT <- plot_hist_function(no_defect_no_longRT_hist_df, "Metagene Analysis of 4sU-RNA around the TTS", subt = "no defect genes")
+ndRT
+
+```
+
+```{r save figures}
+#defect
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/figures/V2_defect_genes_metaplot.pdf", 5, 5)
+print(d)
+dev.off()
+
+#no defect
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/figures/V2_no_defect_genes_metaplot.pdf", 5, 5)
+print(nd)
+dev.off()
+
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/figures/V2_no_defect_no_long_RT_genes_metaplot.pdf", 5, 5)
+print(ndRT)
+dev.off()
+
+```
+
+FUN SIZED
+```{r FUN SIZED}
+plot_fun_sized_hist_function <- function(hist_df, plot_title="", subt = ""){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs(subtitle = subt, x= "", y="Read Count") +
+    ggtitle(plot_title) +
+    scale_x_continuous(labels=c("test","3'end", "", "+10kb", "", "+20kb"))+
+    #scale_y_continuous(labels = c(0,10,20,30,40,50))+ coord_cartesian(ylim=c(0,50))+
+    theme(axis.title.y = element_text(size = 13), axis.text = element_text(size = 13), #change axis label size
+          legend.position = c(0.8, 0.8), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 30, 10, 10),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold"),   #change size of title
+          plot.subtitle = element_text(size = 12)) +             #change size of subtitle
+    scale_color_manual(values=c("#151e82", "#8a0e2b")) #colors match browser tracks now
+}
+
+
+
+# defect genes
+d <- plot_fun_sized_hist_function(defect_hist_df, "4sU RNA-seq", subt = "Term Defect Genes")
+d
+jpeg("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/figures/TTS_hist_fun_size/term_defect_4sU_seq.jpeg", width=3, height=2.75, units="in", res=300)
+print(d)
+dev.off()
+
+#no defect genes
+nd <- plot_fun_sized_hist_function(no_defect_hist_df, "4sU RNA-seq", subt = "No Defect Genes")
+nd
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/figures/TTS_hist_fun_size/no_defect_4sU_seq.pdf", 4, 3.5)
+print(nd)
+dev.off()
+
+#no defect no long RT genes
+nd <- plot_fun_sized_hist_function(no_defect_no_longRT_hist_df, "4sU RNA-seq", subt = "No Defect Genes")
+nd
+jpeg("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/figures/TTS_hist_fun_size/no_defect_no_longRT_4sU_seq.jpeg", width=3, height=2.75, units="in", res=300)
+print(nd)
+dev.off()
+
+```
+
+
+---------------------------------------
+
+
+
+
+---
+TTS Hist by defect length category (written later)
+---
+
+```{r make bed files for homer hist}
+#read in TTS bed file
+TTS_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/annotation_bed_files/iso_exp_clean_genes_TTS.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+colnames(TTS_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+#read in master df
+master_df <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/FINAL_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#filter by defect length
+nd_TTS_bed <- filter(TTS_bed, TTS_bed$id %in% filter(master_df, master_df$defect_cat == "no defect")$transcriptID)
+mod_TTS_bed <- filter(TTS_bed, TTS_bed$id %in% filter(master_df, master_df$defect_cat == "moderate defect")$transcriptID) 
+sev_TTS_bed <- filter(TTS_bed, TTS_bed$id %in% filter(master_df, master_df$defect_cat == "severe defect")$transcriptID) 
+max_TTS_bed <- filter(TTS_bed, TTS_bed$id %in% filter(master_df, master_df$defect_cat == "max defect")$transcriptID) 
+sum( nrow(nd_TTS_bed), nrow(mod_TTS_bed), nrow(sev_TTS_bed), nrow(max_TTS_bed)) #good total genes = genes in master df
+
+
+#save
+write_delim(nd_TTS_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/defect_length_cats_TTS_metaplots/gene_lists/no_defect_genes_TTS.bed", delim = "\t", col_names = FALSE)
+write_delim(mod_TTS_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/defect_length_cats_TTS_metaplots/gene_lists/mod_defect_genes_TTS.bed", delim = "\t", col_names = FALSE)
+write_delim(sev_TTS_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/defect_length_cats_TTS_metaplots/gene_lists/severe_defect_genes_TTS.bed", delim = "\t", col_names = FALSE)
+write_delim(max_TTS_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/defect_length_cats_TTS_metaplots/gene_lists/max_defect_genes_TTS.bed", delim = "\t", col_names = FALSE)
+```
+
+run homer hist command
+#see bash script 07d_defect cat TTS hist.sh
+
+```{r read-in data}
+#read-in each replicate and cat
+fl_mod_defect <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/hist_outputs_v2_gene_lists/moderate_defect_genes", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+mod_defect_hist <- lapply(fl_mod_defect, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(mod_defect_hist) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/hist_outputs_v2_gene_lists/moderate_defect_genes/|.tsv", "", fl_mod_defect)
+
+fl_sev_defect <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/hist_outputs_v2_gene_lists/severe_defect_genes", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+sev_defect_hist <- lapply(fl_sev_defect, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(sev_defect_hist) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/hist_outputs_v2_gene_lists/severe_defect_genes/|.tsv", "", fl_sev_defect)
+
+fl_max_defect <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/hist_outputs_v2_gene_lists/max_defect_genes", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+max_defect_hist <- lapply(fl_max_defect, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(max_defect_hist) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/hist_outputs_v2_gene_lists/max_defect_genes/|.tsv", "", fl_max_defect)
+
+fl_no_long_RT_no_defect <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/hist_outputs_v2_gene_lists/no_defect_no_long_RT_genes", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+no_defect_no_longRT_hist <- lapply(fl_no_long_RT_no_defect, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(no_defect_no_longRT_hist) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/hist_outputs_v2_gene_lists/no_defect_no_long_RT_genes/|.tsv", "", fl_no_long_RT_no_defect)
+
+#make avg of reps
+  ## care about col 1 (distance from TTS) and col 2 (avg accross all given genes, normalized coverage)
+mod_defect_hist_df <-data.frame(distance_from_TTS = mod_defect_hist$rep1_HS[,1], 
+                NHS = ((mod_defect_hist$rep1_NHS[,2] + mod_defect_hist$rep2_NHS[,2] + mod_defect_hist$rep3_NHS[,2])/3),
+                HS = ((mod_defect_hist$rep1_HS[,2] + mod_defect_hist$rep2_HS[,2] + mod_defect_hist$rep3_HS[,2])/3) )
+
+sev_defect_hist_df <- data.frame(distance_from_TTS = sev_defect_hist$rep1_HS[,1], 
+      NHS = ((sev_defect_hist$rep1_NHS[,2] + sev_defect_hist$rep2_NHS[,2] + sev_defect_hist$rep3_NHS[,2])/3),
+      HS = ((sev_defect_hist$rep1_HS[,2] + sev_defect_hist$rep2_HS[,2] + sev_defect_hist$rep3_HS[,2])/3) )
+
+max_defect_hist_df <- data.frame(distance_from_TTS = max_defect_hist$rep1_HS[,1], 
+      NHS = ((max_defect_hist$rep1_NHS[,2] + max_defect_hist$rep2_NHS[,2] + max_defect_hist$rep3_NHS[,2])/3),
+      HS = ((max_defect_hist$rep1_HS[,2] + max_defect_hist$rep2_HS[,2] + max_defect_hist$rep3_HS[,2])/3) )
+
+no_defect_no_longRT_hist_df <- data.frame(distance_from_TTS = no_defect_no_longRT_hist$rep1_HS[,1], 
+      NHS = ((no_defect_no_longRT_hist$rep1_NHS[,2] + no_defect_no_longRT_hist$rep2_NHS[,2] + no_defect_no_longRT_hist$rep3_NHS[,2])/3),
+      HS = ((no_defect_no_longRT_hist$rep1_HS[,2] + no_defect_no_longRT_hist$rep2_HS[,2] + no_defect_no_longRT_hist$rep3_HS[,2])/3) )
+
+
+## trim off -20kb upstream ##
+#for 20kb ds had to also do 20kb upstream of the TTS, but we don't need to go that far into the gene so I'm trimming it to 2kb into the gene body
+mod_defect_hist_df <- filter(mod_defect_hist_df, distance_from_TTS >= -2000)
+sev_defect_hist_df <- filter(sev_defect_hist_df, distance_from_TTS >= -2000)
+max_defect_hist_df <- filter(max_defect_hist_df, distance_from_TTS >= -2000)
+no_defect_no_longRT_hist_df <- filter(no_defect_no_longRT_hist_df, distance_from_TTS >= -2000)
+
+#save
+write_delim(mod_defect_hist_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/defect_length_cats_TTS_metaplots/mod_defect_hist_df.tsv", delim = "\t", col_names = TRUE)
+write_delim(sev_defect_hist_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/defect_length_cats_TTS_metaplots/sev_defect_hist_df.tsv", delim = "\t", col_names = TRUE)
+write_delim(max_defect_hist_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/defect_length_cats_TTS_metaplots/max_defect_hist_df.tsv", delim = "\t", col_names = TRUE)
+write_delim(no_defect_no_longRT_hist_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/defect_length_cats_TTS_metaplots/no_defect_no_longRT_hist_df.tsv", delim = "\t", col_names = TRUE)
+```
+
+```{r make plotting df's}
+#read in 
+mod_defect_hist_df <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/defect_length_cats_TTS_metaplots/mod_defect_hist_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+sev_defect_hist_df <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/defect_length_cats_TTS_metaplots/sev_defect_hist_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+max_defect_hist_df <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/defect_length_cats_TTS_metaplots/max_defect_hist_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+no_defect_no_longRT_hist_df <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/defect_length_cats_TTS_metaplots/no_defect_no_longRT_hist_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#need both NHS and HS values in one col with corresponding ID so can plot both at once
+plotting_mod_defect_hist_df <- pivot_longer(mod_defect_hist_df, cols =2:3)
+plotting_sev_defect_hist_df <- pivot_longer(sev_defect_hist_df, cols =2:3)
+plotting_max_defect_hist_df <- pivot_longer(max_defect_hist_df, cols =2:3)
+plotting_no_defect_no_longRT_hist_df <- pivot_longer(no_defect_no_longRT_hist_df, cols =2:3)
+
+#needs to be factored to tell which one to show first
+plotting_mod_defect_hist_df$name <- factor(plotting_mod_defect_hist_df$name, levels = c('NHS', 'HS'))
+plotting_sev_defect_hist_df$name <- factor(plotting_sev_defect_hist_df$name, levels = c('NHS', 'HS'))
+plotting_max_defect_hist_df$name <- factor(plotting_max_defect_hist_df$name, levels = c('NHS', 'HS'))
+plotting_no_defect_no_longRT_hist_df$name <- factor(plotting_no_defect_no_longRT_hist_df$name, levels = c('NHS', 'HS'))
+
+```
+
+```{r plotting}
+#run plotting settings chunk
+
+#mod defect genes
+m_d <- ggplot(data = plotting_mod_defect_hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs(x= "", y="") +
+    ggtitle("Moderate Termination Defects") +
+    scale_x_continuous(labels=c("-2kb", "3'end", "", "+10kb", "", "+20kb"))+
+    theme(axis.title.y = element_text(size = 10, face = "bold"), axis.text = element_text(size = 10), #change axis label size
+          legend.position = c(0.8, 0.8), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 10, 0, 0),                  #add whitespace so labels aren't cut off (top, right, bottom, left)
+          plot.title = element_text(size = 12, face = "bold")) + #change size of title
+    scale_color_manual(values=c("#151e82", "#8a0e2b")) +
+    ylim(c(0,100) ) + xlim(c(-1000,20000))
+
+#sev defect genes
+s_d <- ggplot(data = plotting_sev_defect_hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs(x= "", y="") +
+    ggtitle("Severe Termination Defects") +
+    scale_x_continuous(labels=c("-2kb", "TTS", "+5 kb", "+10 kb", "+15 kb", "+20 kb"))+
+    theme(axis.title.y = element_text(size = 10, face = "bold"), axis.text = element_text(size = 10), #change axis label size
+          legend.position = c(0.8, 0.8), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 10, 0, 0),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold")) + #change size of title
+    scale_color_manual(values=c("#151e82", "#8a0e2b")) +
+    ylim(c(0,100) ) + xlim(c(-1000,20000))
+
+#max defect genes
+x_d <- ggplot(data = plotting_max_defect_hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs(x= "", y="") +
+    ggtitle("Maximum Termination Defects") +
+    scale_x_continuous(labels=c("-2kb", "TTS", "+5 kb", "+10 kb", "+15 kb", "+20 kb"))+
+    theme(axis.title.y = element_text(size = 10, face = "bold"), axis.text = element_text(size = 10), #change axis label size
+          legend.position = c(0.8, 0.8), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 10, 0, 0),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold")) + #change size of title
+    scale_color_manual(values=c("#151e82", "#8a0e2b")) +
+    ylim(c(0,100) ) + xlim(c(-1000,20000))
+
+#no defect - no long RT - genes
+ndRT <- ggplot(data = plotting_no_defect_no_longRT_hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs(x= "", y="Tag coverage normalized for sequencing depth") +
+    ggtitle("No Termination Defects") +
+    scale_x_continuous(labels=c("-2kb", "TTS", "+5 kb", "+10 kb", "+15 kb", "+20 kb"))+
+    theme(axis.title.y = element_text(size = 10, face = "bold"), axis.text = element_text(size = 10), #change axis label size
+          legend.position = c(0.8, 0.8), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 10, 0, 10),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold")) + #change size of title
+    scale_color_manual(values=c("#151e82", "#8a0e2b")) +
+    ylim(c(0,100) ) + xlim(c(-1000,20000))
+
+
+ggarrange(ndRT, m_d, s_d, x_d, ncol = 4, nrow = 1)
+
+#saved manually to /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/defect_length_cats_TTS_metaplots/figures
+
+```
+
+
+FUN SIZED
+```{r FUN SIZED}
+plot_fun_sized_hist_function_4sU <- function(hist_df, plot_title, subt = "", lege = c(0.8,0.8), y_labs){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs(subtitle = subt, x= "", y="Read Count") +
+    ggtitle(plot_title) +
+    scale_x_continuous(labels=c("test","3'end", "", "", "", "+20kb"))+
+    #scale_y_continuous(expand = c(0,0),
+    #                   limits = c(0, max(hist_df[,3])),
+    #                   breaks = seq(0,max(hist_df[,3]),length.out = 2),
+    #                   labels = function(x) round(x,2)) +
+    scale_y_continuous(limits = y_labs, breaks = y_labs)+ #coord_cartesian(ylim=c(0,40))+
+    theme(axis.title.y = element_text(size = 13), axis.text = element_text(size = 13), #change axis label size
+          legend.position = lege, legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 15, 10, 10),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold"),   #change size of title
+          plot.subtitle = element_text(size = 12)) +             #change size of subtitle
+    scale_color_manual(values=c("#151e82", "#8a0e2b")) #colors match browser tracks now
+}
+
+
+
+# no defect genes
+nd <- plot_fun_sized_hist_function_4sU(plotting_no_defect_no_longRT_hist_df, "4sU RNA-seq", subt = "No RT", lege = "none")
+nd
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/figures/TTS_hist_fun_size/no_defect_no_longRT_4sU_seq.pdf", 4, 3.5)
+print(nd)
+dev.off()
+
+#mod defect genes
+md <- plot_fun_sized_hist_function_4sU(plotting_mod_defect_hist_df, "", subt = "RT 1-9kb", lege = "none")
+md
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/figures/TTS_hist_fun_size/mod_defect_4sU_seq.pdf", 4, 3.5)
+print(md)
+dev.off()
+
+#severe defect genes
+sd <- plot_fun_sized_hist_function_4sU(plotting_sev_defect_hist_df, "", subt = "RT 10-19kb", lege = "none")
+sd
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/figures/TTS_hist_fun_size/severe_defect_4sU_seq.pdf", 4, 3.5)
+print(sd)
+dev.off()
+
+#max defect genes
+xd <- plot_fun_sized_hist_function_4sU(plotting_max_defect_hist_df, "", subt = "RT 20kb+")
+xd
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/figures/TTS_hist_fun_size/max_defect_4sU_seq.pdf", 4, 3.5)
+print(xd)
+dev.off()
+
+#plot together
+nd <- plot_fun_sized_hist_function_4sU(plotting_no_defect_no_longRT_hist_df, "", subt = "No RT", lege = "none", y_labs=c(0,40))
+md <- plot_fun_sized_hist_function_4sU(plotting_mod_defect_hist_df, "", subt = "RT 1-9kb", lege = "none", y_labs=c(0,110))
+sd <- plot_fun_sized_hist_function_4sU(plotting_sev_defect_hist_df, "", subt = "RT 10-19kb", lege = "none", y_labs=c(0,110))
+xd <- plot_fun_sized_hist_function_4sU(plotting_max_defect_hist_df, "", subt = "RT 20kb+", y_labs=c(0,75))
+
+gg <- ggarrange(nd, md, sd, xd, ncol = 4, nrow = 1)
+gg
+
+jpeg("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/figures/TTS_hist_fun_size/all_cats_4sU_seq.jpeg", width=8, height=2.2, units="in", res=300)
+print(gg)
+dev.off()
+
+```
+
+
+normalized TTS hist - RT cats
+```{r make norm dfs}
+#read in 
+mod_defect_hist_df <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/defect_length_cats_TTS_metaplots/mod_defect_hist_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+sev_defect_hist_df <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/defect_length_cats_TTS_metaplots/sev_defect_hist_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+max_defect_hist_df <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/defect_length_cats_TTS_metaplots/max_defect_hist_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+no_defect_no_longRT_hist_df <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/defect_length_cats_TTS_metaplots/no_defect_no_longRT_hist_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+#normalize (last 1kb of gene avg)
+norm_no_defect_hist_df <- data.frame(distance_from_TTS = no_defect_no_longRT_hist_df$distance_from_TTS,
+                                      NHS = no_defect_no_longRT_hist_df$NHS / mean(no_defect_no_longRT_hist_df[6:10,2]),
+                                      HS = no_defect_no_longRT_hist_df$HS / mean(no_defect_no_longRT_hist_df[6:10,3]))
+norm_mod_defect_hist_df <- data.frame(distance_from_TTS = mod_defect_hist_df$distance_from_TTS,
+                                      NHS = mod_defect_hist_df$NHS / mean(mod_defect_hist_df[6:10,2]),
+                                      HS = mod_defect_hist_df$HS / mean(mod_defect_hist_df[6:10,3]))
+norm_sev_defect_hist_df <- data.frame(distance_from_TTS = sev_defect_hist_df$distance_from_TTS,
+                                      NHS = sev_defect_hist_df$NHS / mean(sev_defect_hist_df[6:10,2]),
+                                      HS = sev_defect_hist_df$HS / mean(sev_defect_hist_df[6:10,3]))
+norm_max_defect_hist_df <- data.frame(distance_from_TTS = max_defect_hist_df$distance_from_TTS,
+                                      NHS = max_defect_hist_df$NHS / mean(max_defect_hist_df[6:10,2]),
+                                      HS = max_defect_hist_df$HS / mean(max_defect_hist_df[6:10,3]))
+
+#quantify mag RT at 1kb ds
+mean(norm_no_defect_hist_df$NHS[11:16])
+mean(norm_no_defect_hist_df$HS[11:16])
+# no defect: NHS 0.4070694, HS 0.4221998
+0.4070694/0.4221998 #0.96x
+0.4070694-0.4221998 #-1.5% HS induced RT
+
+mean(norm_mod_defect_hist_df$NHS[11:16])
+mean(norm_mod_defect_hist_df$HS[11:16])
+# mod defect: NHS 0.4355726, HS 0.5938301
+0.5938301/0.4355726 #1.36x
+0.5938301-0.4355726 #16% HS induced RT
+
+mean(norm_sev_defect_hist_df$NHS[11:16])
+mean(norm_sev_defect_hist_df$HS[11:16])
+# sev defect: NHS 0.3885889, HS 0.6157453
+0.6157453/0.3885889 #1.58x
+0.6157453-0.3885889 #23% HS induced RT
+
+mean(norm_max_defect_hist_df$NHS[11:16])
+mean(norm_max_defect_hist_df$HS[11:16])
+# max defect: NHS 0.3568651, HS 0.630271
+0.630271/0.3568651 #1.77x
+0.630271-0.3568651 #27% HS induced RT
+
+```
+
+
+
+
+
+
+
+
+
+--------------
+Act and repressed TTS plots (DESeq 2 fold cuttoff)
+--------------
+```{r make bed files for homer hist}
+#read in TTS bed file
+TTS_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/annotation_bed_files/iso_exp_clean_genes_TTS.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+colnames(TTS_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+#read in master df
+master_df <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/FINAL_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+#filter by defect length
+a_TTS_bed <- filter(TTS_bed, TTS_bed$id %in% filter(master_df, master_df$DESeq_1.5fold_cat == "activated")$transcriptID)
+nc_TTS_bed <- filter(TTS_bed, TTS_bed$id %in% filter(master_df, master_df$DESeq_1.5fold_cat == "no change")$transcriptID) 
+r_TTS_bed <- filter(TTS_bed, TTS_bed$id %in% filter(master_df, master_df$DESeq_1.5fold_cat == "repressed")$transcriptID) 
+sum( nrow(a_TTS_bed), nrow(nc_TTS_bed), nrow(r_TTS_bed)) #good total genes = genes in master df
+
+
+#save
+write_delim(a_TTS_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/activated_and_rep_genes_TTS_hist/gene_list_bed_files/activated_genes_TTS.bed", delim = "\t", col_names = FALSE)
+write_delim(nc_TTS_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/activated_and_rep_genes_TTS_hist/gene_list_bed_files/no_change_genes_TTS.bed", delim = "\t", col_names = FALSE)
+write_delim(r_TTS_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/activated_and_rep_genes_TTS_hist/gene_list_bed_files/repressed_genes_TTS.bed", delim = "\t", col_names = FALSE)
+
+```
+
+run homer hist command
+#see bash script 07d_act_rep_cat_TTS_hist.sh
+
+```{r read-in data}
+#read-in each replicate and cat
+fl_act <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/hist_outputs_v2_gene_lists/activated_genes_FC2", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+act_hist <- lapply(fl_act, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(act_hist) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/hist_outputs_v2_gene_lists/activated_genes_FC2/|.tsv", "", fl_act)
+
+fl_nc <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/hist_outputs_v2_gene_lists/no_change_genes_FC2", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+nc_hist <- lapply(fl_nc, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(nc_hist) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/hist_outputs_v2_gene_lists/no_change_genes_FC2/|.tsv", "", fl_nc)
+
+fl_rep <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/hist_outputs_v2_gene_lists/repressed_genes_FC2", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+rep_hist <- lapply(fl_rep, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(rep_hist) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/hist_outputs_v2_gene_lists/repressed_genes_FC2/|.tsv", "", fl_rep)
+
+#make avg of reps
+  ## care about col 1 (distance from TTS) and col 2 (avg accross all given genes, normalized coverage)
+act_hist_df <-data.frame(distance_from_TTS = act_hist$rep1_HS[,1], 
+                NHS = ((act_hist$rep1_NHS[,2] + act_hist$rep2_NHS[,2] + act_hist$rep3_NHS[,2])/3),
+                HS = ((act_hist$rep1_HS[,2] + act_hist$rep2_HS[,2] + act_hist$rep3_HS[,2])/3) )
+
+nc_hist_df <- data.frame(distance_from_TTS = nc_hist$rep1_HS[,1], 
+      NHS = ((nc_hist$rep1_NHS[,2] + nc_hist$rep2_NHS[,2] + nc_hist$rep3_NHS[,2])/3),
+      HS = ((nc_hist$rep1_HS[,2] + nc_hist$rep2_HS[,2] + nc_hist$rep3_HS[,2])/3) )
+
+rep_hist_df <- data.frame(distance_from_TTS = rep_hist$rep1_HS[,1], 
+      NHS = ((rep_hist$rep1_NHS[,2] + rep_hist$rep2_NHS[,2] + rep_hist$rep3_NHS[,2])/3),
+      HS = ((rep_hist$rep1_HS[,2] + rep_hist$rep2_HS[,2] + rep_hist$rep3_HS[,2])/3) )
+
+
+## trim off -20kb upstream ##
+#for 20kb ds had to also do 20kb upstream of the TTS, but we don't need to go that far into the gene so I'm trimming it to 2kb into the gene body
+act_hist_df <- filter(act_hist_df, distance_from_TTS >= -2000)
+nc_hist_df <- filter(nc_hist_df, distance_from_TTS >= -2000)
+rep_hist_df <- filter(rep_hist_df, distance_from_TTS >= -2000)
+
+#save
+write_delim(act_hist_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/activated_and_rep_genes_TTS_hist/act_hist_df.tsv", delim = "\t", col_names = TRUE)
+write_delim(nc_hist_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/activated_and_rep_genes_TTS_hist/nc_hist_df.tsv", delim = "\t", col_names = TRUE)
+write_delim(rep_hist_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/activated_and_rep_genes_TTS_hist/rep_hist_df.tsv", delim = "\t", col_names = TRUE)
+```
+
+```{r make plotting df's}
+#need both NHS and HS values in one col with corresponding ID so can plot both at once
+plotting_act_hist_df <- pivot_longer(act_hist_df, cols =2:3)
+plotting_nc_hist_df <- pivot_longer(nc_hist_df, cols =2:3)
+plotting_rep_hist_df <- pivot_longer(rep_hist_df, cols =2:3)
+
+#needs to be factored to tell which one to show first
+plotting_act_hist_df$name <- factor(plotting_act_hist_df$name, levels = c('NHS', 'HS'))
+plotting_nc_hist_df$name <- factor(plotting_nc_hist_df$name, levels = c('NHS', 'HS'))
+plotting_rep_hist_df$name <- factor(plotting_rep_hist_df$name, levels = c('NHS', 'HS'))
+
+
+
+##normalize to TTS value
+act_hist_df_norm <- act_hist_df
+act_hist_df_norm$NHS <- act_hist_df$NHS / act_hist_df[10,2]
+act_hist_df_norm$HS <- act_hist_df$HS / act_hist_df[10,3]
+nc_hist_df_norm <- nc_hist_df
+nc_hist_df_norm$NHS <- nc_hist_df$NHS / nc_hist_df[10,2]
+nc_hist_df_norm$HS <- nc_hist_df$HS / nc_hist_df[10,3]
+rep_hist_df_norm <- rep_hist_df
+rep_hist_df_norm$NHS <- rep_hist_df$NHS / rep_hist_df[10,2]
+rep_hist_df_norm$HS <- rep_hist_df$HS / rep_hist_df[10,3]
+
+plotting_act_hist_df_norm <- pivot_longer(act_hist_df_norm, cols =2:3)
+plotting_nc_hist_df_norm <- pivot_longer(nc_hist_df_norm, cols =2:3)
+plotting_rep_hist_df_norm <- pivot_longer(rep_hist_df_norm, cols =2:3)
+
+plotting_act_hist_df_norm$name <- factor(plotting_act_hist_df_norm$name, levels = c('NHS', 'HS'))
+plotting_nc_hist_df_norm$name <- factor(plotting_nc_hist_df_norm$name, levels = c('NHS', 'HS'))
+plotting_rep_hist_df_norm$name <- factor(plotting_rep_hist_df_norm$name, levels = c('NHS', 'HS'))
+
+```
+
+
+%RT
+```{r}
+mean(act_hist_df_norm$NHS[11:16])
+mean(act_hist_df_norm$HS[11:16])
+# Act: NHS 0.3160803, HS 0.6691407
+0.6691407-0.3160803 # 35.3% RT
+
+mean(nc_hist_df_norm$NHS[11:16])
+mean(nc_hist_df_norm$HS[11:16])
+# Act: NHS 0.3829062, HS 0.5981864
+0.5981864-0.3829062 # 22% RT
+
+
+mean(rep_hist_df_norm$NHS[11:16])
+mean(rep_hist_df_norm$HS[11:16])
+# Act: NHS 0.4922506, HS 0.6126923
+0.6126923-0.4922506 # 12% RT
+
+
+#RT length
+t <- filter(master_df, master_df$final_defect_length >= 0)
+
+a <- filter(t, t$DESeq_2fold_cat == "activated")
+summary(a$final_defect_length)
+#     Min. 1st Qu.  Median    Mean    3rd Qu.    Max. 
+#      0    6000    11000     11512   17000     20000  
+
+nc <- filter(t, t$DESeq_2fold_cat == "no change")
+summary(nc$final_defect_length)
+#   Min.  1st Qu.  Median    Mean   3rd Qu.    Max. 
+#      0    5000   13000     11745   20000    20000 
+   
+r <- filter(t, t$DESeq_2fold_cat == "repressed")
+summary(r$final_defect_length)
+#   Min. 1st Qu.  Median    Mean    3rd Qu.    Max. 
+#      0    2000   10000    10096   20000     20000 
+
+
+#boxplot RT lengths
+  #they look the same
+ggplot(t, aes(y=final_defect_length, x=DESeq_2fold_cat, color = DESeq_2fold_cat ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1.25) + 
+  #coord_cartesian(ylim = c(0,50)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream RPK\nFC after HS") +
+  labs(title = "RBBP6 Sensitive Genes") +
+  theme(plot.title = element_text(size = 13, hjust=0.9),            #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) 
+
+
+```
+
+
+```{r plotting (can run chunk) }
+# can run whole plotting settings chunk #
+
+#mod defect genes
+a_d <- ggplot(data = plotting_act_hist_df_norm, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs(x= "", y="") +
+    ggtitle("Activated Genes") +
+    scale_x_continuous(labels=c("-2kb", "TTS", "+5 kb", "+10 kb", "+15 kb", "+20 kb"))+
+    theme(axis.title.y = element_text(size = 10, face = "bold"), axis.text = element_text(size = 10), #change axis label size
+          legend.position = c(0.8, 0.8), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 10, 0, 0),                  #add whitespace so labels aren't cut off (top, right, bottom, left)
+          plot.title = element_text(size = 12, face = "bold")) + #change size of title
+    scale_color_manual(values=c("#010d3d", "#a1003b", "#666666")) +
+    ylim(c(0,1.25) ) #+ xlim(c(-1000,20000))
+
+#sev defect genes
+nc_d <- ggplot(data = plotting_nc_hist_df_norm, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs(x= "", y="") +
+    ggtitle("Not differentially expressed genes") +
+    scale_x_continuous(labels=c("-2kb", "TTS", "+5 kb", "+10 kb", "+15 kb", "+20 kb"))+
+    theme(axis.title.y = element_text(size = 10, face = "bold"), axis.text = element_text(size = 10), #change axis label size
+          legend.position = c(0.8, 0.8), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 10, 0, 0),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold")) + #change size of title
+    scale_color_manual(values=c("#010d3d", "#a1003b", "#666666")) +
+    ylim(c(0,1.25) ) #+ xlim(c(-1000,20000))
+
+#max defect genes
+r_d <- ggplot(data = plotting_rep_hist_df_norm, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs(x= "", y="") +
+    ggtitle("Repressed Genes") +
+    scale_x_continuous(labels=c("-2kb", "TTS", "+5 kb", "+10 kb", "+15 kb", "+20 kb"))+
+    theme(axis.title.y = element_text(size = 10, face = "bold"), axis.text = element_text(size = 10), #change axis label size
+          legend.position = c(0.8, 0.8), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 10, 0, 0),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold")) + #change size of title
+    scale_color_manual(values=c("#010d3d", "#a1003b", "#666666")) +
+    ylim(c(0,1.25) ) #+ xlim(c(-1000,20000))
+
+
+ggarrange(a_d, nc_d, r_d, ncol = 3, nrow = 1)
+
+#saved manually to /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/defect_length_cats_TTS_metaplots/figures
+
+```
+
+FUN SIZED (4sU act and rep)
+```{r FUN SIZED}
+plot_fun_sized_hist_function_4sU <- function(hist_df, plot_title, subt = "", color_me=c("#151e82", "#8a0e2b")){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs(subtitle = subt, x= "", y="Read Count") +
+    ggtitle(plot_title) +
+    scale_x_continuous(labels=c("test","3'end", "", "", "", "+20kb"))+
+    scale_y_continuous(breaks = c(0,0.5,1))+ 
+    coord_cartesian(ylim=c(0, 1.2))+
+    theme(axis.title.y = element_text(size = 13), axis.text = element_text(size = 13), #change axis label size
+          legend.position = c(0.8, 0.8), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 30, 10, 10),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold"),   #change size of title
+          plot.subtitle = element_text(size = 12)) +             #change size of subtitle
+    scale_color_manual(values=color_me) #colors match browser tracks now
+}
+
+
+# activated genes
+ac <- plot_fun_sized_hist_function(plotting_act_hist_df, "Activated Genes", subt = "4sU RNA-seq")
+ac
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/activated_and_rep_genes_TTS_hist/figures/fun_sized/activated_genes_4sU_seq.pdf", 4, 3.5)
+print(ac)
+dev.off()
+
+#no change genes
+nc <- plot_fun_sized_hist_function(plotting_nc_hist_df, "Not Differentially Expressed genes", subt = "4sU RNA-seq")
+nc
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/activated_and_rep_genes_TTS_hist/figures/fun_sized/no_change_genes_4sU_seq.pdf", 4, 3.5)
+print(nc)
+dev.off()
+
+#repressed genes
+rp <- plot_fun_sized_hist_function(plotting_rep_hist_df, "Repressed genes", subt = "4sU RNA-seq")
+rp
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/activated_and_rep_genes_TTS_hist/figures/fun_sized/repressed_genes_4sU_seq.pdf", 4, 3.5)
+print(rp)
+dev.off()
+
+
+gg <- ggarrange(ac, nc, rp, ncol = 3, nrow = 1)
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/activated_and_rep_genes_TTS_hist/figures/fun_sized/all_act_rep_4sU_seq.pdf", 12,3.5)
+print(gg)
+dev.off()
+
+
+
+### norm TTS to 1 ###
+# activated genes
+ac <- plot_fun_sized_hist_function_4sU(plotting_act_hist_df_norm, "", subt = "Activated Genes", color_me=c("#8aba8f", "#648c68"))
+ac
+jpeg("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/activated_and_rep_genes_TTS_hist/figures/fun_sized/norm_activated_genes_4sU_seq.jpeg", width=3, height=2.75, units="in", res=300)
+print(ac)
+dev.off()
+
+#no change genes
+nc <- plot_fun_sized_hist_function_4sU(plotting_nc_hist_df_norm, "", subt = "Not Diff Exp", color_me=c("gray60", "gray40"))
+nc
+jpeg("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/activated_and_rep_genes_TTS_hist/figures/fun_sized/norm_no_change_genes_4sU_seq.jpeg", width=3, height=2.75, units="in", res=300)
+print(nc)
+dev.off()
+
+#repressed genes
+rp <- plot_fun_sized_hist_function_4sU(plotting_rep_hist_df_norm, "", subt = "Repressed Genes", color_me=c("#e88776", "#b86253"))
+rp
+jpeg("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/activated_and_rep_genes_TTS_hist/figures/fun_sized/norm_repressed_genes_4sU_seq.jpeg", width=3, height=2.75, units="in", res=300)
+print(rp)
+dev.off()
+
+
+
+gg <- ggarrange(ac, nc, rp, ncol = 3, nrow = 1)
+jpeg("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/activated_and_rep_genes_TTS_hist/figures/fun_sized/norm_all_act_rep_4sU_seq.jpeg", width=7, height=2.2, units="in", res=300)
+print(gg)
+dev.off()
+
+```
+
+
+
+RT length comparison - act vs rep
+```{r}
+master_df <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/FINAL_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+x <- master_df #should actually re-categorize as 0
+i=1
+while (i<=nrow(x)) {
+  if(x$final_defect_length[i] < 0){
+    #print(i)
+    x[i,17] <- 0
+  }
+  #print(i)
+  i=i+1
+}
+
+a <- filter(x, x$DESeq_2fold_cat == "activated")
+summary(a$final_defect_length)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+#      0    6000   11000   11512   17000   20000 
+
+nc <- filter(x, x$DESeq_2fold_cat == "no change")
+summary(nc$final_defect_length)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+#      0    5000   13000   11614   20000   20000    
+
+r <- filter(x, x$DESeq_2fold_cat == "repressed")
+summary(r$final_defect_length)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+#      0    1000    9000    9799   20000   20000 
+
+
+## boxplot
+
+#factor cols for correct order
+x$DESeq_2fold_cat <- factor(x$DESeq_2fold_cat, c("activated", "no change", "repressed") )
+
+
+#plot defect vs no defect
+d <- ggplot(x, aes(y=final_defect_length/1000, x=DESeq_2fold_cat, color = DESeq_2fold_cat ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd=1) + 
+  coord_cartesian(ylim = c(0,23.5)) +
+  ylab("RT length (kb)") + xlab("")+
+  #ggtitle("") +
+  scale_x_discrete(labels=c("act", "nc", "rep"))+ 
+  #stat_summary(fun=mean, geom="point", shape=4, size=3, color=c("#648c68", "gray40", "#b86253")) +
+  theme(axis.title.y = element_text(size = 12), 
+        axis.text = element_text(size = 12), 
+        legend.position="none", 
+        plot.title = element_text(size = 12, face = "bold"),
+        plot.caption = element_text(size = 12, color = "gray40", vjust = 4),              #caption font and color
+        plot.margin = margin(10, 10, 10, 10)
+        ) +
+  scale_colour_manual(values=c("#648c68", "gray40", "#b86253")) +
+  annotate("text", x=2, y=23.5, label= "***", colour = "gray40", size = 6) + 
+      annotate("segment", x = 1, xend = 3, y = 23.5, yend = 23.5, colour = "gray40") + #line and * for stats
+  annotate("text", x=1.5, y=22.75, label= "ns", colour = "gray40", size = 3.5) + 
+      annotate("segment", x = 1, xend = 1.9, y = 22, yend = 22, colour = "gray40")   +
+  annotate("text", x=2.5, y=22, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 2.1, xend = 3, y = 22, yend = 22, colour = "gray40")   
+
+#stats
+a <- filter(x, x$DESeq_2fold_cat == "activated")
+nc <- filter(x, x$DESeq_2fold_cat == "no change")
+r <- filter(x, x$DESeq_2fold_cat == "repressed")
+
+a_r_res <- wilcox.test(as.numeric(a[,17]), as.numeric(r[,17]) )
+a_r_res$p.value #0.0007647685 ***
+a_nc_res <- wilcox.test(as.numeric(a[,17]), as.numeric(nc[,17]) )
+a_nc_res$p.value #0.2539166 ns
+r_nc_res <- wilcox.test(as.numeric(r[,17]), as.numeric(nc[,17]) )
+r_nc_res$p.value #2.871776e-09 ****
+
+jpeg("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/activated_and_rep_genes_TTS_hist/figures/RT_lengths_act_rep_boxplot", width=2.5, height=3, units="in", res=300)
+print(d)
+dev.off()
+      
+```
+
+
+
+
+---------------
+
+making fancy figures:
+---------------------
+```{r plotting setup}
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+
+###defining plot histogram function###
+#testing
+#hist_df <- Rpb1_hist_data
+#plot_title <- "Metagene Analysis of Pol II ocupancy at the TTS"
+
+plot_hist_function <- function(hist_df, plot_title, subt = "isolated genes"){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line() +
+    labs(subtitle = subt, x= "distance from TTS", y="avg norm tag coverage") +
+    ggtitle(plot_title) +
+    scale_color_manual(values=c("#010d3d", "#a1003b", "#666666"))
+}
+
+```
+
+```{r plotting}
+theme_set(theme_bw() +
+  theme(axis.line = element_line(color = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    legend.title = element_blank()) )
+
+
+    
+
+#defect genes
+d <- ggplot(data = defect_hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+        geom_line() +
+        labs(subtitle = "Metagene Analysis of 4sU-RNA around the TTS", x= "distance from TTS", y="avg norm tag coverage") +
+        ggtitle("Genes with Termination Defects") +
+        scale_color_manual(values=c("#010d3d", "#a1003b", "#666666")) +
+        ylim(c(0,100) ) + xlim(c(-1000,20000))
+#defect
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/figures_for_SCR_talk/V2_defect_genes_metaplot.pdf", 5, 5)
+print(d)
+dev.off()
+
+
+
+#no defect genes
+nd <- ggplot(data = no_defect_hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+        geom_line() +
+        labs(subtitle = "Metagene Analysis of 4sU-RNA around the TTS", x= "distance from TTS", y="avg norm tag coverage") +
+        ggtitle("Genes without Termination Defects") +
+        scale_color_manual(values=c("#010d3d", "#a1003b", "#666666")) +
+        ylim(c(0,100) ) + xlim(c(-1000,20000))
+
+#no defect
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/figures_for_SCR_talk/V2_no_defect_genes_metaplot.pdf", 5, 5)
+print(nd)
+dev.off()
+
+
+#no defect - no long RT - genes
+ndRT <- ggplot(data = no_defect_no_longRT_hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+          geom_line() +
+          labs(subtitle = "Metagene Analysis of 4sU-RNA around the TTS", x= "distance from TTS", y="avg norm tag coverage") +
+          ggtitle("Genes without Termination Defects") +
+          scale_color_manual(values=c("#010d3d", "#a1003b", "#666666")) +
+          ylim(c(0,100) ) + xlim(c(-1000,20000))
+
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/figures_for_SCR_talk/V2_no_defect_no_long_RT_genes_metaplot.pdf", 5, 5)
+print(ndRT)
+dev.off()
+
+```
+
+
+
+hist of length of defects
+```{r defect length hist}
+#master df 
+
+p <- ggplot(master_df, aes(x=final_defect_length)) + 
+  geom_histogram( bins = 41, color="black", fill="grey") +
+  labs(title="Length of Read-Through",x="Distance from TTS", y = "Number of Genes") +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 1750))
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/figures/defect_length_histogram.pdf", 5, 5)
+print(p)
+dev.off()
+
+```
+
+
+
+
+
+
+
+
+
+
+apparently never did graph of 4sU for all genes... doing that now
+------------------------------------------------------------------
+```{r make bed file}
+#combine defect and no defect no long RT bed files
+defect_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/V2_term_defect_TTS_expressed_genes.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+colnames(defect_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+no_defect_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/V2_no_defect_TTS_expressed_genes_no_long_RT_genes.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+colnames(no_defect_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+#combine
+all_genes_bed <- rbind(defect_bed, no_defect_bed)
+
+#save
+write_delim(all_genes_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/TTS_all_genes_no_long_RT_expressed_genes.bed", delim = "\t", col_names = FALSE)
+
+```
+
+
+#homer hist
+    
+    07d_hist_V2_defect_and_no_defect.sh
+
+
+```{r data processing}
+#read-in each replicate and avg
+fl <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/hist_outputs_v2_gene_lists/all_genes_no_long_RT", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+all_hist <- lapply(fl, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(all_hist) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/hist_outputs_v2_gene_lists/all_genes_no_long_RT/|.tsv", "", fl)
+
+
+
+## care about col 1 (distance from TTS) and col 2 (avg accross all given genes, normalized coverage)
+#make avg of reps
+all_hist_df <-data.frame(distance_from_TTS = all_hist$rep1_HS[,1], 
+                NHS = ((all_hist$rep1_NHS[,2] + all_hist$rep2_NHS[,2] + all_hist$rep3_NHS[,2])/3),
+                HS = ((all_hist$rep1_HS[,2] + all_hist$rep2_HS[,2] + all_hist$rep3_HS[,2])/3) )
+
+
+
+## trim off -20kb upstream ##
+#for 20kb ds had to also do 20kb upstream of the TTS, but we don't need to go that far into the gene so I'm trimming it to 2kb into the gene body
+
+all_hist_df <- filter(all_hist_df, distance_from_TTS >= -2000)
+
+
+#need both NHS and HS values in one col with corresponding ID so can plot both at once
+all_hist_df <- pivot_longer(all_hist_df, cols =2:3)
+
+
+#needs to be factored to tell which one to show first
+all_hist_df$name <- factor(all_hist_df$name, levels = c('NHS', 'HS'))
+
+```
+
+```{r plotting}
+#set up plotting theme
+theme_set(theme_bw() +
+  theme(axis.line = element_line(color = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    legend.title = element_blank()) )
+
+
+    
+
+#plot for all genes
+a <- ggplot(data = all_hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+        geom_line() +
+        labs(subtitle = "Metagene Analysis of 4sU-RNA around the TTS", x= "distance from TTS", y="avg norm tag coverage") +
+        ggtitle("All Analyzable Genes") +
+        scale_color_manual(values=c("#010d3d", "#a1003b", "#666666")) +
+        ylim(c(0,100) ) + xlim(c(-1000,20000))
+
+#save
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/polished_figures/V2_all_genes_no_long_RT_metaplot.pdf", 5, 5)
+print(a)
+dev.off()
+
+
+## FUN SIZED ##
+plot_fun_sized_hist_function <- function(hist_df, plot_title="", subt = ""){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs(subtitle = subt, x= "", y="Read Count") +
+    ggtitle(plot_title) +
+    scale_x_continuous(labels=c("test","3'end", "", "+10kb", "", "+20kb"))+
+    #scale_y_continuous(labels = c(0,10,20,30,40,50))+ coord_cartesian(ylim=c(0,50))+
+    theme(axis.title.y = element_text(size = 13), axis.text = element_text(size = 13), #change axis label size
+          legend.position = c(0.8, 0.8), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 30, 10, 10),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold"),   #change size of title
+          plot.subtitle = element_text(size = 12)) +             #change size of subtitle
+    scale_color_manual(values=c("#151e82", "#8a0e2b")) #colors match browser tracks now
+}
+
+
+
+# no defect genes
+a <- plot_fun_sized_hist_function(all_hist_df, "4sU RNA-seq", subt = "All analyzable genes")
+a
+jpeg("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/figures/TTS_hist_fun_size/all_genes_4sU_seq.jpeg", width=3, height=2.75, units="in", res=300)
+print(a)
+dev.off()
+```
+
+
+
+
+What if we defined termination defects by magnitude ds rather than length of defect?
+term defect genes by length -> NHS DS 0-5kb RPK / NHS exon RPK, same for HS, then HS / NHS
+```{r magnitude of defect metric (prep data)}
+##5kb ds counts
+#read-in 5kb ds counts
+fl <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/bed_files/ds_5kb_coverage_outputs", 
+                  pattern = "*_counts.bed",
+                  full.names = TRUE)
+ds5kb_counts <- lapply(fl, read.table, header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ds5kb_counts) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/bed_files/ds_5kb_coverage_outputs/|_gnbd_counts.bed", "", fl)
+#pull out reads into table
+ds_5kb_counts_df <- data.frame(gene_ID = ds5kb_counts$rep1_HS$V4, 
+                               NHS_r1 = ds5kb_counts$rep1_NHS$V7, NHS_r2 = ds5kb_counts$rep2_NHS$V7, NHS_r3 = ds5kb_counts$rep3_NHS$V7,
+                               HS_r1 = ds5kb_counts$rep1_HS$V7, HS_r2 = ds5kb_counts$rep2_HS$V7, HS_r3 = ds5kb_counts$rep3_HS$V7)
+#normalize for seq depth
+norm_factors_df <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/mapping_numbers.txt", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+ds_5kb_norm_counts_df <- data.frame(gene_ID = ds_5kb_counts_df$gene_ID,
+                        NHS_R1 = ds_5kb_counts_df$NHS_r1 * norm_factors_df$mapping.normalization.factor[1],
+                        NHS_R2 = ds_5kb_counts_df$NHS_r2 * norm_factors_df$mapping.normalization.factor[3],
+                        NHS_R3 = ds_5kb_counts_df$NHS_r3 * norm_factors_df$mapping.normalization.factor[5],
+                        HS_R1 = ds_5kb_counts_df$HS_r1 * norm_factors_df$mapping.normalization.factor[2],
+                        HS_R2 = ds_5kb_counts_df$HS_r2 * norm_factors_df$mapping.normalization.factor[4],
+                        HS_R3 = ds_5kb_counts_df$HS_r3 * norm_factors_df$mapping.normalization.factor[6] )
+
+#average
+ds_5kb_norm_counts_df$NHS_avg <- rowMeans(ds_5kb_norm_counts_df[c(2:4)] )
+ds_5kb_norm_counts_df$HS_avg <- rowMeans(ds_5kb_norm_counts_df[c(5:7)])
+
+
+##exon counts
+#rpk counts
+AND_expressed_genes_rpk <- read_tsv("06_defining_gene_lists/defining_expressed_genes/AND_method_expressed_genes_test.tsv", col_names = TRUE)
+#filter so that gene lists match
+AND_exp_exon_RPK_filtered_df <- filter(AND_expressed_genes_rpk, AND_expressed_genes_rpk$MANE_ID %in% ds_5kb_counts_df$gene_ID) #5523 genes
+
+#also have other method list
+OR_expressed_genes_rpk <- read_tsv("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/06_defining_gene_lists/defining_expressed_genes/MANE_expressed_genes_with_exon_rpk.tsv", col_names = TRUE)
+#filter so that gene lists match
+OR_exp_exon_RPK_filtered_df <- filter(OR_expressed_genes_rpk, OR_expressed_genes_rpk$MANE_ID %in% ds_5kb_counts_df$gene_ID) #6014 genes
+
+#put into one df
+colnames(OR_expressed_genes_rpk) <- c( "gene_ID", colnames(OR_expressed_genes_rpk[c(2:4)]))
+t <- left_join(ds_5kb_counts_df[c(1,8,9)], OR_expressed_genes_rpk[c(1,3,4)], by = "gene_ID")
+colnames(t) <- c("gene_ID", "NHS_5kbds_avg", "HS_5kbds_avg", )
+
+
+###probably should use whole gene body counts instead of exon... (counts ran in 07a, table made in 07h_uncleaved_reads)
+gnbd_norm_counts <- read_tsv("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/exp_norm_gnbd_counts.tsv", col_names = TRUE)
+
+#need to calc rpk (already norm for seq depth)
+fl <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gnbd_counts_final_gene_list", pattern = "*.bed", full.names = TRUE)
+gnbd_counts <- lapply(fl, read.table, header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(gnbd_counts) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gnbd_counts_final_gene_list/|_gnbd_counts.bed", "", fl)
+#col 15 is gene length
+gene_length_df <- data.frame(gene_IDs = gnbd_counts$rep1_HS$V4, gene_lengths = gnbd_counts$rep1_HS$V15) #first gene is at least correct
+
+#counts / (length / 1000)
+gnbd_rpk_calc_df <- left_join(gnbd_norm_counts, gene_length_df, by = "gene_IDs")
+gnbd_rpk_calc_df$NHS_RPK <- gnbd_rpk_calc_df$NHS_avg / gnbd_rpk_calc_df$gene_lengths
+gnbd_rpk_calc_df$HS_RPK <- gnbd_rpk_calc_df$HS_avg / gnbd_rpk_calc_df$gene_lengths
+#save to own df for clarity
+gnbd_rpk_df <- data.frame(gene_ID = gnbd_rpk_calc_df$gene_IDs, NHS_rpk = gnbd_rpk_calc_df$NHS_RPK, HS_rpk = gnbd_rpk_calc_df$HS_RPK)
+
+
+
+#write out all starting df's in own folder to keep things organized
+write_delim(gnbd_rpk_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/defect_magnatude/gnbd_rpk_df.tsv", delim = "\t", col_names = TRUE)
+write_delim(ds_5kb_norm_counts_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/defect_magnatude/ds_5kb_norm_counts_df.tsv", delim = "\t", col_names = TRUE)
+
+```
+```{r magnitude of defect metric (calculations)}
+### calculate ratios ###
+  #NHS DS 0-5kb RPK / NHS exon RPK, same for HS, then HS / NHS
+
+# ds / exon
+calc_df <- data.frame( gene_ID = ds_5kb_norm_counts_df$gene_ID, NHS_5kb_ds_counts = ds_5kb_norm_counts_df$NHS_avg, HS_5kb_ds_counts = ds_5kb_norm_counts_df$HS_avg)
+
+calc_df <- left_join(calc_df, gnbd_rpk_df, by = "gene_ID")
+colnames(calc_df) <- c( colnames(calc_df[c(1:3)]), "NHS_gnbd_RPK", "HS_gnbd_RPK")
+
+calc_df$NHS_ds_d_gnbd <- (calc_df$NHS_5kb_ds_counts / calc_df$NHS_gnbd_RPK)
+calc_df$HS_ds_d_gnbd <- (calc_df$HS_5kb_ds_counts / calc_df$HS_gnbd_RPK)
+summary(calc_df$NHS_ds_d_gnbd)
+summary(calc_df$HS_ds_d_gnbd)
+
+#now HS / NHS
+calc_df$mag_FC <- calc_df$HS_ds_d_gnbd / calc_df$NHS_ds_d_gnbd
+
+
+#save df
+write_delim(calc_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/defect_magnatude/magnatude_defect_by_gene.tsv", delim = "\t", col_names = TRUE)
+
+
+```
+
+
+
+
+
+Distribution of RT lengths
+```{r}
+master_df <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/FINAL_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+mean(master_df$final_defect_length) #11kb
+median(master_df$final_defect_length) #12kb
+nrow(filter(master_df, master_df$final_defect_length == 20000))
+5073/5978 #845 RT genes
+1649/5978 #28% genes w/ RT 20kb+
+
+#filter out negative RT
+t <- filter(master_df, master_df$final_defect_length >=0)
+library(gplots)
+col_pal <- colorpanel(21, "gray80","#d45050", "darkred") #get color gradient, set number to number of colors you want returned in the gradent
+col_pal_2  <- colorpanel(21, "#c27a7a", "#b50d0d", "darkred") #"#b50d0d", "#d45050",
+
+
+#plot hist
+h <- ggplot(t, aes(x=final_defect_length, fill = defect_cat))+
+  geom_histogram(binwidth = 1000, color = "black", fill=col_pal_2, show.legend = FALSE) +
+  xlab("RT Length") + ylab("Number of Genes") +
+  scale_x_continuous(expand=c(0,0), labels=c("0", "5kb", "10kb", "15kb", "20kb+")) +
+  scale_y_continuous(expand=c(0,0)) + coord_cartesian(ylim = c(0,1700)) + #expand moves y-axis down so 0-0 starts at the corner of the plot (need to do for both x and y to get full corner at 0-0)
+  theme(axis.title = element_text(size = 13), axis.text = element_text(size = 12),
+        plot.margin = margin(15, 15, 15, 15)
+        ) 
+
+jpeg("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/figures/RT_length_gene_counts_hist_all_reds.jpeg", width=3, height=2.75, units="in", res=300)
+print(h)
+dev.off()
+
+
+
+
+#what if I just did RT length endpoints? (overlay NHS and HS)
+  # does show NHS mostly 0kb and HS mostly 20kb+ but middle is kind of confusing to people who are unfamiliar
+ 
+h <- ggplot(t)+
+  geom_histogram(aes(x=NHS_RT_end_point), binwidth = 1000, color = "black", fill="#151e82", alpha = 0.3) +
+  geom_histogram(aes(x=HS_RT_end_point), binwidth = 1000, color = "black", fill="#8a0e2b", alpha = 0.3) +
+  xlab("RT Length") + ylab("Number of Genes") +
+  scale_x_continuous(expand=c(0,0), labels=c("0", "5kb", "10kb", "15kb", "20kb+")) +
+  scale_y_continuous(expand=c(0,0)) + coord_cartesian(ylim = c(0,4000)) + #expand moves y-axis down so 0-0 starts at the corner of the plot (need to do for both x and y to get full corner at 0-0)
+  theme(axis.title = element_text(size = 13), axis.text = element_text(size = 12),
+        plot.margin = margin(15, 15, 15, 15)
+        ) 
+
+jpeg("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/figures/RT_length_NHS_HS_gene_counts_hist.jpeg", width=3, height=2.75, units="in", res=300)
+print(h)
+dev.off()
+
+```
+
+
+
+
+
+gene length vs RT length (5/29/25)
+```{r}
+master_df <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/FINAL_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+# make all negatives -> 0
+for (row in 1:nrow(master_df)) {
+  if (master_df$final_defect_length[row] <0) { #find negative RT entries
+    print(paste0(row, ": ctl is neg ", master_df$final_defect_length[row]))
+    master_df$final_defect_length[row] <- 0 #assign 0 RT instead
+  }
+}
+
+master_df$defect_cat <- factor(master_df$defect_cat, c("no defect", "moderate defect", "severe defect", "max defect") )
+
+
+sb <- ggplot(master_df, aes(y=gene_length/1000, x=defect_cat, group = defect_cat, color = defect_cat ) ) +
+  geom_boxplot(width=0.85, outlier.shape = NA, lwd = 1) + 
+  coord_cartesian(ylim = c(0, 300)) +
+  ylab("Gene Length (kb)") + 
+  xlab("") + 
+  #ggtitle("Fold change in uncleaved 3' RNA by quartiles of the fold change of Ser2P / Pol II after HS") +              
+  theme(axis.title = element_text(size = 14), axis.text = element_text(size = 13),  #change axis label size
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(10, 30, 10, 10)                                  #add white space
+        ) +                                                           
+  scale_x_discrete(labels=c("No RT", "1-9kb", "10-19kb", "20kb+"))+     #rename x axis labels
+  scale_colour_manual(values=c("gray30","#d45050","#b50d0d", "darkred")) #golds 
+
+
+jpeg("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/figures/gene_length_v_RT_length_boxplot.jpeg", width=3.7, height=3, units="in", res=300)
+print(sb)
+dev.off()
+
+```
+
+
+
+

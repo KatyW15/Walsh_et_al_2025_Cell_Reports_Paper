@@ -1,0 +1,734 @@
+---
+title: "05_Making_Isolated_gene_list_hg38"
+author: "Katy Walsh"
+date: "4/27/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+wd: ~/Desktop/Katy_ChIPseq1/hg38
+
+```{r setup, include=FALSE}
+library(tidyverse)
+```
+
+0. download and import bed files
+
+using MANE project (NCBI/ENCODE) RefSeq Select list (one isoform per gene to provide consistant "default" gene annotations accross both NCBI and ENCODE)
+ftp://ftp.ncbi.nlm.nih.gov/refseq/MANE
+V0.93 (published Nov 2020)
+
+```{r import}
+#import gene list bed file (made from summary table of V0.93)
+genes_v093_bed <- read.table("05_making_isolated_genes_list_hg38/gene_lists_bed_files/00_genes_MANE_RefSeqSelect_v0.93_hg38.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+colnames(genes_v093_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+#17,829 genes to start
+
+```
+*17,829 total MANE genes (V0.93)*
+
+1. remove genes under 1kb
+```{r remove small genes}
+genes_v093_bed_noSG <- filter(genes_v093_bed, 1000 <= abs(start - end))
+
+nrow(genes_v093_bed) - nrow(genes_v093_bed_noSG)
+#removed 362 genes
+#17,467 genes remaining
+
+write_delim(genes_v093_bed_noSG, "05_making_isolated_genes_list_hg38/gene_lists_bed_files/01_genes_noSG_MANE_v93.bed", delim = "\t", col_names = FALSE)
+```
+*17,467 MANE genes w/out small genes*
+
+
+2. make isolated genes list
+  a. make bed files of ds windows
+```{r make ds windows}
+#bring in MANE single isoform, no small genes list
+genes_bed <- read.table("05_making_isolated_genes_list_hg38/gene_lists_bed_files/01_genes_noSG_MANE_v93.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+colnames(genes_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+#make ds windows
+#20kb ds
+ds_20kb_bed <- genes_bed
+i = 1
+while(i <= nrow(ds_20kb_bed)){
+  #if on + strand, start = TSS and end = TTS
+  #for 20kb ds: start = end & end = end + 20,000 bp
+  if(ds_20kb_bed$strand[i]=="+"){
+    ds_20kb_bed$start[i] = ds_20kb_bed$end[i]
+    ds_20kb_bed$end[i] = ds_20kb_bed$end[i] + 20000
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #for 20kb ds: end = start & start = start - 20,000 bp
+  else{
+    ds_20kb_bed$end[i] = ds_20kb_bed$start[i]
+    ds_20kb_bed$start[i] = ds_20kb_bed$start[i] - 20000
+  }
+  i = i+1
+}
+
+#remove annotations that go into the negative
+ds_20kb_bed <- filter(ds_20kb_bed, ds_20kb_bed$start >= 0)
+#didn't remove any genes, guess none of the 17,000 are close to the ends of the chromosomes
+
+#repeat for 30kb
+ds_30kb_bed <- genes_bed
+i = 1
+while(i <= nrow(ds_30kb_bed)){
+  #if on + strand, start = TSS and end = TTS
+  #for 20kb ds: start = end & end = end + 30,000 bp
+  if(ds_30kb_bed$strand[i]=="+"){
+    ds_30kb_bed$start[i] = ds_30kb_bed$end[i]
+    ds_30kb_bed$end[i] = ds_30kb_bed$end[i] + 30000
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #for 20kb ds: end = start & start = start - 30,000 bp
+  else{
+    ds_30kb_bed$end[i] = ds_30kb_bed$start[i]
+    ds_30kb_bed$start[i] = ds_30kb_bed$start[i] - 30000
+  }
+  i = i+1
+}
+
+#remove annotations that go into the negative
+ds_30kb_bed <- filter(ds_30kb_bed, ds_30kb_bed$start >= 0)
+#didn't remove any genes, guess none of the 17,000 are close to the ends of the chromosomes
+
+
+#repeat for 50kb
+ds_50kb_bed <- genes_bed
+i = 1
+while(i <= nrow(ds_50kb_bed)){
+  #if on + strand, start = TSS and end = TTS
+  #for 20kb ds: start = end & end = end + 50,000 bp
+  if(ds_50kb_bed$strand[i]=="+"){
+    ds_50kb_bed$start[i] = ds_50kb_bed$end[i]
+    ds_50kb_bed$end[i] = ds_50kb_bed$end[i] + 50000
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #for 20kb ds: end = start & start = start - 50,000 bp
+  else{
+    ds_50kb_bed$end[i] = ds_50kb_bed$start[i]
+    ds_50kb_bed$start[i] = ds_50kb_bed$start[i] - 50000
+  }
+  i = i+1
+}
+
+#remove annotations that go into the negative
+ds_50kb_bed <- filter(ds_50kb_bed, ds_50kb_bed$start >= 0)
+#still didn't remove any genes, guess none of the 17,000 are close to the ends of the chromosomes
+
+
+#write out all bed files
+write_delim(ds_20kb_bed, "05_making_isolated_genes_list_hg38/gene_lists_bed_files/02a_ds_20kb_of_genes.bed", delim = "\t", col_names = FALSE)
+write_delim(ds_30kb_bed, "05_making_isolated_genes_list_hg38/gene_lists_bed_files/02a_ds_30kb_of_genes.bed", delim = "\t", col_names = FALSE)
+write_delim(ds_50kb_bed, "05_making_isolated_genes_list_hg38/gene_lists_bed_files/02a_ds_50kb_of_genes.bed", delim = "\t", col_names = FALSE)
+
+```
+
+b. use bedtools intersect to filter out any genes with other genes within the ds window
+(documentation for intersect here: https://bedtools.readthedocs.io/en/latest/content/tools/intersect.html)
+#cd into Bed_Tools env bin folder, source activate Bed_Tools
+#<Bed_Tools> bedtools intersect -v -a gene_annotations.bed -b ds_windows.bed > output_file.bed
+
+need to make file b
+*using all RefSeq annotated genes (after removing unexpressed and NR genes) as file -b
+(since RefSeq Select isn't all mRNA genes and doesn't include ncRNA this is a more stringent filter)
+  1) downloaded bed file from UCSC table browser (RefSeqCurrated)
+  2) filter for expressed annotated genes (gnbd rpk above 1.5-fold above background) 
+  3) remove NR genes
+  4) then run bedtools intersect command to remove genes with neighboring expressed genes in ds regions (RefSeqCurrated genes as file -b)
+
+Going through the steps:
+  1) (need to take only first 6 columns of the bed file because it gets messed up in bedtools if there's more than that and then can't be read in)
+```{r make bed file}
+#import counts
+all_genes <- read.table("/Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/genome_annotations/NCBI/GnBd_ncbiRefSeqCurrated.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+#keep first six columns
+all_genes_bed <- all_genes[,1:6]
+#write out
+write_delim(all_genes_bed, "/Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/genome_annotations/NCBI/All_genes_ncbiRefSeqCurrated.bed", delim = "\t", col_names = FALSE)
+#also writing out to gene_lists_bed_files in 05 folder
+write_delim(all_genes_bed, "/Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/05_making_isolated_genes_list_hg38/gene_lists_bed_files/02b_All_genes_ncbiRefSeqCurrated.bed", delim = "\t", col_names = FALSE)
+```
+  2) count reads per gene using bedtools and filter for only expressed NCBI genes (using whole gene here so I can use the All_genes_ncbiRefSeqCurrated.bed from above)
+#<Bed_Tools> bedtools coverage -a count_window.bed -b TD_output_file_sorted.Bed > final_count.bed
+see hg38/notes/bash_scripts/05_04_all_NCBI_genes_counts.sh for full commands
+
+```{r filter expressed AllRefSeq genes}
+#only need to import input, NHS_Rpb1_pooled and HS_Rpb1_pooled gene counts
+df_input <- read.table("/Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/05_making_isolated_genes_list_hg38/tag_counts_bed_files/gene_counts/all_NCBI_genes/input_gnbd_count.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+df_NHS_Rpb1 <- read.table("/Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/05_making_isolated_genes_list_hg38/tag_counts_bed_files/gene_counts/all_NCBI_genes/NHS_Rpb1_pooled_gnbd_count.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+df_HS_Rpb1 <- read.table("/Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/05_making_isolated_genes_list_hg38/tag_counts_bed_files/gene_counts/all_NCBI_genes/HS_Rpb1_pooled_gnbd_count.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+#normalize for num mapped reads per sample
+#using mapped reads (col E in pipeline summary excel sheet in hg38/notes folder)
+reads_list <- list(38407521, 190303181, 172390734)
+names(reads_list) <- c('input', 'NHS_Rpb1_pooled', 'HS_Rpb1_pooled')
+#normalize to 50 million reads
+#50,000,000 = factor * num mapped reads
+input_factor <- 50000000 / reads_list$input
+NHS_pooled_factor <- 50000000 / reads_list$NHS_Rpb1_pooled
+HS_pooled_factor <- 50000000 / reads_list$HS_Rpb1_pooled
+#corrected_reads = factor * reads_per_gene
+norm_input_reads <- df_input[7] * input_factor
+norm_NHS_reads <- df_NHS_Rpb1[7] * NHS_pooled_factor
+norm_HS_reads <- df_HS_Rpb1[7] * HS_pooled_factor
+norm_reads_per_gene_df <- data.frame( genes = df_input[4],
+                                      gene_lengths = df_input[9],
+                                      input_norm_reads = norm_input_reads,
+                                      NHS_norm_reads = norm_NHS_reads,
+                                      HS_norm_reads = norm_HS_reads)
+names(norm_reads_per_gene_df) <- c('genes', 'gene_lengths', 'input_norm_reads', 'NHS_norm_reads', 'HS_norm_reads')
+
+#calculate background RPK
+background_RPK_per_gene <- norm_reads_per_gene_df$input_norm_reads / norm_reads_per_gene_df$gene_lengths *1000
+background_RPK_2 <- mean(background_RPK_per_gene)
+
+#calc RPK per gene
+NHS_RPK <- norm_reads_per_gene_df$NHS_norm_reads / norm_reads_per_gene_df$gene_lengths *1000
+HS_RPK <- norm_reads_per_gene_df$HS_norm_reads / norm_reads_per_gene_df$gene_lengths *1000
+#put everything into one df
+RPK_df <- data.frame(genes = norm_reads_per_gene_df$genes,
+                     gene_lengths = norm_reads_per_gene_df$gene_lengths,
+                     input_RPK = background_RPK_2,
+                     NHS_RPK = NHS_RPK,
+                     HS_RPK = HS_RPK)
+#calc. fold above background and add as new column to RPK_df for NHS and HS
+RPK_df$NHS_fold_abv_bkg <- RPK_df$NHS_RPK / RPK_df$input_RPK
+RPK_df$HS_fold_abv_bkg <- RPK_df$HS_RPK / RPK_df$input_RPK
+#filter based on fold above background (expressed in either NHS or HS)
+expressed_genes_df <- filter(RPK_df, NHS_fold_abv_bkg > 1.5 | HS_fold_abv_bkg > 1.5)
+nrow(RPK_df) - nrow(expressed_genes_df)
+#62,000 genes/isoforms are expressed out of around 90,000 total
+
+
+#write out all RefSeq expressed genes as a bed file
+all_genes_bed <- read.table("/Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/genome_annotations/NCBI/All_genes_ncbiRefSeqCurrated.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+expressed_all_RefSeq_genes_bed <- filter(all_genes_bed, all_genes_bed$V4 %in% expressed_genes_df$genes)
+#this adds back in multiple entries for one NM# (alt chr)
+#let's deduplicate and see if that works
+dedup <- filter(expressed_all_RefSeq_genes_bed, !duplicated(expressed_all_RefSeq_genes_bed$V4))
+#right number of genes, and no chr#_alt so it looks like it worked and kept the right gene version (on the regular chr)
+write_delim(dedup, "/Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/genome_annotations/NCBI/All_expressed_genes_ncbiRefSeqCurrated.bed", delim = "\t", col_names = FALSE)
+#also write out to 05/gene_lists_bed_files
+write_delim(dedup, "/Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/05_making_isolated_genes_list_hg38/gene_lists_bed_files/02c_All_expressed_genes_ncbiRefSeqCurrated.bed", delim = "\t", col_names = FALSE)
+```
+  3) remove NR genes
+```{r filter out NR geneIDs}
+#read-in
+all_expressed_genes <- read.table("genome_annotations/NCBI/All_expressed_genes_ncbiRefSeqCurrated.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+#select only NM genes
+nm_expressed_genes <- filter(all_expressed_genes, grepl(pattern = "NM_*", all_expressed_genes[,4]))
+#write-out
+write_delim(nm_expressed_genes, "/Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/genome_annotations/NCBI/NM_expressed_genes_ncbiRefSeqCurrated.bed", delim = "\t", col_names = FALSE)
+#also write out to 05/gene_lists_bed_files
+write_delim(nm_expressed_genes, "/Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/05_making_isolated_genes_list_hg38/gene_lists_bed_files/02d_NM_expressed_genes_ncbiRefSeqCurrated.bed", delim = "\t", col_names = FALSE)
+
+```
+
+
+  4) now run the bedtools intersect function with expressed genes list
+  -f sets the minimum overlap required as a fraction of A (since file a is our 20kb windows setting it to 1E-2 will always allow for 200bp overlap before filtering out a gene)
+#<Bed_Tools> bedtools intersect -v -f 1E-2 -a /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/05_making_isolated_genes_list_hg38/gene_lists_bed_files/02a_ds_20kb_of_genes.bed -b  /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/genome_annotations/NCBI/02d_NM_expressed_genes_ncbiRefSeqCurrated.bed > /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/05_making_isolated_genes_list_hg38/gene_lists_bed_files/02e_NCBI_expressed_currated_all_isolated_genes_20kb.bed
+*8,145 isolated genes*
+
+
+now we have the ds windows but we should remake the bed file that has the actual gene annotations for those genes
+```{r make isolated genes bed file}
+all_genes_bed <- read.table("05_making_isolated_genes_list_hg38/gene_lists_bed_files/01_genes_noSG_MANE_v93.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+isolated_ds_genes_bed <- read.table("/Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/05_making_isolated_genes_list_hg38/gene_lists_bed_files/02e_NCBI_expressed_currated_all_isolated_genes_20kb.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+isolated_whole_genes_bed <- filter(all_genes_bed, all_genes_bed$id %in% isolated_ds_genes_bed$V4)
+
+write_delim(isolated_whole_genes_bed, "05_making_isolated_genes_list_hg38/gene_lists_bed_files/02f_all_isolated_genes.bed", delim = "\t", col_names = FALSE)
+```
+*8,145 isolated genes*
+
+
+
+3. filter out untranscribed genes in my data
+
+a. make gnbd windows (+250 bp from TSS to TTS) and PPP windows (TSS to +250 bp)
+```{r make bed files}
+#for just isolated genes
+#import isolated genes lists
+all_isolated_20kb <- read.table("05_making_isolated_genes_list_hg38/gene_lists_bed_files/02f_all_isolated_genes.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+#all_isolated_30kb <- read.table("05_making_isolated_genes_list_hg38/gene_lists_bed_files/all_isolated_genes_30kb.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+#all_isolated_50kb <- read.table("05_making_isolated_genes_list_hg38/gene_lists_bed_files/all_isolated_genes_50kb.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+#add column names
+names(all_isolated_20kb) <- c("chrom", "start", "end", "id", "score", "strand")
+#names(all_isolated_30kb) <- c("chrom", "start", "end", "id", "score", "strand")
+#names(all_isolated_50kb) <- c("chrom", "start", "end", "id", "score", "strand")
+
+#make gnbd annotations
+i=1
+gnbd_isolated_20kb <- all_isolated_20kb
+while(i <= nrow(gnbd_isolated_20kb)){
+  #if on + strand, start = TSS and end = TTS
+  #for gnbd: start = start + 250 & end = end
+  if(gnbd_isolated_20kb$strand[i]=="+"){
+    gnbd_isolated_20kb$start[i] = gnbd_isolated_20kb$start[i] + 250
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #for gnbd: end = end - 250 & start = start
+  else if(gnbd_isolated_20kb$strand[i]=="-"){
+    gnbd_isolated_20kb$end[i] = gnbd_isolated_20kb$end[i] - 250
+  }
+  else{
+    print("no strand annotation!!")
+  }
+  i = i+1
+}
+
+
+i=1
+ppp_isolated_20kb <- all_isolated_20kb
+while(i <= nrow(ppp_isolated_20kb)){
+  #if on + strand, start = TSS and end = TTS
+  #for PPP: start = start & end = start +250
+  if(ppp_isolated_20kb$strand[i]=="+"){
+    ppp_isolated_20kb$end[i] = ppp_isolated_20kb$start[i] + 250
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #for PPP: end = end & start = end - 250
+  else if(ppp_isolated_20kb$strand[i]=="-"){
+    ppp_isolated_20kb$start[i] = ppp_isolated_20kb$end[i] - 250
+  }
+  else{
+    print("no strand annotation!!")
+  }
+  i = i+1
+}
+
+
+#write out all gnbd and PPP annotation files to use in bedtools in the next step
+write_delim(gnbd_isolated_20kb, "05_making_isolated_genes_list_hg38/gene_lists_bed_files/03a_gnbd_all_isolated_genes_20kb.bed", delim = "\t", col_names = FALSE)
+write_delim(ppp_isolated_20kb, "05_making_isolated_genes_list_hg38/gene_lists_bed_files/03a_ppp_all_isolated_genes_20kb.bed", delim = "\t", col_names = FALSE)
+#write_delim(gnbd_isolated_30kb, "05_making_isolated_genes_list_hg38/gene_lists_bed_files/gnbd_isolated_genes_30kb.bed", delim = "\t", col_names = TRUE)
+#write_delim(gnbd_isolated_50kb, "05_making_isolated_genes_list_hg38/gene_lists_bed_files/gnbd_isolated_genes_50kb.bed", delim = "\t", col_names = TRUE)
+
+```
+
+
+b. make bed files from tag directories using homer, then sort in bedtools
+in command line: 
+(only ever need to do this section once, then can just use the sorted bed files)
+#cd to homer bin folder, source activate homer
+#<homer> tagDir2bed.pl TD > TD_ouptut_file_1.Bed
+#conda deactivate, cd to Bed_Tools bin folder, source activate Bed_Tools
+#<Bed_Tools> bedtools sort -i TD_output_file_1.Bed > TD_ouput_file_sorted.Bed
+full commands in hg38/notes/bash_scripts "05_01..." and "05_02..."
+
+b. count tags over gnbd from gnbd_noSG_MANE_v93.bed list
+#<Bed_Tools> bedtools coverage -a count_window.bed -b TD_output_file_sorted.Bed > final_count.bed
+full commands in hg38/notes/bash_scripts "05_03..."
+
+c. filter out untranscribed genes
+*starting with isolated genes from the 20kb ds window threshold, can add the others in later*
+```{r read in bed count files}
+fl_gnbd_20kb <- list.files("05_making_isolated_genes_list_hg38/tag_counts_bed_files/gene_counts/gnbd_isolated_genes/", 
+                  pattern = "*_count.bed",
+                  full.names = TRUE)
+gnbd_counts_20kb_isolated <- lapply(fl_gnbd_20kb, read.table)
+names(gnbd_counts_20kb_isolated) <- gsub("05_making_isolated_genes_list_hg38/tag_counts_bed_files/gene_counts/gnbd_isolated_genes//|_count.bed", "", fl_gnbd_20kb)
+
+fl_ppp_20kb <- list.files("05_making_isolated_genes_list_hg38/tag_counts_bed_files/gene_counts/ppp_isolated_genes/", 
+                  pattern = "*_count.bed",
+                  full.names = TRUE)
+ppp_counts_20kb_isolated <- lapply(fl_ppp_20kb, read.table)
+names(ppp_counts_20kb_isolated) <- gsub("05_making_isolated_genes_list_hg38/tag_counts_bed_files/gene_counts/ppp_isolated_genes//|_count.bed", "", fl_ppp_20kb)
+
+#V1-6 for each bed file is the information for each gene (chr, start, end, name, score, strand)
+#V7-10 are outputs from bedtools calculating the coverage per gene
+  #V7: num of reads that overlapped with the gene by at least 1 bp
+  #V8: number of bases in the gene that had at least one read align
+  #V9: the length of the gene/ region counted over (in bp)
+  #V10: the fraction of bases in the gene that had at least one read / # of bases with zero reads
+```
+
+```{r normalize reads to num of mapped reads}
+#normalize for num mapped reads per sample
+#using mapped reads (col E in pipeline summary excel sheet in hg38/notes folder)
+reads_list <- list(38407521, 190303181, 172390734)
+names(reads_list) <- c('input', 'NHS_Rpb1_pooled', 'HS_Rpb1_pooled')
+
+#normalize to 50 million reads
+#50,000,000 = factor * num mapped reads
+input_factor <- 50000000 / reads_list$input
+NHS_pooled_factor <- 50000000 / reads_list$NHS_Rpb1_pooled
+HS_pooled_factor <- 50000000 / reads_list$HS_Rpb1_pooled
+
+#corrected_reads = factor * reads_per_gene
+gnbd_norm_reads_df <- data.frame( genes = gnbd_counts_20kb_isolated$input_gnbd[4],
+                                      gene_lengths = gnbd_counts_20kb_isolated$input_gnbd[9],
+                                      input_norm_reads = gnbd_counts_20kb_isolated$input_gnbd[7] * input_factor,
+                                      NHS_norm_reads = gnbd_counts_20kb_isolated$NHS_Rpb1_pooled_gnbd[7] * NHS_pooled_factor,
+                                      HS_norm_reads = gnbd_counts_20kb_isolated$HS_Rpb1_pooled_gnbd[7] * HS_pooled_factor)
+names(gnbd_norm_reads_df) <- c('genes', 'gene_lengths', 'input_norm_reads', 'NHS_norm_reads', 'HS_norm_reads')
+
+ppp_norm_reads_df <- data.frame( genes = ppp_counts_20kb_isolated$input_ppp[4],
+                                      gene_lengths = ppp_counts_20kb_isolated$input_ppp[9],
+                                      input_norm_reads = ppp_counts_20kb_isolated$input_ppp[7] * input_factor,
+                                      NHS_norm_reads = ppp_counts_20kb_isolated$NHS_Rpb1_pooled_ppp[7] * NHS_pooled_factor,
+                                      HS_norm_reads = ppp_counts_20kb_isolated$HS_Rpb1_pooled_ppp[7] * HS_pooled_factor)
+names(ppp_norm_reads_df) <- c('genes', 'gene_lengths', 'input_norm_reads', 'NHS_norm_reads', 'HS_norm_reads')
+
+```
+
+```{r define background}
+#does sum(all_counts) / sum(all_gene_lenths) different from calc. gene_count/length for each gene then averaging?
+
+#method 1: sum / sum
+background_RPK_1 <- sum(gnbd_norm_reads_df$input_norm_reads) / sum(gnbd_norm_reads_df$gene_lengths) *1000
+#6.15
+
+#method 2: background_RPK per gene then avg
+background_RPK_per_gene <- gnbd_norm_reads_df$input_norm_reads / gnbd_norm_reads_df$gene_lengths *1000
+background_RPK_2 <- mean(background_RPK_per_gene)
+#6.40
+
+#they are slightly different. I'll use method 2 moving forward since that's how the lab has done it before
+
+#define background
+gnbd_bkg <- mean(gnbd_norm_reads_df$input_norm_reads / gnbd_norm_reads_df$gene_lengths *1000)
+ppp_bkg <- mean(ppp_norm_reads_df$input_norm_reads / ppp_norm_reads_df$gene_lengths *1000)
+
+```
+
+```{r fold above background}
+#clac. NHS RPK per gene
+gnbd_NHS_RPK <- gnbd_norm_reads_df$NHS_norm_reads / gnbd_norm_reads_df$gene_lengths *1000
+ppp_NHS_RPK <- ppp_norm_reads_df$NHS_norm_reads / ppp_norm_reads_df$gene_lengths *1000
+#calc. HS RPK per gene
+gnbd_HS_RPK <- gnbd_norm_reads_df$HS_norm_reads / gnbd_norm_reads_df$gene_lengths *1000
+ppp_HS_RPK <- ppp_norm_reads_df$HS_norm_reads / ppp_norm_reads_df$gene_lengths *1000
+
+
+#put everything into one df and calc pausing indexes
+RPK_df <- data.frame(geneIDs = gnbd_norm_reads_df$genes,
+                     gene_lengths = gnbd_norm_reads_df$gene_lengths +250,
+                     gnbd_input_RPK = gnbd_bkg,
+                     ppp_input_RPK = ppp_bkg,
+                     gnbd_NHS_RPK = gnbd_NHS_RPK,
+                     gnbd_HS_RPK = gnbd_HS_RPK,
+                     ppp_NHS_RPK = ppp_NHS_RPK,
+                     ppp_HS_RPK = ppp_HS_RPK,
+                     PI_NHS = ppp_NHS_RPK / gnbd_NHS_RPK,
+                     PI_HS = ppp_HS_RPK / gnbd_HS_RPK)
+
+#calc. fold above background and add as new column to RPK_df for NHS and HS
+RPK_df$NHS_gnbd_fold_abv_bkg <- RPK_df$gnbd_NHS_RPK / RPK_df$gnbd_input_RPK
+RPK_df$HS_gnbd_fold_abv_bkg <- RPK_df$gnbd_HS_RPK / RPK_df$gnbd_input_RPK
+RPK_df$NHS_ppp_fold_abv_bkg <- RPK_df$ppp_NHS_RPK / RPK_df$ppp_input_RPK
+RPK_df$HS_ppp_fold_abv_bkg <- RPK_df$ppp_HS_RPK / RPK_df$ppp_input_RPK
+```
+
+filter expressed genes
+```{r filter}
+#filter based on fold above background (expressed in either NHS or HS)
+expressed_genes_df <- filter(RPK_df, NHS_gnbd_fold_abv_bkg >= 2 | HS_gnbd_fold_abv_bkg >= 2)
+nrow(RPK_df) - nrow(expressed_genes_df)
+#3,965 isolated genes (20kb ds threshold) are expressed (removed 4,180 unexpressed genes)
+#checked manually in UCSC genome browser, 1.8 seems like a decent threshold for dividing between expressed and not expressed. Definately shouldn't go below 1.7. Chose 2 as a lot of the genes between 2 and 1.8 weren't highly expressed and therefore the Ser2P signial would be very hard to analyze anyway so I think a more conservative expression threshold is fine here.
+
+#add in check for PPP
+#no genes have ppp regions below background after filtering for gnbd above background so don't need to check for that
+expressed_genes_df <- filter(expressed_genes_df, PI_NHS >= 3 | PI_HS >= 3)
+nrow(expressed_genes_df)
+#3,527 expressed genes with PPP (removed about 300 genes due to low pausing index)
+
+summary(expressed_genes_df)
+
+```
+
+```{r write out}
+#write out list of isolated genes that are expressed in my data
+write_delim(expressed_genes_df, "05_making_isolated_genes_list_hg38/isolated_genes_data/03b_expressed_isolated_genes_RPK_data.tsv", delim = "\t", col_names = TRUE)
+
+#write out bed file of expressed isolated genes
+#make bed file with genes that occur in the expressed_genes_df$genes
+iso_genes_list <- as.character(expressed_genes_df$geneIDs)
+
+#read-in whole gene annotations
+all_MANE_genes_bed <- read.table("05_making_isolated_genes_list_hg38/gene_lists_bed_files/00_genes_MANE_RefSeqSelect_v0.93_hg38.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+#filter MANE genes for only isolated genes
+iso_expressed_genes_bed <- filter(all_MANE_genes_bed, all_MANE_genes_bed$V4 %in% iso_genes_list)
+
+write_delim(iso_expressed_genes_bed, "05_making_isolated_genes_list_hg38/gene_lists_bed_files/03c_isolated_expressed_genes.bed", delim = "\t", col_names = FALSE)
+#also write out list of isolated expressed genes
+l <- as.data.frame(iso_expressed_genes_bed$V4)
+write_delim(l, "05_making_isolated_genes_list_hg38/isolated_genes_data/03c_isolated_expressed_gene_IDs_list.txt", delim = "\n", col_names = FALSE)
+```
+*3,527 isolated expressed genes*
+
+
+
+4. filter for read-in
+start with # of isolated expressed genes and remove any that have siginificant reads upstream (to remove genes with  read-in from an upstream gene)
+  first - check for increase (upstream HS/NHS > 1); keep any genes without increase, check the rest
+  second - upstream RPK / gnbd RPK during HS; keep if <5(?), toss others as not clean genes
+```{r make upstream window bed file}
+#make bed file to count tags 1kb upstream
+#read-in isolated expressed genes bed file
+iso_exp_genes_bed <- read.table("05_making_isolated_genes_list_hg38/gene_lists_bed_files/03c_isolated_expressed_genes.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(iso_exp_genes_bed) <- c("chr","start","end","name","score","strand")
+
+#set up window 
+#start: 1kb upstream of TSS, end: 2kb upstream of TTS
+i=1
+upstream_iso_exp_genes_bed <- iso_exp_genes_bed
+while(i <= nrow(upstream_iso_exp_genes_bed)){
+  #if on + strand, start = TSS and end = TTS
+  #for upstream window: start = start - 7kb & end = start - 2kb
+  if(upstream_iso_exp_genes_bed$strand[i]=="+"){
+    upstream_iso_exp_genes_bed$end[i] = upstream_iso_exp_genes_bed$start[i] - 2000
+    upstream_iso_exp_genes_bed$start[i] = upstream_iso_exp_genes_bed$start[i] - 7000
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #for upstream window: start = end + 2kb & end = end + 7kb
+  else if(upstream_iso_exp_genes_bed$strand[i]=="-"){
+    upstream_iso_exp_genes_bed$start[i] = upstream_iso_exp_genes_bed$end[i] + 2000
+    upstream_iso_exp_genes_bed$end[i] = upstream_iso_exp_genes_bed$end[i] + 7000  
+    }
+  else{
+    print("no strand annotation!!")
+  }
+  i = i+1
+}
+#remove any negative values
+upstream_iso_exp_genes_bed <- filter(upstream_iso_exp_genes_bed, upstream_iso_exp_genes_bed$start >= 0)
+upstream_iso_exp_genes_bed <- filter(upstream_iso_exp_genes_bed, upstream_iso_exp_genes_bed$end >= 0)
+#check window size
+x<- abs(upstream_iso_exp_genes_bed$start - upstream_iso_exp_genes_bed$end) == 5000
+stopifnot(x)
+summary(x) #all true
+
+#write out
+#window TSS -2kb to -7kb
+write_delim(upstream_iso_exp_genes_bed, "05_making_isolated_genes_list_hg38/gene_lists_bed_files/04a_2_7kb_window_upstream_isolated_expressed_genes.bed", delim = "\t", col_names = FALSE)
+
+#also making TSS bed file to run ghist command
+i=1
+TSS_iso_exp_genes_bed <- iso_exp_genes_bed
+while(i <= nrow(TSS_iso_exp_genes_bed)){
+  #if on + strand, start = TSS and end = TTS
+  #for upstream window: start = start & end = start
+  if(TSS_iso_exp_genes_bed$strand[i]=="+"){
+    TSS_iso_exp_genes_bed$end[i] = TSS_iso_exp_genes_bed$start[i]
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #for upstream window: start = end & end = end
+  else if(TSS_iso_exp_genes_bed$strand[i]=="-"){
+    TSS_iso_exp_genes_bed$start[i] = TSS_iso_exp_genes_bed$end[i] 
+    }
+  else{
+    print("no strand annotation!!")
+  }
+  i = i+1
+}
+write_delim(TSS_iso_exp_genes_bed, "05_making_isolated_genes_list_hg38/gene_lists_bed_files/04a_TSS_isolated_expressed_genes.bed", delim = "\t", col_names = FALSE)
+
+```
+
+run bedtools count command
+#cd to Bed_Tools bin folder, source activate Bed_Tools
+#<Bed_Tools> bedtools coverage -a count_window.bed -b TD_output_file_sorted.Bed > final_count.bed
+full commands in hg38/notes/bash_scripts "05_05..."
+
+```{r set-up data}
+#(change fl read-in and write out to switch between 1kb upstream and 5kb upstream count files; replace 1kb or 5kb)
+library(tidyverse)
+#read in count files
+fl <- list.files("05_making_isolated_genes_list_hg38/tag_counts_bed_files/2_7kb_upstream/", 
+                  pattern = "*_count.bed",
+                  full.names = TRUE)
+upstream_counts <- lapply(fl, read.table)
+names(upstream_counts) <- gsub("05_making_isolated_genes_list_hg38/tag_counts_bed_files/2_7kb_upstream//|_upstream_count.bed", "", fl)
+
+gnbd_fl <- list.files("05_making_isolated_genes_list_hg38/tag_counts_bed_files/gene_counts/gnbd_isolated_genes/", 
+                  pattern = "*_count.bed",
+                  full.names = TRUE)
+gnbd_counts <- lapply(gnbd_fl, read.table)
+names(gnbd_counts) <- gsub("05_making_isolated_genes_list_hg38/tag_counts_bed_files/gene_counts/gnbd_isolated_genes//|_gnbd_count.bed", "", gnbd_fl)
+
+#normalize for number of mapped reads
+#using mapped reads (col E in pipeline summary excel sheet in hg38/notes folder)
+reads_list <- read.table("notes/mapped_reads_per_sample.tsv", stringsAsFactors = FALSE)
+reads_list <- column_to_rownames(reads_list, var = "V1")
+names(reads_list) <- "reads"
+#normalize to 50 million reads
+#50,000,000 = factor * num mapped reads
+reads_list$factor <- 50000000 / reads_list$reads
+
+
+#corrected_reads = factor * reads_per_gene
+upstream_norm_counts <- data.frame(geneID = upstream_counts$HS_Rpb1_pooled$V4)
+for (n in names(upstream_counts)) {
+  df <- as.data.frame(upstream_counts[n])
+  #print(identical(as.character(df[,4]), as.character(upstream_norm_counts$geneID)))
+  upstream_norm_counts[,n] <- df[,7] * reads_list[n, "factor"]
+  print(n)
+}
+
+gnbd_norm_counts <- data.frame(geneID = gnbd_counts$HS_Rpb1_pooled$V4)
+for (n in names(gnbd_counts)) {
+  df <- as.data.frame(gnbd_counts[n])
+  #print(identical(as.character(df[,4]), as.character(gnbd_norm_counts$geneID)))
+  gnbd_norm_counts[,n] <- df[,7] * reads_list[n, "factor"]
+  print(n)
+}
+
+#instead of re-running the bedtools coverage command, I'm just filtering to save time. All of the genes in the new expressed isolated genes list were in the list used to count tags accross upstream regions
+iso_exp_genes_bed <- read.table("05_making_isolated_genes_list_hg38/gene_lists_bed_files/03c_isolated_expressed_genes.bed")
+upstream_norm_counts <- filter(upstream_norm_counts, upstream_norm_counts$geneID %in% iso_exp_genes_bed$V4)
+gnbd_norm_counts <- filter(gnbd_norm_counts, gnbd_norm_counts$geneID %in% iso_exp_genes_bed$V4)
+
+#background
+bkg <- mean(upstream_norm_counts$input)
+#fold above background
+#upstream_fold_change <- data.frame(geneID = upstream_norm_counts$geneID,
+#                                   NHS_Rpb1_pooled = upstream_norm_counts$NHS_Rpb1_pooled / bkg,
+#                                   HS_Rpb1_pooled = upstream_norm_counts$HS_Rpb1_pooled / bkg,
+#                                   NHS_Ser2P_pooled = upstream_norm_counts$NHS_Ser2P_pooled / bkg,
+#                                   HS_Ser2P_pooled = upstream_norm_counts$HS_Ser2P_pooled / bkg )
+```
+
+
+```{r filter}
+#  first - check for increase (upstream HS/NHS > 1); keep any genes without increase, check the rest
+upstream_HS_change_df <- data.frame(genes = upstream_norm_counts$geneID, 
+           HS_NHS_upstream_change = (upstream_norm_counts$HS_Rpb1_pooled / upstream_norm_counts$NHS_Rpb1_pooled))
+read_in_genes_df <- filter(upstream_HS_change_df, HS_NHS_upstream_change > 1.5)
+no_read_in_genes_df <- filter(upstream_HS_change_df, HS_NHS_upstream_change <= 1.5)
+#2239 genes have an increase upstream > 1 after HS
+#1136 genes have an increase upstream > 1.5 after HS
+##checked genes <1 by hand, I don't think this is a required filter because it's letting through genes that have other genes upstream that have decreased expression with HS so the HS/NHS goes down but there's still read-in from another gene being really close upstream
+
+#  second - upstream RPK / gnbd RPK during HS; keep if <5(?), toss others as not clean genes
+#make RPK df
+identical(as.character(iso_exp_genes_bed$V4), as.character(gnbd_norm_counts$geneID))
+identical(as.character(iso_exp_genes_bed$V4), as.character(upstream_norm_counts$geneID)) #these are in the same order so I can just add the gene lengths straight from the bed
+iso_exp_genes_bed$gene_lengths <- abs(iso_exp_genes_bed$V2 - iso_exp_genes_bed$V3)
+up_gnbd_RPK_df <- data.frame(geneID = upstream_norm_counts$geneID, 
+                              gene_length = iso_exp_genes_bed$gene_lengths,
+                              NHS_upstream_RPK = upstream_norm_counts$NHS_Rpb1_pooled / 5000 *1000,
+                              HS_upstream_RPK = upstream_norm_counts$HS_Rpb1_pooled / 5000 *1000,
+                              NHS_gnbd_RPK = gnbd_norm_counts$NHS_Rpb1_pooled / iso_exp_genes_bed$gene_lengths *1000,
+                              HS_gnbd_RPK = gnbd_norm_counts$HS_Rpb1_pooled / iso_exp_genes_bed$gene_lengths *1000 )
+
+#make upstream/gnbd df
+gnbd_v_upstream_df <- data.frame(geneID = upstream_norm_counts$geneID,
+                                 NHS_gnbd_div_up = up_gnbd_RPK_df$NHS_gnbd_RPK / up_gnbd_RPK_df$NHS_upstream_RPK,
+                                 HS_gnbd_div_up = up_gnbd_RPK_df$HS_gnbd_RPK / up_gnbd_RPK_df$HS_upstream_RPK)
+
+#filter
+no_read_in_HS <- filter(gnbd_v_upstream_df, HS_gnbd_div_up >= 1.5)
+no_read_in_NHS <- filter(gnbd_v_upstream_df, NHS_gnbd_div_up >= 1.5)
+no_read_in_both <- filter(gnbd_v_upstream_df, HS_gnbd_div_up >= 1.5 & NHS_gnbd_div_up >= 1.5)
+#
+test <- filter(no_read_in_HS, !(no_read_in_HS$geneID %in% no_read_in_both$geneID))
+
+
+#make bed file
+iso_exp_genes_bed <- read.table("05_making_isolated_genes_list_hg38/gene_lists_bed_files/03c_isolated_expressed_genes.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(iso_exp_genes_bed) <- c("chr","start","end","name","score","strand")
+#select only clean genes out of all iso. exp. genes
+clean_genes_bed <- filter(iso_exp_genes_bed, iso_exp_genes_bed$name %in% no_read_in_HS$geneID)
+```
+
+```{r write out clean genes}
+#write-out
+write_delim(clean_genes_bed, "05_making_isolated_genes_list_hg38/gene_lists_bed_files/04b_clean_isolated_expressed_genes.bed", delim = "\t", col_names = FALSE)
+
+```
+*1,160 clean isolated expressed genes*
+
+to make a heatmap of all expressed isolated genes so that the threshold for clean genes can be visualized
+  -first need to make TSS files to run ghist (also making TTS bed file because it will be useful later)
+```{r make TSS and TTS clean gene bed files}
+##TTS
+#read-in bed file for isolated expressed genes
+tts_iso_exp_genes_bed <- read.table("07_analysis/07_02_bed_files/TTS_isolated_expressed_genes.bed", header = FALSE, sep="\t", stringsAsFactors = FALSE, quote="")
+colnames(tts_iso_exp_genes_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+#split into term defect and no defect
+TTS_clean_genes_bed <- filter(tts_iso_exp_genes_bed, tts_iso_exp_genes_bed$id %in% clean_genes_bed$name)
+
+#check
+for (n in row(TTS_clean_genes_bed)) {
+  stopifnot(TTS_clean_genes_bed$start == TTS_clean_genes_bed$end)
+  print(n)
+}
+
+#write out
+write_delim(TTS_clean_genes_bed, "05_making_isolated_genes_list_hg38/gene_lists_bed_files/04c_TTS_clean_isolated_expressed_genes.bed", delim = "\t", col_names = FALSE)
+
+
+##TSS
+#read-in bed file for isolated expressed genes
+clean_genes_bed <- read.table("05_making_isolated_genes_list_hg38/gene_lists_bed_files/04b_2_7kb_HS_clean_isolated_expressed_genes.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(clean_genes_bed) <- c("chr","start","end","name","score","strand")
+
+#make TSS annotations where end = start = TSS
+tss_clean_genes_bed <- clean_genes_bed
+i = 1
+while(i <= nrow(tss_clean_genes_bed)){
+  #if on + strand, start = TSS and end = TTS
+  if(tss_clean_genes_bed$strand[i]=="+"){
+    tss_clean_genes_bed$end[i] = tss_clean_genes_bed$start[i]
+  } 
+  #if on - strand, end = TSS and start = TTS
+  else if(tss_clean_genes_bed$strand[i]=="-"){
+    tss_clean_genes_bed$start[i] = tss_clean_genes_bed$end[i]
+  }
+  i = i+1
+}
+#check
+for (n in row(tss_clean_genes_bed)) {
+  stopifnot(tss_clean_genes_bed$start == tss_clean_genes_bed$end)
+  print(n)
+}
+
+#write out
+write_delim(tss_clean_genes_bed, "05_making_isolated_genes_list_hg38/gene_lists_bed_files/04c_TSS_clean_isolated_expressed_genes.bed", delim = "\t", col_names = FALSE)
+
+```
+
+ghist TSS
+#<homer> 
+(bash script 05_)
+open in excel because ghist output numbers are a mix of scientific and numeric which confuses R
+sum over gnbd or upstream/ds regions and make ratios then sort based on those ratios
+*see excel file for details*
+
+
+
+? check how my isolated genes overlap with steitz lab genes
+```{r}
+steitz_list <- read.table("gene_lists/steitz_clean_genes.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+steitz_clean_gene_names <- steitz_list[1:4584,4]
+
+my_isolated_genes <- read.table("05_making_isolated_genes_list_hg38/gene_lists_bed_files/isolated_expressed_genes.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+#need to convert my NM# to gene names to compare with steitz list
+MANE_summary_table <- read.table("genome_annotations/NCBI/RefSeq_Select/MANE.GRCh38.v0.93.summary.txt", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+#V4 = gene name, #V6 = NM_#
+conversion_NM_to_names <- MANE_summary_table[,c(4,6)]
+
+my_genes_names_and_NMs <- filter(conversion_NM_to_names, conversion_NM_to_names$V6 %in% my_isolated_genes$V4)
+
+
+overlap <- filter(my_genes_names_and_NMs, my_genes_names_and_NMs$V4 %in% steitz_clean_gene_names)
+#less than half of my expressed isolated genes overlap with the steitz lab expressed isolated genes
+#1553 genes in my list are also in the steitz clean genes list (1553 / 3965 = 39%)
+
+#write out overlapping genes
+write_delim(overlap, "gene_lists/overlapping_clean_genes_with_my_isolated_expressed_genes.tsv", delim = "\t", col_names = FALSE)
+
+#write out conversion table since it will be helpful later too
+write_delim(conversion_NM_to_names, "genome_annotations/NCBI/RefSeq_Select/NM_to_gene_name_table.tsv", delim = "\t", col_names = FALSE)
+```
+

@@ -1,0 +1,463 @@
+---
+title: "investigating biological questions"
+author: "Katy Walsh"
+date: "7/24/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+wd: /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/
+
+```{r setup, include=FALSE}
+library(tidyverse)
+master_df <- read.table("07_analysis/isoloated_genes_norm_counts_gnbd_5kb_20kb.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+#read-in clean genes list
+clean_genes_bed <- read.table("05_making_isolated_genes_list_hg38/gene_lists_bed_files/04c_TSS_2_7kb_HS_clean_isolated_expressed_genes.bed", header = FALSE)
+colnames(clean_genes_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+#filter master_df for clean genes
+master_df <- filter(master_df, master_df$geneID %in% clean_genes_bed$id)
+
+```
+master_df has all counts across gnbd, 3'end-5kb ds and 5kb-20kb ds for input, NHS and HS with Pol II and Ser2P
+
+
+adding Ser2P/RNAPII NHS & HS columns to master_df
+```{r}
+master_df$Ser2P_div_Rpb1_gnbd_NHS <- master_df$gnbd_NHS_Ser2P / master_df$gnbd_NHS_Rpb1
+master_df$Ser2P_div_Rpb1_gnbd_HS <- master_df$gnbd_HS_Ser2P / master_df$gnbd_HS_Rpb1
+master_df$Ser2P_div_Rpb1_5kb_NHS <- master_df$ds_5kb_NHS_Ser2P / master_df$ds_5kb_NHS_Rpb1
+master_df$Ser2P_div_Rpb1_5kb_HS <- master_df$ds_5kb_HS_Ser2P / master_df$ds_5kb_HS_Rpb1
+master_df$Ser2P_div_Rpb1_20kb_NHS <- master_df$ds_20kb_NHS_Ser2P / master_df$ds_20kb_NHS_Rpb1
+master_df$Ser2P_div_Rpb1_20kb_HS <- master_df$ds_20kb_HS_Ser2P / master_df$ds_20kb_HS_Rpb1
+
+```
+
+adding term defect y/n to master_df
+```{r}
+#read in table with term defect categories 
+#(term defect currently defined as fold_change_term_ratio_df$Rpb1_20kb_HS_d_NHS > 1 & fold_change_term_ratio_df$Rpb1_5kb_HS_d_NHS < 1)
+#60% of all clean genes have term defects 
+term_defect_fold_change_df <- read.table("07_analysis/clean_genes_term_defect_ratio.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+df_to_join <- data.frame(geneID = term_defect_fold_change_df$geneID, term_defect = term_defect_fold_change_df$term_defect)
+master_df <- left_join(master_df,df_to_join)
+
+```
+
+master_df now has count data for gnbd, 3'-5kb, 5kb-20kb, Ser2P/PolII for each region, & term defect category
+
+
+Ser2P classification (increase, decrease or no change with HS)
+```{r}
+#ser2P/PolII HS/NHS
+master_df$Ser2P_div_Rpb1_gnbd_fc <- master_df$Ser2P_div_Rpb1_gnbd_HS / master_df$Ser2P_div_Rpb1_gnbd_NHS
+master_df$Ser2P_div_Rpb1_5kb_fc <- master_df$Ser2P_div_Rpb1_5kb_HS / master_df$Ser2P_div_Rpb1_5kb_NHS
+master_df$Ser2P_div_Rpb1_20kb_fc <- master_df$Ser2P_div_Rpb1_20kb_HS / master_df$Ser2P_div_Rpb1_20kb_NHS
+
+#categorize
+catg <- list()
+i=1
+while (i <= nrow(master_df)) {
+  row <- master_df[i,]
+  if (row$Ser2P_div_Rpb1_5kb_fc > 1.5) {
+    catg <- append(catg, "increase")
+  }
+  else if (row$Ser2P_div_Rpb1_5kb_fc < 0.75) {
+    catg <- append(catg, "decrease")
+  }
+  else {
+    catg <- append(catg, "no_change")
+  }
+  print(i)
+  #print(row)
+  print(catg[i])
+  i=i+1
+}
+
+#add onto master_df
+master_df$Ser2P_5kb_change <- catg
+master_df$Ser2P_5kb_change <- factor(master_df$Ser2P_5kb_change, levels = c('increase', 'no_change', 'decrease'))
+
+sum(master_df$Ser2P_5kb_change == "increase") #216 of 1160, 19%, (>1.5)
+sum(master_df$Ser2P_5kb_change == "decrease") #151 of 1160, 13%, (<0.75)
+sum(master_df$Ser2P_5kb_change == "no_change") # 793 of 1160, 68%, (0.75-1.5)
+
+
+### redo with 5-20kb region ###
+catg <- list()
+i=1
+while (i <= nrow(master_df)) {
+  row <- master_df[i,]
+  if (row$Ser2P_div_Rpb1_20kb_fc > 1.5) {
+    catg <- append(catg, "increase")
+  }
+  else if (row$Ser2P_div_Rpb1_20kb_fc < 0.75) {
+    catg <- append(catg, "decrease")
+  }
+  else {
+    catg <- append(catg, "no_change")
+  }
+  print(i)
+  #print(row)
+  print(catg[i])
+  i=i+1
+}
+
+#add onto master_df
+master_df$Ser2P_20kb_change <- catg
+master_df$Ser2P_20kb_change <- factor(master_df$Ser2P_20kb_change, levels = c('increase', 'no_change', 'decrease'))
+
+sum(master_df$Ser2P_20kb_change == "increase") #36 of 1160, 3%, (>1.5)
+sum(master_df$Ser2P_20kb_change == "decrease") #526 of 1160, 45%, (<0.75)
+sum(master_df$Ser2P_20kb_change == "no_change") #598 of 1160, 52%%, (0.75-1.5)
+```
+
+
+overlapp between Ser2P inc or dec genes and term defect genes?
+```{r}
+#how many term defect genes have changed Ser2P?
+term_defect_genes_df <- filter(master_df, master_df$term_defect == "term_defect") #679 clean genes w/term defects
+
+sum(term_defect_genes_df$Ser2P_5kb_change == "increase" | term_defect_genes_df$Ser2P_5kb_change == "decrease") #176, 25% of clean genes w/termination defects also have change in Ser2P
+sum(term_defect_genes_df$Ser2P_5kb_change == "increase") #143, 21% of clean genes with termination defects, 81% of clean genes with termination defects and Ser2P change in 5kb region
+sum(term_defect_genes_df$Ser2P_5kb_change == "decrease") #33, 5% of clean genes with termination defects, 19% of clean genes w/term defects and Ser2P change
+
+151+216 #367 clean genes have Ser2P change in 5kb region; 176 genes have Ser2P change and term defect
+#so about 50% of genes with changes in Ser2P also have termination defects
+
+## repeat for 20kb ds region ##
+sum(term_defect_genes_df$Ser2P_20kb_change == "increase" | term_defect_genes_df$Ser2P_20kb_change == "decrease") #315, 46% of clean genes w/termination defects also have change in Ser2P
+sum(term_defect_genes_df$Ser2P_20kb_change == "increase") #1, 0.15% of clean genes with termination defects, 0.3% of clean genes with termination defects and Ser2P change in 5kb region
+sum(term_defect_genes_df$Ser2P_20kb_change == "decrease") #314, 100% of clean genes with termination defects, 100% of clean genes w/term defects and Ser2P change
+36+526 #562 clean genes have Ser2P change in 20kb region; 315 have Ser2P change and term defect
+#so about 56% of genes with Ser2P changes in ds region have termination defects 
+
+```
+
+make gene lists of each category to show overlapps
+```{r}
+#term defect clean genes
+term_defect_clean_genes <- filter(master_df, master_df$term_defect == "term_defect")
+term_defect_clean_genes <- term_defect_clean_genes$geneID
+#no defect clean genes
+no_defect_clean_genes <- filter(master_df, master_df$term_defect == "no_term_defect")
+no_defect_clean_genes <- no_defect_clean_genes$geneID
+
+#Ser2P increase
+Ser2P_5kb_inc_clean_genes <- filter(master_df, master_df$Ser2P_5kb_change == "increase")
+Ser2P_5kb_inc_clean_genes <- Ser2P_5kb_inc_clean_genes$geneID
+Ser2P_20kb_inc_clean_genes <- filter(master_df, master_df$Ser2P_20kb_change == "increase")
+Ser2P_20kb_inc_clean_genes <- Ser2P_20kb_inc_clean_genes$geneID
+#Ser2P decrease
+Ser2P_5kb_dec_clean_genes <- filter(master_df, master_df$Ser2P_5kb_change == "decrease")
+Ser2P_5kb_dec_clean_genes <- Ser2P_5kb_dec_clean_genes$geneID
+Ser2P_20kb_dec_clean_genes <- filter(master_df, master_df$Ser2P_20kb_change == "decrease")
+Ser2P_20kb_dec_clean_genes <- Ser2P_20kb_dec_clean_genes$geneID
+#Ser2P no change
+Ser2P_5kb_nc_clean_genes <- filter(master_df, master_df$Ser2P_5kb_change == "no_change")
+Ser2P_5kb_nc_clean_genes <- Ser2P_5kb_nc_clean_genes$geneID
+Ser2P_20kb_nc_clean_genes <- filter(master_df, master_df$Ser2P_20kb_change == "no_change")
+Ser2P_20kb_nc_clean_genes <- Ser2P_20kb_nc_clean_genes$geneID
+
+#put each list into new df and export
+  #need to add NA's to end of lists so data.frame is happy using: c(listX,rep(NA,793-length(listX))
+term_defect_and_ser2P_change_clean_genes <- data.frame(term_defect_clean_genes = c(term_defect_clean_genes,rep(NA,793-length(term_defect_clean_genes))),
+                                                       no_defect_clean_genes = c(no_defect_clean_genes,rep(NA,793-length(no_defect_clean_genes))),
+                                                       Ser2P_5kb_inc_clean_genes = c(Ser2P_5kb_inc_clean_genes,rep(NA,793-length(Ser2P_5kb_inc_clean_genes))),
+                                                       Ser2P_20kb_inc_clean_genes = c(Ser2P_20kb_inc_clean_genes,rep(NA,793-length(Ser2P_20kb_inc_clean_genes))),
+                                                       Ser2P_5kb_dec_clean_genes = c(Ser2P_5kb_dec_clean_genes,rep(NA,793-length(Ser2P_5kb_dec_clean_genes))),
+                                                       Ser2P_20kb_dec_clean_genes = c(Ser2P_20kb_dec_clean_genes,rep(NA,793-length(Ser2P_20kb_dec_clean_genes))),
+                                                       Ser2P_5kb_nc_clean_genes = c(Ser2P_5kb_nc_clean_genes,rep(NA,793-length(Ser2P_5kb_nc_clean_genes))),
+                                                       Ser2P_20kb_nc_clean_genes = c(Ser2P_20kb_nc_clean_genes,rep(NA,793-length(Ser2P_20kb_nc_clean_genes))))
+write_delim(term_defect_and_ser2P_change_clean_genes, "07_analysis/07_03_investigating_biological_questions/term_defect_and_ser2P_change_clean_genes_list.tsv", delim = "\t", col_names = TRUE)
+#then went back and deleted NA's in excel and re-saved
+
+
+```
+
+
+1. made venn diagrams of the category overlaps (see notes "info learned from investigating biological questions" in 07_03 folder)
+
+2. ran TTS hist for each Ser2P category
+  -first need to make TTS bed files for each (filter from all clean gene TTS bed file?)
+```{r}
+all_iso_genes_TTS_bed <- read.table("07_analysis/07_02_bed_files/TTS_isolated_expressed_genes.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+colnames(all_iso_genes_TTS_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+#make count window for hist: -2kb to +20kb ds
+ds_20kb_bed <- all_iso_genes_TTS_bed
+i = 1
+while(i <= nrow(ds_20kb_bed)){
+  #if on + strand, start = TSS and end = TTS
+  #start = start - 2000, end = end + 20000
+  if(ds_20kb_bed$strand[i]=="+"){
+    ds_20kb_bed$start[i] = ds_20kb_bed$start[i] - 2000
+    ds_20kb_bed$end[i] = ds_20kb_bed$end[i] + 20000
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #start = start - 20000, end = end + 2000
+  else{
+    ds_20kb_bed$end[i] = ds_20kb_bed$end[i] + 2000
+    ds_20kb_bed$start[i] = ds_20kb_bed$start[i] - 20000
+  }
+  i = i+1
+}
+
+#write out
+write_delim(ds_20kb_bed, "07_analysis/07_03_investigating_biological_questions/07_03_bed_files/all_iso_exp_genes_2kb_upstream_to_20kb_ds.bed", delim = "\t", col_names = FALSE)
+
+#filter to make bed file for each group
+Ser2p_dec_20kb_ds_20kb_bed <- filter(ds_20kb_bed, ds_20kb_bed$id %in% Ser2P_20kb_dec_clean_genes)
+Ser2p_dec_5kb_ds_20kb_bed <- filter(ds_20kb_bed, ds_20kb_bed$id %in% Ser2P_5kb_dec_clean_genes)
+Ser2p_inc_20kb_ds_20kb_bed <- filter(ds_20kb_bed, ds_20kb_bed$id %in% Ser2P_20kb_inc_clean_genes)
+Ser2p_inc_5kb_ds_20kb_bed <- filter(ds_20kb_bed, ds_20kb_bed$id %in% Ser2P_5kb_inc_clean_genes)
+Ser2p_nc_20kb_ds_20kb_bed <- filter(ds_20kb_bed, ds_20kb_bed$id %in% Ser2P_20kb_nc_clean_genes)
+Ser2p_nc_5kb_ds_20kb_bed <- filter(ds_20kb_bed, ds_20kb_bed$id %in% Ser2P_5kb_nc_clean_genes)
+
+#write out
+write_delim(Ser2p_dec_20kb_ds_20kb_bed, "07_analysis/07_03_investigating_biological_questions/07_03_bed_files/Ser2p_dec_20kbds_genes_2kb_upstream_to_20kb_ds.bed", delim = "\t", col_names = FALSE)
+write_delim(Ser2p_dec_5kb_ds_20kb_bed, "07_analysis/07_03_investigating_biological_questions/07_03_bed_files/Ser2p_dec_5kbds_genes_2kb_upstream_to_20kb_ds.bed", delim = "\t", col_names = FALSE)
+write_delim(Ser2p_inc_20kb_ds_20kb_bed, "07_analysis/07_03_investigating_biological_questions/07_03_bed_files/Ser2p_inc_20kbds_genes_2kb_upstream_to_20kb_ds.bed", delim = "\t", col_names = FALSE)
+write_delim(Ser2p_inc_5kb_ds_20kb_bed, "07_analysis/07_03_investigating_biological_questions/07_03_bed_files/Ser2p_inc_5kbds_genes_2kb_upstream_to_20kb_ds.bed", delim = "\t", col_names = FALSE)
+write_delim(Ser2p_nc_20kb_ds_20kb_bed, "07_analysis/07_03_investigating_biological_questions/07_03_bed_files/Ser2p_nc_20kbds_genes_2kb_upstream_to_20kb_ds.bed", delim = "\t", col_names = FALSE)
+write_delim(Ser2p_nc_5kb_ds_20kb_bed, "07_analysis/07_03_investigating_biological_questions/07_03_bed_files/Ser2p_nc_5kbds_genes_2kb_upstream_to_20kb_ds.bed", delim = "\t", col_names = FALSE)
+```
+
+
+  -homer hist command template: (full set of hist commands in 07_03c bash script)
+#<homer> annotatePeaks.pl <bed_file path> hg38 -size "given" -hist 200 -norm 5E7 -d <Tag Directory Path> > <output file path>
+
+
+
+making TTS bed file for genes with inc Ser2P for both 5kb and 20kb
+```{r}
+#make gene ID list
+Ser2P_catg_df <- read.table("07_analysis/07_03_investigating_biological_questions/term_defect_and_ser2P_change_clean_genes_list.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+both_inc_genes_filter <- filter(Ser2P_catg_df, Ser2P_catg_df$Ser2P_5kb_inc_clean_genes %in% Ser2P_catg_df$Ser2P_20kb_inc_clean_genes)
+both_inc_genes_list <- both_inc_genes_filter$Ser2P_5kb_inc_clean_genes
+both_inc_genes_list <- both_inc_genes_list[1:22]
+
+#read-in TTS window bed file
+all_iso_genes_TTS_window_bed <- read.table("07_analysis/07_03_investigating_biological_questions/07_03_bed_files/all_iso_exp_genes_2kb_upstream_to_20kb_ds.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+colnames(all_iso_genes_TTS_window_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+#filter for those 22 genes
+both_inc_TTS_window_bed <- filter(all_iso_genes_TTS_window_bed, all_iso_genes_TTS_window_bed$id %in% both_inc_genes_list)
+
+#write out bed file
+write_delim(both_inc_TTS_window_bed, "07_analysis/07_03_investigating_biological_questions/07_03_bed_files/Ser2p_inc_both_genes_2kb_upstream_to_20kb_ds.bed", delim = "\t", col_names = FALSE)
+```
+
+basch script 07_03d
+#<homer> annotatePeaks.pl <bed_file path> hg38 -size "given" -hist 200 -norm 5E7 -d <Tag Directory Path> > <output file path>
+
+
+
+
+
+3. ghist all clean genes -> Ser2P/PolII (did with all iso exp genes because already had ghist outputs)
+  -heatmap sorted by Ser2P/PolII signal TTS-5kb (just shows general loss of Ser2 +p with HS)
+
+
+
+
+4. Peak characteristics (corrolate with HS response/term defect?)
+  from all iso exp genes ghist:
+        -"middle" of peak: found peak maxima (in the range -2kb to +20kb ds of TTS) 
+        -peak width: where peak is above gnbd avg (gnbd avg rpk calc over 2kb upstream of TTS)
+
+```{r}
+#------------------------#
+### SET UP ###
+#------------------------#
+#load in individual ghist files, sorted by NM_#
+NHS_Rpb1_ghist <- read.table("07_analysis/07_03_investigating_biological_questions/ghist_data_for_peak_charactarization/ghist_NHS_Rpb1_sorted_by_geneIDnum.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+HS_Rpb1_ghist <- read.table("07_analysis/07_03_investigating_biological_questions/ghist_data_for_peak_charactarization/ghist_HS_Rpb1_sorted_by_geneIDnum.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+NHS_Ser2P_ghist <- read.table("07_analysis/07_03_investigating_biological_questions/ghist_data_for_peak_charactarization/ghist_NHS_Ser2P_sorted_by_geneIDnum.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+HS_Ser2P_ghist <- read.table("07_analysis/07_03_investigating_biological_questions/ghist_data_for_peak_charactarization/ghist_HS_Ser2P_sorted_by_geneIDnum.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+col_names <- c("Gene",	"-20000",	"-19800",	"-19600",	"-19400",	"-19200",	"-19000",	"-18800",	"-18600",	"-18400",	"-18200",	"-18000",	"-17800",	"-17600",	"-17400",	"-17200",	"-17000",	"-16800",	"-16600",	"-16400",	"-16200",	"-16000",	"-15800",	"-15600",	"-15400",	"-15200",	"-15000",	"-14800",	"-14600",	"-14400",	"-14200",	"-14000",	"-13800",	"-13600",	"-13400",	"-13200",	"-13000",	"-12800",	"-12600",	"-12400",	"-12200",	"-12000",	"-11800",	"-11600",	"-11400",	"-11200",	"-11000",	"-10800",	"-10600",	"-10400",	"-10200",	"-10000",	"-9800",	"-9600",	"-9400",	"-9200",	"-9000",	"-8800",	"-8600",	"-8400",	"-8200",	"-8000",	"-7800",	"-7600",	"-7400",	"-7200",	"-7000",	"-6800",	"-6600",	"-6400",	"-6200",	"-6000",	"-5800",	"-5600",	"-5400",	"-5200",	"-5000",	"-4800",	"-4600",	"-4400",	"-4200",	"-4000",	"-3800",	"-3600",	"-3400",	"-3200",	"-3000",	"-2800",	"-2600",	"-2400",	"-2200",	"-2000",	"-1800",	"-1600",	"-1400",	"-1200",	"-1000",	"-800",	"-600",	"-400",	"-200",	"0",	"200",	"400",	"600",	"800",	"1000",	"1200",	"1400",	"1600",	"1800",	"2000",	"2200",	"2400",	"2600",	"2800",	"3000",	"3200",	"3400",	"3600",	"3800",	"4000",	"4200",	"4400",	"4600",	"4800",	"5000",	"5200",	"5400",	"5600",	"5800",	'6000',	"6200",	"6400",	"6600",	"6800",	"7000",	"7200",	"7400",	"7600",	"7800",	"8000",	"8200",	"8400",	"8600",	"8800",	"9000",	"9200",	"9400",	"9600",	"9800",	"10000",	"10200",	"10400",	"10600",	"10800",	"11000",	"11200",	"11400",	"11600",	"11800",	"12000",	"12200",	"12400",	"12600",	"12800",	"13000",	"13200",	"13400",	"13600",	"13800",	"14000",	"14200",	"14400",	"14600",	"14800",	"15000",	"15200",	"15400",	"15600",	"15800",	"16000",	"16200",	"16400",	"16600",	"16800",	"17000",	"17200",	"17400",	"17600",	"17800",	"18000",	"18200",	"18400",	"18600",	"18800",	"19000",	"19200",	"19400",	"19600",	"19800",	"20000")
+colnames(NHS_Rpb1_ghist) <- col_names
+colnames(HS_Rpb1_ghist) <- col_names
+colnames(NHS_Ser2P_ghist) <- col_names
+colnames(HS_Ser2P_ghist) <- col_names
+
+NHS_Rpb1_ghist <- column_to_rownames(NHS_Rpb1_ghist, var = "Gene")
+HS_Rpb1_ghist <- column_to_rownames(HS_Rpb1_ghist, var = "Gene")
+NHS_Ser2P_ghist <- column_to_rownames(NHS_Ser2P_ghist, var = "Gene")
+HS_Ser2P_ghist <- column_to_rownames(HS_Ser2P_ghist, var = "Gene")
+
+#trim to -2,000 bp from TTS (all genes are over 2kb, don't need to go up to 20kb)
+NHS_Rpb1_ghist <- NHS_Rpb1_ghist[91:201]
+HS_Rpb1_ghist <- HS_Rpb1_ghist[91:201]
+NHS_Ser2P_ghist <- NHS_Ser2P_ghist[91:201]
+HS_Ser2P_ghist <- HS_Ser2P_ghist[91:201]
+
+
+#set up peak info df to add data to for each gene
+peak_info_df <- data.frame(geneID = NHS_Rpb1_ghist$Gene) #will add maxima and width later
+TTS_coordinates_by_col_num <- colnames(NHS_Rpb1_ghist)
+
+#------------------------#
+### PEAK MAXIMA ###
+#------------------------#
+#calc peak maxima for each gene
+NHS_Rpb1_max <- max.col(NHS_Rpb1_ghist, ties.method = "first")
+HS_Rpb1_max <- max.col(HS_Rpb1_ghist, ties.method = "first")
+NHS_Ser2P_max <- max.col(NHS_Ser2P_ghist, ties.method = "first")
+HS_Ser2P_max <- max.col(HS_Ser2P_ghist, ties.method = "first")
+
+#convert col num to TTS coordinate
+my_func <- function(x){
+  TTS_coordinates_by_col_num[x]
+}
+NHS_Rpb1_max_coord <- sapply(NHS_Rpb1_max, my_func)
+HS_Rpb1_max_coord <- sapply(HS_Rpb1_max, my_func)
+NHS_Ser2P_max_coord <- sapply(NHS_Ser2P_max, my_func)
+HS_Ser2P_max_coord <- sapply(HS_Ser2P_max, my_func)
+
+#add to peak_info_df
+peak_info_df$NHS_Rpb1_max_coord <- NHS_Rpb1_max_coord
+peak_info_df$HS_Rpb1_max_coord <- HS_Rpb1_max_coord
+peak_info_df$NHS_Ser2P_max_coord <- NHS_Ser2P_max_coord
+peak_info_df$HS_Ser2P_max_coord <- HS_Ser2P_max_coord
+
+  ##need to check individual genes by hand to make sure this worked well
+
+#------------------------#
+### PEAK WIDTH ###
+#------------------------#
+## first calc gnbd avg (-2kb to TTS)
+  #one bin = 200bp
+NHS_Rpb1_gnbd_avg <- list()
+HS_Rpb1_gnbd_avg <- list()
+NHS_Ser2P_gnbd_avg <- list()
+HS_Ser2P_gnbd_avg <- list()
+i=1
+while (i<=3527) {
+  NHS_Rpb1_gnbd_avg <- append(NHS_Rpb1_gnbd_avg, mean(unlist(NHS_Rpb1_ghist[i,1:8]))) #TTS = bin 10, backed off since the peak can sometimes start before the TTS
+  HS_Rpb1_gnbd_avg <- append(HS_Rpb1_gnbd_avg, mean(unlist(HS_Rpb1_ghist[i,1:8])))
+  NHS_Ser2P_gnbd_avg <- append(NHS_Ser2P_gnbd_avg, mean(unlist(NHS_Ser2P_ghist[i,1:8])))
+  HS_Ser2P_gnbd_avg <- append(HS_Ser2P_gnbd_avg, mean(unlist(HS_Ser2P_ghist[i,1:8])))
+  i=i+1
+}
+gnbd_avg_df <- data.frame(Gene = rownames(NHS_Rpb1_ghist),
+                          NHS_Rpb1_gnbd_avg = unlist(NHS_Rpb1_gnbd_avg),
+                          HS_Rpb1_gnbd_avg = unlist(HS_Rpb1_gnbd_avg),
+                          NHS_Ser2P_gnbd_avg = unlist(NHS_Ser2P_gnbd_avg),
+                          HS_Ser2P_gnbd_avg = unlist(HS_Ser2P_gnbd_avg))
+
+
+## then check each gene for bins above gnbd avg (boolean matrix, TTS to 20kb ds)
+row_col_names_list <- list(row_names = row.names(NHS_Rpb1_ghist), col_names = colnames(NHS_Rpb1_ghist[,11:111]))
+NHS_Rpb1_peak_matrix <- matrix(nrow = nrow(NHS_Rpb1_ghist), ncol = 101, dimnames = row_col_names_list)
+x=1 #row (gene)
+while (x<=nrow(NHS_Rpb1_ghist)) {
+  y=11 #TTS+1 bin (starting at TTS+1 bin and going up)
+  target_gene_vector <- vector(mode = "logical") #reset vector
+  while(y<=ncol(NHS_Rpb1_ghist)){
+    if (NHS_Rpb1_ghist[x,y]>gnbd_avg_df$NHS_Rpb1_gnbd_avg[x]) {
+      target_gene_vector <- append(target_gene_vector, TRUE)
+    }
+    else{
+     target_gene_vector <- append(target_gene_vector, FALSE)
+    }
+    y=y+1
+  }
+  NHS_Rpb1_peak_matrix[x,] <- target_gene_vector
+  x=x+1
+}
+#repeat for HS and Ser2P
+HS_Rpb1_peak_matrix <- matrix(nrow = nrow(HS_Rpb1_ghist), ncol = 101, dimnames = row_col_names_list)
+NHS_Ser2P_peak_matrix <- matrix(nrow = nrow(NHS_Ser2P_ghist), ncol = 101, dimnames = row_col_names_list)
+HS_Ser2P_peak_matrix <- matrix(nrow = nrow(HS_Ser2P_ghist), ncol = 101, dimnames = row_col_names_list)
+
+n <- HS_Rpb1_ghist #change for each of the 3 remaining samples and run 3 times *and change gnbd avg index and matrix name
+x=1 #row (gene)
+while (x<=nrow(n)) {
+  y=11 #TTS+1 bin (starting at TTS+1 bin and going up)
+  target_gene_vector <- vector(mode = "logical") #reset vector
+  while(y<=ncol(n)){
+    if (n[x,y]>gnbd_avg_df$HS_Rpb1_gnbd_avg[x]) { ## AND CHANGE GNBD AVG HERE! ##
+      target_gene_vector <- append(target_gene_vector, TRUE)
+    }
+    else{
+     target_gene_vector <- append(target_gene_vector, FALSE)
+    }
+    y=y+1
+  }
+  HS_Rpb1_peak_matrix[x,] <- target_gene_vector ## AND CHANGE MATRIX NAME HERE! ##
+  x=x+1
+}
+
+#write out so don't need to run again
+write.table(NHS_Rpb1_peak_matrix, "07_analysis/07_03_investigating_biological_questions/peak_info/NHS_Rpb1_peak_matrix.tsv", sep = "\t", col.names = TRUE, row.names = TRUE)
+write.table(HS_Rpb1_peak_matrix, "07_analysis/07_03_investigating_biological_questions/peak_info/HS_Rpb1_peak_matrix.tsv", sep = "\t", col.names = TRUE, row.names = TRUE)
+write.table(NHS_Ser2P_peak_matrix, "07_analysis/07_03_investigating_biological_questions/peak_info/NHS_Ser2P_peak_matrix.tsv", sep = "\t", col.names = TRUE, row.names = TRUE)
+write.table(HS_Ser2P_peak_matrix, "07_analysis/07_03_investigating_biological_questions/peak_info/HS_Ser2P_peak_matrix.tsv", sep = "\t", col.names = TRUE, row.names = TRUE)
+
+
+## check for 3 bins in a row to be TRUE -> keep as a peak
+  #read-in peak files
+NHS_Rpb1_peak_matrix <- read.table("07_analysis/07_03_investigating_biological_questions/peak_info/NHS_Rpb1_peak_matrix.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+HS_Rpb1_peak_matrix <- read.table("07_analysis/07_03_investigating_biological_questions/peak_info/HS_Rpb1_peak_matrix.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+NHS_Ser2P_peak_matrix <- read.table("07_analysis/07_03_investigating_biological_questions/peak_info/NHS_Ser2P_peak_matrix.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+HS_Ser2P_peak_matrix <- read.table("07_analysis/07_03_investigating_biological_questions/peak_info/HS_Ser2P_peak_matrix.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+  #fix col names
+colnames(NHS_Rpb1_peak_matrix) <- colnames(NHS_Rpb1_ghist[,11:111])
+colnames(HS_Rpb1_peak_matrix) <- colnames(NHS_Rpb1_ghist[,11:111])
+colnames(NHS_Ser2P_peak_matrix) <- colnames(NHS_Rpb1_ghist[,11:111])
+colnames(HS_Ser2P_peak_matrix) <- colnames(NHS_Rpb1_ghist[,11:111])
+
+#check if 3 bins in a row are above background (3 bins = 600bp)
+x=1 #row (gene) 
+y=3 #col (position/bin) *starting at bin 3 so that we don't index a negative # when checking x-1 or x-2
+n <- NHS_Rpb1_peak_matrix #editing peak matrix! (can read-in original again if needed) change and run for each of the 4 samples
+#n <- HS_Rpb1_peak_matrix
+#n <- NHS_Ser2P_peak_matrix
+#n <- HS_Ser2P_peak_matrix
+while (x<=nrow(n)) {
+  #cycle through rows
+  while(y<=ncol(n)-2) { 
+    if (n[x,y] == TRUE & n[x,(y+1)] == TRUE & n[x,(y+2)] == TRUE | n[x,y] == TRUE & n[x,(y-1)] == TRUE & n[x,(y+1)] == TRUE | n[x,y] == TRUE & n[x,(y-1)] == TRUE & n[x,(y-2)] == TRUE) {
+     n[x,y] <- TRUE
+    }  else{
+     n[x,y] <- FALSE
+    }
+    y=y+1 #move to next row/gene
+  }
+  x=x+1
+}
+#won't change first two or last two columns so trim those off
+n <- n[,3:99]
+
+NHS_Rpb1_polished_peak_matrix <- n
+#HS_Rpb1_polished_peak_matrix <- n
+#NHS_Ser2P_polished_peak_matrix <- n
+#HS_Ser2P_polished_peak_matrix <- n
+
+## call peaks (a. includes maxima, b. widest peak (most TRUE's in a row))
+#a. maxima in peak_info_df
+#find peak that coresponds with maxima
+
+#b. find widest peak
+t <- which(NHS_Rpb1_polished_peak_matrix[1,] == TRUE)
+cumprod(unlist(NHS_Rpb1_polished_peak_matrix[1,]))
+n <- NHS_Rpb1_polished_peak_matrix
+r=1 #row (gene)
+while (r<= nrow(n)) {
+  var <- as.vector(cumprod(unlist(n[r,])))
+  start <- detect_index(var, .f = 1,.dir = "forward")
+  end <- max.col(var, ties.method = "last")
+  r=r+1
+}
+library(purrr)
+
+
+#are genes with short NHS Rpb1 peaks close to the TTS (NCL-like) more likely to have Ser2P loss? and genes with broad peaks with maxima further from the TTS (SRSF3-like) less like to have altered Ser2P?
+
+```
+
+
+
+

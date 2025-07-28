@@ -1,0 +1,1983 @@
+---
+title: "07f_ChIPseq_scatterplots"
+author: "Katy Walsh"
+date: "2/25/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+  ******************************************************************************************************************
+  
+  *** DO NOT USE ***
+  Used homer annotatePeaks ghist to count tags but that adds a weird extra normalization so made results look funny
+  Must use bedtools coverage or homer analyzeRepeats 
+  -> see 07f R markdown in ChIP-seq/hg38/07_analysis/R_markdowns for updated script
+  
+  ******************************************************************************************************************
+
+
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(grid)
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+library(ggfortify)
+library(gtable)
+library(ggpmisc)
+
+#wd: setwd("~/Desktop/Katy/HS_4sU-Seq_2021")
+
+```
+setup plot settings:
+```{r plotting setup}
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+
+theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+    )
+
+###defining plot histogram function###
+#testing
+#hist_df <- Rpb1_hist_data
+#plot_title <- "Metagene Analysis of Pol II ocupancy at the TTS"
+
+    
+plot_hist_function <- function(hist_df, plot_title, subt = "isolated genes"){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line() +
+    labs(subtitle = subt, x= "distance from TTS", y="avg norm tag coverage") +
+    ggtitle(plot_title) +
+    scale_color_manual(values=c("black", "red", "grey"))
+}
+
+```
+
+add activated / repressed cat to master_df
+  (using DESeq2 designations from gnbd analysis ran in 07c)
+```{r act and rep, Don't auto run this chunk!}
+#read in master_df
+master_df <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/FINAL_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#read in DESeq2 results
+DESeq2_results <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07c_DESeq2/DESeq2_results/all_genes_all_results.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#filter DESeq2 results to just master_df genes
+DESeq2_results <- filter(DESeq2_results, DESeq2_results$transcriptID %in% master_df$transcriptID)
+test <- filter(master_df, !(master_df$transcriptID %in% DESeq2_results$transcriptID) )
+
+#keep gnbd fc and padj and add to master df
+res <- DESeq2_results[,c(1,3,4)]
+master_df <- full_join(master_df, res, "transcriptID")
+
+#make another col with activated/repressed/nc
+r=1
+l <- vector()
+while (r<=nrow(master_df)) {
+  if(master_df$transcriptID[r] == "ENST00000261965.8") {
+    l[r] <- "no change"
+    print(c(r, master_df$transcriptID[r], "NA" ))
+  }
+  else if (master_df$gnbd_log2FoldChange[r] >= log2(2) & master_df$gnbd_padj[r] <= 0.05) {
+    l[r] <- "activated"
+    print(c(r, master_df$transcriptID[r], "activated" ))
+  }
+  else if (master_df$gnbd_log2FoldChange[r] <= log2(0.5) & master_df$gnbd_padj[r] <= 0.05) {
+    l[r] <- "repressed"
+    print(c(r, master_df$transcriptID[r], "repressed" ))
+  }
+  else{
+    l[r] <- "no change"
+    print(c(r, master_df$transcriptID[r], "no change" ))
+  }
+  r=r+1
+}
+#add col to master df (rerun loop and add to correct col, too lazy to write seperate vector for each threshold)
+#master_df$DESeq_1.5fold_cat <- l
+master_df$DESeq_2fold_cat <- l
+
+#what are the numbers?
+summary(master_df$DESeq_1.5_cat == "activated") #1.5 fold inc 669 genes (2-fold inc = 365 genes)
+summary(master_df$DESeq_1.5_cat == "repressed") #1.5 fold dec 2748 genes (2-fold dec = 851 genes)
+summary(master_df$DESeq_1.5_cat == "no change") #less than 1.5 fold change 2561 genes (less than 2-fold = 4762 genes)
+
+#sanity check
+summary(master_df$DESeq_2fold_cat == "repressed" & master_df$DESeq_1.5fold_cat == "activated") #nothing is cat as activated in one and repressed using the other threshold, just changes from nc to act or rep -> good
+
+#save master df
+write_delim(master_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/FINAL_master_df.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+make scatterplot of Pol II fc vs Ser2P fc - color dots based on activated or repressed
+  count reads for 0-5kb ds
+  
+    homer ghist 1kb bins, TTS-20kb ds
+    bash script: 07f_ghist_ChIP.sh
+    
+
+
+make df - calc fc for Pol II and Ser2P
+```{r read-in}
+#read-in hist outputs
+fl <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/homer_hist_outputs/ghist_all_ChIP_genes", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+ghist <- lapply(fl, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ghist) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/homer_hist_outputs/ghist_all_ChIP_genes/|.tsv", "", fl)
+
+```
+sum first 5kb ds
+```{r sum df}
+#why don't all the lists have the same number of genes?!?!?
+filter(ghist$NHS_Rpb1_R6, !(ghist$NHS_Rpb1_R6$Gene %in% ghist$HS_Ser2P_R8$Gene)) 
+#ENST00000622306.5 missing in input and HS_Ser2P_R8
+
+#remove ENST00000622306.5, causing issues
+ghist$HS_Rpb1_R6 <- filter(ghist$HS_Rpb1_R6, !(ghist$HS_Rpb1_R6$Gene == 'ENST00000622306.5') )
+ghist$NHS_Rpb1_R6 <- filter(ghist$NHS_Rpb1_R6, !(ghist$NHS_Rpb1_R6$Gene == 'ENST00000622306.5') )
+ghist$HS_Rpb1_R8 <- filter(ghist$HS_Rpb1_R8, !(ghist$HS_Rpb1_R8$Gene == 'ENST00000622306.5') )
+ghist$NHS_Rpb1_R8 <- filter(ghist$NHS_Rpb1_R8, !(ghist$NHS_Rpb1_R8$Gene == 'ENST00000622306.5') )
+ghist$HS_Ser2P_R8 <- filter(ghist$HS_Ser2P_R8, !(ghist$HS_Ser2P_R8$Gene == 'ENST00000622306.5') )
+ghist$NHS_Ser2P_R8 <- filter(ghist$NHS_Ser2P_R8, !(ghist$NHS_Ser2P_R8$Gene == 'ENST00000622306.5') )
+ghist$HS_Ser2P_R6 <- filter(ghist$HS_Ser2P_R6, !(ghist$HS_Ser2P_R6$Gene == 'ENST00000622306.5') )
+ghist$NHS_Ser2P_R6 <- filter(ghist$NHS_Ser2P_R6, !(ghist$NHS_Ser2P_R6$Gene == 'ENST00000622306.5') )
+ghist$input <- filter(ghist$input, !(ghist$input$Gene == 'ENST00000622306.5') )
+
+
+#make sure added rows are in same order
+#o <- match(rownames(input_df), rownames(ghist$NHS_Rpb1_R6)) 
+#input_df <- input_df[ match(rownames(input_df), rownames(ghist$NHS_Rpb1_R6)), ]
+#HS_Ser2P_R8_df <- HS_Ser2P_R8_df[ match(rownames(HS_Ser2P_R8_df), rownames(ghist$NHS_Rpb1_R6)), ]
+
+
+
+### sum df ###
+#make df with sum of first 5kb ds
+sum_5kb_df <- data.frame(transcriptID = ghist$input$Gene, 
+                         input = rowSums(ghist$input[,23:27]), 
+                         NHS_Rpb1 = ((rowSums(ghist$NHS_Rpb1_R6[,c(23:27)]) + rowSums(ghist$NHS_Rpb1_R8[,c(23:27)]) )/2), 
+                         HS_Rpb1 = ((rowSums(ghist$HS_Rpb1_R6[,c(23:27)]) + rowSums(ghist$HS_Rpb1_R8[,c(23:27)]) )/2),
+                         NHS_Ser2P = ((rowSums(ghist$NHS_Ser2P_R6[,c(23:27)]) + rowSums(ghist$NHS_Ser2P_R8[,c(23:27)]) )/2),
+                         HS_Ser2P = ((rowSums(ghist$HS_Ser2P_R6[,c(23:27)]) + rowSums(ghist$HS_Ser2P_R8[,c(23:27)]) )/2)
+                         )
+
+
+    #identical(input_df$Gene, names( ((rowSums(ghist$HS_Rpb1_R6[,c(23:27)]) + rowSums(ghist$HS_Rpb1_R8[,c(23:27)]) )/2) ) ) 
+    #good, the DFs with added missing gene are in the same order as the others so should all match the order of gene ID col
+
+#need to add activated or repressed
+master_df <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/FINAL_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+sum_5kb_df <- left_join(sum_5kb_df, master_df[c(1,25)], by = 'transcriptID' ) #(keeps all rows in first df (x) )
+
+
+#save
+write_delim(sum_5kb_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/sum_counts_first5kbds.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+```{r FC dfs}
+### FC df ###
+#calc fold change
+fc_5kb_df <- data.frame(transcriptID = sum_5kb_df$transcriptID, 
+                         Rpb1_FC = sum_5kb_df$HS_Rpb1 / sum_5kb_df$NHS_Rpb1, 
+                         Ser2P_FC = sum_5kb_df$HS_Ser2P / sum_5kb_df$NHS_Ser2P
+                        )
+#add act or rep
+fc_5kb_df <- left_join(fc_5kb_df, sum_5kb_df[c(1,7)], by = 'transcriptID')
+#remove ENST00000622306.5, causing issues
+fc_5kb_df <- fc_5kb_df[!(fc_5kb_df$transcriptID == 'ENST00000622306.5'),]
+
+#save
+write_delim(fc_5kb_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/HSdNHS_fold_change_first5kbds.tsv", delim = "\t", col_names = TRUE)
+
+
+### log2 FC df ###
+log2_fc_df <-  data.frame(transcriptID = fc_5kb_df$transcriptID, 
+                         Rpb1_FC = log2(fc_5kb_df$Rpb1_FC) , 
+                         Ser2P_FC = log2(fc_5kb_df$Ser2P_FC),
+                         gnbd_diff_expr <- fc_5kb_df$DESeq_2fold_cat
+                        )
+#save
+write_delim(log2_fc_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/log2_fold_change_HSdNHS_first5kbds.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+
+need to remove genes with low or zero signal before calculating FC so not dividing by super small numbers
+```{r above input filter}
+#checking against input for each gene
+exp_sum_5kb_df <- filter(sum_5kb_df, sum_5kb_df$NHS_Rpb1 > 1.5*(sum_5kb_df$input) & 
+                                     sum_5kb_df$HS_Rpb1 > 1.5*(sum_5kb_df$input) &
+                                     sum_5kb_df$NHS_Ser2P > 1.5*(sum_5kb_df$input) &
+                                     sum_5kb_df$HS_Ser2P > 1.5*(sum_5kb_df$input) 
+                        )
+#only 1300 genes...
+
+
+#avg input sums (more consistant, Tom had issues previously with using the input at each gene)
+avg_input <- mean(sum_5kb_df$input)
+avg_exp_sum_5kb_df <- filter(sum_5kb_df, sum_5kb_df$NHS_Rpb1 > 1.5*(avg_input) & 
+                                     sum_5kb_df$HS_Rpb1 > 1.5*(avg_input) &
+                                     sum_5kb_df$NHS_Ser2P > 1.5*(avg_input) &
+                                     sum_5kb_df$HS_Ser2P > 1.5*(avg_input) 
+                             )
+#only 1000 genes...
+
+#what if we add back in genes that are above background in NHS only?
+NHS_exp_sum_5kb_df <- filter(sum_5kb_df, sum_5kb_df$NHS_Rpb1 > 1.5*(avg_input) & 
+                                     sum_5kb_df$NHS_Ser2P > 1.5*(avg_input) 
+                             )
+#2429 genes so added 1500 genes back
+#filter for HS above a threshold so it's readable if not entirely above background (don't want to divide by tiny numbers)
+HS_NHS_exp_sum_5kb_df <- filter(NHS_exp_sum_5kb_df, NHS_exp_sum_5kb_df$HS_Rpb1 > 250 & NHS_exp_sum_5kb_df$HS_Ser2P > 250) #if rpk = 50 then sum for 5kb = 250
+#645 additional genes
+
+
+
+
+#compare gene input vs avg input results
+exp_both <- filter(avg_exp_sum_5kb_df, avg_exp_sum_5kb_df$transcriptID %in% exp_sum_5kb_df$transcriptID) #682
+exp_avg <- filter(avg_exp_sum_5kb_df, !(avg_exp_sum_5kb_df$transcriptID %in% exp_sum_5kb_df$transcriptID) ) #307
+exp_gene <- filter(exp_sum_5kb_df, !(exp_sum_5kb_df$transcriptID %in% avg_exp_sum_5kb_df$transcriptID) ) #615
+summary(exp_both)
+exp_NHS <- filter(NHS_exp_sum_5kb_df, !(NHS_exp_sum_5kb_df$transcriptID %in% avg_exp_sum_5kb_df$transcriptID) ) #1440
+summary(exp_NHS)
+
+
+#going to use "avg_exp_sum_5kb_df" for now, can revisit if needed
+
+```
+
+```{r recalc FC dfs}
+### FC df ###
+#calc fold change
+filtered_fc_5kb_df <- data.frame(transcriptID = avg_exp_sum_5kb_df$transcriptID, 
+                         Rpb1_FC = avg_exp_sum_5kb_df$HS_Rpb1 / avg_exp_sum_5kb_df$NHS_Rpb1, 
+                         Ser2P_FC = avg_exp_sum_5kb_df$HS_Ser2P / avg_exp_sum_5kb_df$NHS_Ser2P
+                        )
+#add act or rep
+filtered_fc_5kb_df <- left_join(filtered_fc_5kb_df, master_df[c(1,14,20,21,25)], by = 'transcriptID')
+
+#save
+write_delim(filtered_fc_5kb_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/exp_filtered_HSdNHS_fold_change_first5kbds.tsv", delim = "\t", col_names = TRUE)
+
+
+### log2 FC df ###
+filtered_log2_fc_df <-  data.frame(transcriptID = filtered_fc_5kb_df$transcriptID, 
+                         Rpb1_FC = log2(filtered_fc_5kb_df$Rpb1_FC) , 
+                         Ser2P_FC = log2(filtered_fc_5kb_df$Ser2P_FC),
+                         gnbd_diff_expr <- filtered_fc_5kb_df$DESeq_2fold_cat
+                        )
+filtered_log2_fc_df <- left_join(filtered_log2_fc_df, master_df[c(1,14,20,21,25)], by = 'transcriptID')
+
+#save
+write_delim(filtered_log2_fc_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/exp_filtered_log2_fold_change_HSdNHS_first5kbds.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+```{r make master DF with filtered genes}
+filtered_master_df <- filter(master_df, master_df$transcriptID %in% filtered_log2_fc_df$transcriptID)
+#remove long RT genes
+filtered_master_df <- filter(filtered_master_df, filtered_master_df$longRT == FALSE)
+
+#save
+write_delim(filtered_master_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/Master_DF_ChIP_analyzable_genes_above_background.tsv", delim = "\t", col_names = TRUE)
+```
+
+
+
+
+
+
+
+
+
+
+PLOTTING!!!!!!
+
+
+plot scatterplot
+```{r plot scatterplot}
+# remove ENST00000334398.8, outlier
+#fc_5kb_df <- fc_5kb_df[!(fc_5kb_df$transcriptID == 'ENST00000334398.8'),]
+
+#read in filted df for scatterplots
+filtered_log2_fc_df <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/exp_filtered_log2_fold_change_HSdNHS_first5kbds.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#just act and repressed (remove nc genes)
+act_rep_ony_df <- filter(filtered_log2_fc_df, !(filtered_log2_fc_df$DESeq_2fold_cat == "no change") )
+
+#plot
+#p <- plot(log2(fc_5kb_df$Rpb1_FC), log2(fc_5kb_df$Ser2P_FC) )
+
+p <- ggplot(act_rep_ony_df, aes(Rpb1_FC, Ser2P_FC, color = DESeq_2fold_cat, label = transcriptID) ) +
+  geom_point(alpha=0.8, size=1) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  scale_colour_manual(values=c("#00AFBB", "#FC4E07")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +  #draw quadrents
+  geom_text(aes(label=ifelse((Rpb1_FC>2.5 & Ser2P_FC> 2.5) | (Rpb1_FC< -2.5 & Ser2P_FC< -2.5), as.character(transcriptID),'')), vjust="inward", hjust="inward", show.legend = FALSE)
+
+lab_points <- filter(log2_fc_df, (Rpb1_FC>2.5 & Ser2P_FC> 2.5) | (Rpb1_FC< -2.5 & Ser2P_FC< -2.5))
+
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/filtered_above_input/Act_rep_only_FC_Rpb1_vs_Ser2P_scatterplot.pdf", 5, 4)
+print(p)
+dev.off()
+
+
+
+### remove leaky genes?
+no_leaky_log2_fc_df <- filter(log2_fc_df, log2_fc_df$transcriptID %in% filter(master_df, !(master_df$cat_NHS_term == "leaky"))$transcriptID )
+#col names got messed up, reassign (not sure how...)
+colnames(no_leaky_log2_fc_df) <- c(colnames(no_leaky_log2_fc_df)[1:3], "gnbd_diff_expr")
+colnames(log2_fc_df) <- c(colnames(log2_fc_df)[1:3], "gnbd_diff_expr")
+
+p <- ggplot(no_leaky_log2_fc_df, aes(Rpb1_FC, Ser2P_FC, colour = gnbd_diff_expr, label = transcriptID) ) +
+  geom_point(alpha=0.8, size=1) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  scale_colour_manual(values=c("#00AFBB", "#999999", "#FC4E07")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) #+  #draw quadrents
+  #geom_text(aes(label=ifelse((Rpb1_FC>2.5 & Ser2P_FC> 2.5) | (Rpb1_FC< -2.5 & Ser2P_FC< -2.5), as.character(transcriptID),'')), vjust="inward", hjust="inward", show.legend = FALSE)
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/no_leaky_FC_Rpb1_vs_Ser2P_scatterplot.pdf", 11, 10)
+print(p)
+dev.off()
+
+
+
+### what if I normalized to gnbd fc to just isolate changes in ds?
+gnbd_fc_df <- filter(master_df[c(1,22,23)], master_df$transcriptID %in% log2_fc_df$transcriptID)
+identical(gnbd_fc_df$transcriptID, log2_fc_df$transcriptID) #TRUE, rows in same order
+
+norm_log2_fc_df <- data.frame(transcriptID = log2_fc_df$transcriptID, 
+                         norm_Rpb1_FC = log2_fc_df$Rpb1_FC / gnbd_fc_df$gnbd_log2FoldChange , 
+                         norm_Ser2P_FC = log2_fc_df$Ser2P_FC / gnbd_fc_df$gnbd_log2FoldChange,
+                         gnbd_diff_expr <- log2_fc_df$gnbd_diff_expr
+                        )
+
+
+p <- ggplot(norm_log2_fc_df, aes(norm_Rpb1_FC, norm_Ser2P_FC, colour = gnbd_diff_expr, label = transcriptID) ) +
+  geom_point(alpha=0.8) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+#  xlim(c(-1000,1000)) + ylim(c(-1000,1000)) +
+  scale_colour_manual(values=c("#00AFBB", "#999999", "#FC4E07")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +  #draw quadrents
+  geom_text(aes(label=ifelse(norm_Rpb1_FC>250 | norm_Rpb1_FC< -250, as.character(transcriptID),'')), vjust="inward", hjust="inward", show.legend = FALSE)
+
+lab_points <- filter(norm_log2_fc_df, norm_Rpb1_FC>250 | norm_Rpb1_FC< -250)
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/gnbd_norm_Zoomed-in_FC_Rpb1_vs_Ser2P_scatterplot.pdf", 11, 10)
+print(p)
+dev.off()
+
+#plotting only act. and rep. genes
+ar_norm_log2_fc_df <- filter(norm_log2_fc_df, norm_log2_fc_df[,4] == "activated" | norm_log2_fc_df[,4] == "repressed") #1000 genes
+a_norm_log2_fc_df <- filter(norm_log2_fc_df, norm_log2_fc_df[,4] == "activated") #200
+r_norm_log2_fc_df <- filter(norm_log2_fc_df, norm_log2_fc_df[,4] == "repressed") #734
+
+#activated and repressed together (no unchanging genes)
+p <- ggplot(ar_norm_log2_fc_df, aes(norm_Rpb1_FC, norm_Ser2P_FC, colour = gnbd_diff_expr....log2_fc_df.gnbd_diff_expr, label = transcriptID) ) +
+  geom_point(alpha=0.5) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+#  xlim(c(-1000,1000)) + ylim(c(-1000,1000)) +
+  scale_colour_manual(values=c("#00AFBB", "#FC4E07")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)
+
+#activated only
+a <- ggplot(a_norm_log2_fc_df, aes(norm_Rpb1_FC, norm_Ser2P_FC, colour = gnbd_diff_expr....log2_fc_df.gnbd_diff_expr, label = transcriptID) ) +
+  geom_point(alpha=0.5, show.legend = FALSE) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+#  xlim(c(-1000,1000)) + ylim(c(-1000,1000)) +
+  scale_colour_manual(values=c("#00AFBB")) +
+  labs(title = "Activated Genes", x="Pol II Fold Change in 5kb ds of TTS", y="Ser2P Fold Change in 5kb ds of TTS")+
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+
+#repressed only
+r <- ggplot(r_norm_log2_fc_df, aes(norm_Rpb1_FC, norm_Ser2P_FC, colour = gnbd_diff_expr....log2_fc_df.gnbd_diff_expr, label = transcriptID) ) +
+  geom_point(alpha=0.5, show.legend = FALSE) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+#  xlim(c(-1000,1000)) + ylim(c(-1000,1000)) +
+  scale_colour_manual(values=c("#FC4E07")) +
+  labs(title = "Repressed Genes", x="Pol II Fold Change in 5kb ds of TTS", y="Ser2P Fold Change in 5kb ds of TTS")+
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+
+
+#save
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/Act_genes_only_gnbd_norm_Zoomed-in_FC_Rpb1_vs_Ser2P_scatterplot.pdf", 5, 5)
+print(a)
+dev.off()
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/Rep_genes_only_gnbd_norm_Zoomed-in_FC_Rpb1_vs_Ser2P_scatterplot.pdf", 5, 5)
+print(r)
+dev.off()
+
+```
+
+
+defect and defect cat subgroups
+-------------------------------
+what if we color by defect or no defect?
+  *most genes are defect genes and the no defect genes don't cluster tightly so it's hard to draw any conclusions*
+
+```{r scatterplot 5kb sum defect coloring}
+log2_fc_df <- left_join(log2_fc_df, master_df[c(1,14)], by = 'transcriptID' )
+
+p <- ggplot(filtered_log2_fc_df, aes(Rpb1_FC, Ser2P_FC, colour = term_defect_final, label = transcriptID) ) +
+  geom_point(alpha=0.8) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  labs(title = "Sum ChIP-seq reads TTS-5kb ds", x="Pol II Fold Change in 5kb ds of TTS", y="Ser2P Fold Change in 5kb ds of TTS")+
+  scale_colour_manual(values=c("#404040", "#bf0000")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diagonal line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)  #+  #draw quadrents
+  #geom_text(aes(label=ifelse(log2_fc_df>250 | log2_fc_df< -250, as.character(transcriptID),'')), vjust="inward", hjust="inward", show.legend = FALSE) #point labels
+
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/filtered_above_input/term_defect_log2_FC_Rpb1_vs_Ser2P_scatterplot.pdf", 11, 10)
+print(p)
+dev.off()
+
+d <- ggplot(filter(filtered_log2_fc_df,  filtered_log2_fc_df$term_defect_final == TRUE), aes(Rpb1_FC, Ser2P_FC, colour = term_defect_final, label = transcriptID) ) +
+  geom_point(alpha=0.8, show.legend = FALSE) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  labs(title = "Sum ChIP-seq reads TTS-5kb ds", subtitle = "Defect Genes", x="Pol II Fold Change in 5kb ds of TTS", y="Ser2P Fold Change in 5kb ds of TTS")+
+  scale_colour_manual(values=c("#bf0000")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diagonal line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+
+nd <- ggplot(filter(filtered_log2_fc_df,  filtered_log2_fc_df$term_defect_final == FALSE), aes(Rpb1_FC, Ser2P_FC, colour = term_defect_final, label = transcriptID) ) +
+  geom_point(alpha=0.8, show.legend = FALSE) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  labs(title = "Sum ChIP-seq reads TTS-5kb ds", subtitle = "No Defect Genes", x="Pol II Fold Change in 5kb ds of TTS", y="Ser2P Fold Change in 5kb ds of TTS")+
+  scale_colour_manual(values=c("#404040")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diagonal line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+
+
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/filtered_above_input/scatterplots_w_regression_lines/term_defect_def_genes_log2_FC_Rpb1_vs_Ser2P_scatterplot.pdf", 5, 5)
+print(d)
+dev.off()
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/filtered_above_input/scatterplots_w_regression_lines/term_defect_nodef_genes_log2_FC_Rpb1_vs_Ser2P_scatterplot.pdf", 5, 5)
+print(nd)
+dev.off()
+
+
+```
+
+What if we used the defect categories instead of just defect y/n?
+```{r scatterplot 5kb color by defect cat}
+#add defect cat col to FC df
+log2_fc_df <- left_join(log2_fc_df, master_df[c(1,21)], by = 'transcriptID' ) #(keeps all rows in first df (x) )
+filtered_log2_fc_df$defect_cat <- factor(filtered_log2_fc_df$defect_cat, levels = c('no defect', 'moderate defect', 'severe defect', 'max defect')) #set order
+
+#plot all together
+p <- ggplot(filtered_log2_fc_df, aes(Rpb1_FC, Ser2P_FC, colour = defect_cat, label = transcriptID) ) +
+  geom_point(alpha=0.8) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  labs(title = "Sum ChIP-seq reads TTS-5kb ds", x="Pol II Fold Change in 5kb ds of TTS", y="Ser2P Fold Change in 5kb ds of TTS")+
+  scale_colour_manual(values=c("#666666", "#fdcc8a", "#fc8d59", "#d7301f")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diagonal line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/filtered_above_input/defect_cat_alltogether_log2_FC_Rpb1_vs_Ser2P_scatterplot.pdf", 6, 5)
+print(p)
+dev.off()
+
+
+#plot each cat separate
+  #no defect
+nd <- ggplot( filter(filtered_log2_fc_df, filtered_log2_fc_df$defect_cat == "no defect"), aes(Rpb1_FC, Ser2P_FC, colour = defect_cat, label = transcriptID) ) +
+  geom_point(alpha=0.8, show.legend = FALSE) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  labs(title = "Sum ChIP-seq reads TTS-5kb ds", subtitle = "no defect genes", x="Pol II Fold Change in 5kb ds of TTS", y="Ser2P Fold Change in 5kb ds of TTS")+
+  scale_colour_manual(values=c("#666666")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diagonal line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)
+
+  #moderate defect
+m <- ggplot( filter(filtered_log2_fc_df, filtered_log2_fc_df$defect_cat == "moderate defect"), aes(Rpb1_FC, Ser2P_FC, colour = defect_cat, label = transcriptID) ) +
+  geom_point(alpha=0.8, show.legend = FALSE) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  labs(title = "Sum ChIP-seq reads TTS-5kb ds", subtitle = "moderate defect genes", x="Pol II Fold Change in 5kb ds of TTS", y="Ser2P Fold Change in 5kb ds of TTS")+
+  scale_colour_manual(values=c("#fdcc8a")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diagonal line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)
+
+  #severe defect
+s <- ggplot( filter(filtered_log2_fc_df, filtered_log2_fc_df$defect_cat == "severe defect"), aes(Rpb1_FC, Ser2P_FC, colour = defect_cat, label = transcriptID) ) +
+  geom_point(alpha=0.8, show.legend = FALSE) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  labs(title = "Sum ChIP-seq reads TTS-5kb ds", subtitle = "severe defect genes", x="Pol II Fold Change in 5kb ds of TTS", y="Ser2P Fold Change in 5kb ds of TTS")+
+  scale_colour_manual(values=c( "#fc8d59")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diagonal line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)
+
+  #max defect
+x <- ggplot( filter(filtered_log2_fc_df, filtered_log2_fc_df$defect_cat == "max defect"), aes(Rpb1_FC, Ser2P_FC, colour = defect_cat, label = transcriptID) ) +
+  geom_point(alpha=0.8, show.legend = FALSE) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  labs(title = "Sum ChIP-seq reads TTS-5kb ds", subtitle = "max defect genes", x="Pol II Fold Change in 5kb ds of TTS", y="Ser2P Fold Change in 5kb ds of TTS")+
+  scale_colour_manual(values=c("#d7301f")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diagonal line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)
+
+#save all figures
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/filtered_above_input/no_defect_genes_log2_FC_Rpb1_vs_Ser2P_scatterplot.pdf", 5, 5)
+print(nd)
+dev.off()
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/filtered_above_input/moderate_defect_genes_log2_FC_Rpb1_vs_Ser2P_scatterplot.pdf", 5, 5)
+print(m)
+dev.off()
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/filtered_above_input/severe_defect_genes_log2_FC_Rpb1_vs_Ser2P_scatterplot.pdf", 5, 5)
+print(s)
+dev.off()
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/filtered_above_input/max_defect_genes_log2_FC_Rpb1_vs_Ser2P_scatterplot.pdf", 5, 5)
+print(x)
+dev.off()
+
+```
+
+regression lines / trend lines
+```{r}
+library(ggpmisc)
+
+#plot each cat separate
+  #no defect
+nd <- ggplot( filter(filtered_log2_fc_df, filtered_log2_fc_df$defect_cat == "no defect"), aes(Rpb1_FC, Ser2P_FC, colour = defect_cat, label = transcriptID) ) +
+  geom_point(alpha=0.8, show.legend = FALSE) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  labs(title = "Sum ChIP-seq reads TTS-5kb ds", subtitle = "no defect genes", x="Pol II Fold Change in 5kb ds of TTS", y="Ser2P Fold Change in 5kb ds of TTS")+
+  scale_colour_manual(values=c("#666666")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diagonal line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+
+
+  #moderate defect
+m <- ggplot( filter(filtered_log2_fc_df, filtered_log2_fc_df$defect_cat == "moderate defect"), aes(Rpb1_FC, Ser2P_FC, colour = defect_cat, label = transcriptID)) +
+  geom_point(alpha=0.8, show.legend = FALSE) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  labs(title = "Sum ChIP-seq reads TTS-5kb ds", subtitle = "moderate defect genes", x="Pol II Fold Change in 5kb ds of TTS", y="Ser2P Fold Change in 5kb ds of TTS")+
+  scale_colour_manual(values=c("#fdcc8a")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diagonal line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(formula = y ~ x,  
+                aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+                parse = TRUE)
+
+  #severe defect
+s <- ggplot( filter(filtered_log2_fc_df, filtered_log2_fc_df$defect_cat == "severe defect"), aes(Rpb1_FC, Ser2P_FC, colour = defect_cat, label = transcriptID) ) +
+  geom_point(alpha=0.8, show.legend = FALSE) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  labs(title = "Sum ChIP-seq reads TTS-5kb ds", subtitle = "severe defect genes", x="Pol II Fold Change in 5kb ds of TTS", y="Ser2P Fold Change in 5kb ds of TTS")+
+  scale_colour_manual(values=c( "#fc8d59")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diagonal line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(formula = y ~ x,  
+                aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+                parse = TRUE)
+
+  #max defect
+x <- ggplot( filter(filtered_log2_fc_df, filtered_log2_fc_df$defect_cat == "max defect"), x = Rpb1_FC, y=Ser2P_FC, aes(Rpb1_FC, Ser2P_FC, colour = defect_cat, label = transcriptID) ) +
+  geom_point(alpha=0.8, show.legend = FALSE) +
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  labs(title = "Sum ChIP-seq reads TTS-5kb ds", subtitle = "max defect genes", x="Pol II Fold Change in 5kb ds of TTS", y="Ser2P Fold Change in 5kb ds of TTS")+
+  scale_colour_manual(values=c("#d7301f")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diagonal line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +
+  geom_smooth(method='lm', color = "#262626", se=FALSE, formula = y ~ x) +
+  stat_poly_eq(formula = y ~ x,  
+                aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+                parse = TRUE) 
+
+#save all figures
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/filtered_above_input/scatterplots_w_regression_lines/no_defect_genes_log2_FC_Rpb1_vs_Ser2P_scatterplot_regression.pdf", 5, 5)
+print(nd)
+dev.off()
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/filtered_above_input/scatterplots_w_regression_lines/moderate_defect_genes_log2_FC_Rpb1_vs_Ser2P_scatterplot_regression.pdf", 5, 5)
+print(m)
+dev.off()
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/filtered_above_input/scatterplots_w_regression_lines/severe_defect_genes_log2_FC_Rpb1_vs_Ser2P_scatterplot_regression.pdf", 5, 5)
+print(s)
+dev.off()
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/filtered_above_input/scatterplots_w_regression_lines/max_defect_genes_log2_FC_Rpb1_vs_Ser2P_scatterplot_regression.pdf", 5, 5)
+print(x)
+dev.off()
+
+```
+
+
+plot leaky and sharp genes separately with regression lines
+```{r plotting sharp and leaky}
+
+#together
+p <- ggplot( filtered_log2_fc_df, aes(Rpb1_FC, Ser2P_FC, colour = cat_NHS_term, label = transcriptID) ) +
+  geom_point(alpha=0.8) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  labs(title = "Sum ChIP-seq reads TTS-5kb ds", x="Pol II Fold Change in 5kb ds of TTS", y="Ser2P Fold Change in 5kb ds of TTS")+
+  scale_colour_manual(values=c("#d8b365", "#5ab4ac")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diagonal line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) 
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/filtered_above_input/NHS_term_profile_log2_FC_Rpb1_vs_Ser2P_scatterplot.pdf", 5, 5)
+print(p)
+dev.off()
+
+
+#plot each cat separate
+  #no defect
+sharp <- ggplot( filter(filtered_log2_fc_df, filtered_log2_fc_df$cat_NHS_term == "sharp"), aes(Rpb1_FC, Ser2P_FC, colour = cat_NHS_term, label = transcriptID) ) +
+  geom_point(alpha=0.8, show.legend = FALSE) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  labs(title = "Sum ChIP-seq reads TTS-5kb ds", subtitle = "sharp NHS terminating genes", x="Pol II Fold Change in 5kb ds of TTS", y="Ser2P Fold Change in 5kb ds of TTS")+
+  scale_colour_manual(values=c("#5ab4ac")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diagonal line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+
+
+leaky <- ggplot( filter(filtered_log2_fc_df, filtered_log2_fc_df$cat_NHS_term == "leaky"), aes(Rpb1_FC, Ser2P_FC, colour = cat_NHS_term, label = transcriptID) ) +
+  geom_point(alpha=0.8, show.legend = FALSE) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  labs(title = "Sum ChIP-seq reads TTS-5kb ds", subtitle = "leaky NHS terminating genes", x="Pol II Fold Change in 5kb ds of TTS", y="Ser2P Fold Change in 5kb ds of TTS")+
+  scale_colour_manual(values=c("#d8b365")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diagonal line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/filtered_above_input/scatterplots_w_regression_lines/NHS_leaky_genes_log2_FC_Rpb1_vs_Ser2P_scatterplot_regression.pdf", 5, 5)
+print(leaky)
+dev.off()
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/filtered_above_input/scatterplots_w_regression_lines/NHS_sharp_genes_log2_FC_Rpb1_vs_Ser2P_scatterplot_regression.pdf", 5, 5)
+print(sharp)
+dev.off()
+
+
+```
+
+
+
+-------------------------------
+
+
+What if only summed first 3kb ds?
+---
+```{r make 3kb ds dfs}
+sum_3kb_df <- data.frame(transcriptID = input_df$Gene, 
+                         input = rowSums(input_df[,23:25]), 
+                         NHS_Rpb1 = ((rowSums(ghist$NHS_Rpb1_R6[,c(23:25)]) + rowSums(ghist$NHS_Rpb1_R8[,c(23:25)]) )/2), 
+                         HS_Rpb1 = ((rowSums(ghist$HS_Rpb1_R6[,c(23:25)]) + rowSums(ghist$HS_Rpb1_R8[,c(23:25)]) )/2),
+                         NHS_Ser2P = ((rowSums(ghist$NHS_Ser2P_R6[,c(23:25)]) + rowSums(ghist$NHS_Ser2P_R8[,c(23:25)]) )/2),
+                         HS_Ser2P = ((rowSums(ghist$HS_Ser2P_R6[,c(23:25)]) + rowSums(HS_Ser2P_R8_df[,c(23:25)]) )/2)
+                         )
+
+log2_fc_3kb <- data.frame(transcriptID = input_df$Gene, 
+                         Rpb1 = log2( sum_3kb_df$HS_Rpb1 / sum_3kb_df$NHS_Rpb1 ), 
+                         Ser2P = log2( sum_3kb_df$HS_Ser2P / sum_3kb_df$NHS_Ser2P )
+                         )
+log2_fc_3kb <- log2_fc_3kb[complete.cases(log2_fc_3kb), ] #remove rows with NAs
+
+```
+
+```{r plot}
+log2_fc_3kb <- left_join(log2_fc_3kb, master_df[c(1,14,25)], by = 'transcriptID' )
+
+p <- ggplot(log2_fc_3kb, aes(Rpb1, Ser2P, colour = DESeq_2fold_cat, label = transcriptID) ) +
+  geom_point(alpha=0.8) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  labs(title = "Sum ChIP-seq reads TTS-3kb ds", x="Pol II Fold Change in 5kb ds of TTS", y="Ser2P Fold Change in 5kb ds of TTS")+
+  scale_colour_manual(values=c("#00AFBB", "#999999", "#FC4E07")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diagonal line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)  #+  #draw quadrents
+  #geom_text(aes(label=ifelse(log2_fc_3kb>250 | log2_fc_3kb< -250, as.character(transcriptID),'')), vjust="inward", hjust="inward", show.legend = FALSE) #point labels
+
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/3kb_act-rep_color_log2_FC_Rpb1_vs_Ser2P_scatterplot.pdf", 11, 10)
+print(p)
+dev.off()
+
+png(file="/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/FC_Rpb1_vs_Ser2P_scatterplot.png",
+width=550, height=500)
+print(p)
+dev.off()
+
+```
+---
+
+
+
+
+
+looking at individual examples: where are NCL and SRSF3?
+--------------------------------------------------------
+first let's figure out where SRSF3 and NCL are
+      "transcriptID"      "Rpb1_FC"   "Ser2P_FC" "gnbd_diff_expr" "term_defect_final" "defect_cat"     
+SRSF3: ENST00000373715.11	-1.500669	  -1.167369	  no change	       TRUE	               severe defect *above diagonal*
+NCL:   ENST00000322723.9	-0.9699649	-1.699035	  no change	       TRUE	               max defect    *below diagonal*
+*both Rpb1 and Ser2P are negative so botom left quadrent*
+
+what about no defect example?
+SMIM13: ENST00000416247.4	-1.337367	  -0.9994523  no change	       FALSE	             no defect 
+(filtered out due to low signal so not in filtered versions of dfs)
+
+questioning:
+ILRUN: ENST00000374023.8	-0.9305474	-0.4338598	no change	       TRUE	               moderate defect
+
+*all in bottom left quadrent, what do genes in other quadrents look like?*
+
+
+```{r plot coloring just genes of interest}
+#SRSF3 and NCL plot
+
+
+#add color col
+log2_fc_df$color_me <- log2_fc_df$transcriptID == "ENST00000338244.6" | log2_fc_df$transcriptID == "ENST00000302351.9" | log2_fc_df$transcriptID == "ENST00000416247.4" | log2_fc_df$transcriptID == "ENST00000316519.11" | log2_fc_df$transcriptID == "ENST00000298229.7" | log2_fc_df$transcriptID == "ENST00000373715.11" | log2_fc_df$transcriptID == "ENST00000374023.8"
+
+plot_me <- filter(log2_fc_df , log2_fc_df$transcriptID == "ENST00000338244.6" | log2_fc_df$transcriptID == "ENST00000302351.9" | log2_fc_df$transcriptID == "ENST00000416247.4" | log2_fc_df$transcriptID == "ENST00000316519.11" | log2_fc_df$transcriptID == "ENST00000298229.7" | log2_fc_df$transcriptID == "ENST00000373715.11" | log2_fc_df$transcriptID == "ENST00000374023.8")
+
+#plot
+p <- ggplot(plot_me, aes(Rpb1_FC, Ser2P_FC, colour = color_me, label = transcriptID) ) +
+  geom_point(alpha=0.8, show.legend = FALSE) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  labs(title = "Sum ChIP-seq reads TTS-5kb ds", x="Pol II Fold Change in 5kb ds of TTS", y="Ser2P Fold Change in 5kb ds of TTS")+
+  scale_colour_manual(values=c("#390b7d")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diagonal line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +
+  geom_text(aes(label=ifelse(color_me == TRUE, as.character(transcriptID),'')), vjust="inward", hjust="inward", show.legend = FALSE) #point labels
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/qPCR_cleavage_genes_log2_FC_Rpb1_vs_Ser2P_scatterplot_no_labels.pdf", 5, 5)
+print(p)
+dev.off()
+
+```
+--------------------------------------------------------
+
+
+comparing replicates
+--------------------
+```{r scatterplot: comparing R6 vs R8}
+
+### sum df ###
+#make df with sum of first 5kb ds
+reps_sum_5kb_df <- data.frame(transcriptID = ghist$input$Gene, 
+                         input = rowSums(ghist$input[,23:27]), 
+                         NHS_Rpb1_R6 = rowSums(ghist$NHS_Rpb1_R6[,c(23:27)]),
+                         NHS_Rpb1_R8 = rowSums(ghist$NHS_Rpb1_R8[,c(23:27)]),
+                         HS_Rpb1_R6 = rowSums(ghist$HS_Rpb1_R6[,c(23:27)]),
+                         HS_Rpb1_R8 = rowSums(ghist$HS_Rpb1_R8[,c(23:27)]),
+                         NHS_Ser2P_R6 = rowSums(ghist$NHS_Ser2P_R6[,c(23:27)]),
+                         NHS_Ser2P_R8 = rowSums(ghist$NHS_Ser2P_R8[,c(23:27)]),
+                         HS_Ser2P_R6 = rowSums(ghist$HS_Ser2P_R6[,c(23:27)]),
+                         HS_Ser2P_R8 = rowSums(ghist$HS_Ser2P_R8[,c(23:27)])
+                         )
+
+#filter for expressed genes (using avg of both reps previously calculated)
+length(avg_exp_sum_5kb_df$transcriptID) #1034 genes
+
+reps_exp_sum_5kb_df <- filter(reps_sum_5kb_df, reps_sum_5kb_df$transcriptID %in% avg_exp_sum_5kb_df$transcriptID)
+
+
+#calc FC after HS
+reps_exp_fc_5kb_df <- data.frame(transcriptID = reps_exp_sum_5kb_df$transcriptID, 
+                         R6_Rpb1_FC = reps_exp_sum_5kb_df$HS_Rpb1_R6 / reps_exp_sum_5kb_df$NHS_Rpb1_R6,
+                         R8_Rpb1_FC = reps_exp_sum_5kb_df$HS_Rpb1_R8 / reps_exp_sum_5kb_df$NHS_Rpb1_R8, 
+                         R6_Ser2P_FC = reps_exp_sum_5kb_df$HS_Ser2P_R6 / reps_exp_sum_5kb_df$NHS_Ser2P_R6,
+                         R8_Ser2P_FC = reps_exp_sum_5kb_df$HS_Ser2P_R8 / reps_exp_sum_5kb_df$NHS_Ser2P_R8
+                        )
+
+#log2 FC
+reps_exp_log2_fc_5kb_df <- data.frame(transcriptID = reps_exp_sum_5kb_df$transcriptID, 
+                         R6_Rpb1_FC = log(reps_exp_fc_5kb_df$R6_Rpb1_FC, 2),
+                         R8_Rpb1_FC = log(reps_exp_fc_5kb_df$R8_Rpb1_FC, 2), 
+                         R6_Ser2P_FC = log(reps_exp_fc_5kb_df$R6_Ser2P_FC, 2),
+                         R8_Ser2P_FC = log(reps_exp_fc_5kb_df$R8_Ser2P_FC, 2)
+                        )
+
+#Ser2P / Pol II
+reps_Ser2PdPolII_exp_fc_5kb_df <- data.frame(transcriptID = reps_exp_sum_5kb_df$transcriptID, 
+                         R6_Ser2P_d_PolII = reps_exp_fc_5kb_df$R6_Ser2P_FC / reps_exp_fc_5kb_df$R6_Rpb1_FC ,
+                         R8_Ser2P_d_PolII = reps_exp_fc_5kb_df$R8_Ser2P_FC / reps_exp_fc_5kb_df$R8_Rpb1_FC
+                        )
+
+#how to deal with log2?
+identical(log(reps_exp_fc_5kb_df$R6_Ser2P_FC / reps_exp_fc_5kb_df$R6_Rpb1_FC , 2), log(reps_exp_fc_5kb_df$R6_Ser2P_FC, 2) / log(reps_exp_fc_5kb_df$R6_Rpb1_FC, 2)) #log2 fc then ratio or ratio of fc then log2? (not the same)
+
+reps_Ser2PdPolII_exp_log2_fc_5kb_df_method1 <- data.frame(transcriptID = reps_exp_sum_5kb_df$transcriptID, 
+                         R6_Ser2P_d_PolII = reps_exp_log2_fc_5kb_df$R6_Ser2P_FC / reps_exp_log2_fc_5kb_df$R6_Rpb1_FC ,
+                         R8_Ser2P_d_PolII = reps_exp_log2_fc_5kb_df$R8_Ser2P_FC / reps_exp_log2_fc_5kb_df$R8_Rpb1_FC
+                        )
+reps_Ser2PdPolII_exp_log2_fc_5kb_df_method2 <- data.frame(transcriptID = reps_exp_sum_5kb_df$transcriptID, 
+                         R6_Ser2P_d_PolII = log(reps_exp_fc_5kb_df$R6_Ser2P_FC / reps_exp_fc_5kb_df$R6_Rpb1_FC, 2) ,
+                         R8_Ser2P_d_PolII = log(reps_exp_fc_5kb_df$R8_Ser2P_FC / reps_exp_fc_5kb_df$R8_Rpb1_FC, 2)
+                        )
+#log2 / log2 looks very odd - cross shape when plotted R6 vs R8
+#log2 (fc / fc) looks like blob but normal plot -> probably correct (or just don't log2 transform)
+
+
+
+#####plot#####
+r6 <- ggplot(reps_exp_log2_fc_5kb_df, aes(R6_Rpb1_FC, R6_Ser2P_FC) ) +
+  geom_point(alpha=0.8, size=1) + 
+  xlim(c(-6,6)) + ylim(c(-6,6)) +
+  #scale_colour_manual(values=c("#00AFBB", "#FC4E07")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) #+  #draw quadrents
+  #geom_text(aes(label=ifelse((R6_Rpb1_FC>2.5 & R6_Ser2P_FC> 2.5) | (R6_Rpb1_FC< -2.5 & R6_Ser2P_FC< -2.5), as.character(transcriptID),'')), vjust="inward", hjust="inward", show.legend = FALSE)
+#lab_points <- filter(log2_fc_df, (Rpb1_FC>2.5 & Ser2P_FC> 2.5) | (Rpb1_FC< -2.5 & Ser2P_FC< -2.5))
+
+r8 <- ggplot(reps_exp_log2_fc_5kb_df, aes(R8_Rpb1_FC, R8_Ser2P_FC) ) +
+  geom_point(alpha=0.8, size=1) + 
+  xlim(c(-6,6)) + ylim(c(-6,6)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)
+
+
+#save
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/comparing_replicates/R6_log2_FC_Rpb1_vs_Ser2P_scatterplot.pdf", 5, 5)
+print(r6)
+dev.off()
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/comparing_replicates/R8_log2_FC_Rpb1_vs_Ser2P_scatterplot.pdf", 5, 5)
+print(r8)
+dev.off()
+
+
+
+#regression lines
+r6 <- ggplot(reps_exp_log2_fc_5kb_df, aes(R6_Rpb1_FC, R6_Ser2P_FC) ) +
+  geom_point(alpha=0.8, size=1) + 
+  xlim(c(-6,6)) + ylim(c(-6,6)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+
+r8 <- ggplot(reps_exp_log2_fc_5kb_df, aes(R8_Rpb1_FC, R8_Ser2P_FC) ) +
+  geom_point(alpha=0.8, size=1) + 
+  xlim(c(-6,6)) + ylim(c(-6,6)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+
+#save
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/comparing_replicates/R6_regLine_log2_FC_Rpb1_vs_Ser2P_scatterplot.pdf", 5, 5)
+print(r6)
+dev.off()
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/comparing_replicates/R8_regLine_log2_FC_Rpb1_vs_Ser2P_scatterplot.pdf", 5, 5)
+print(r8)
+dev.off()
+
+#how to tell if two regression lines are statistically different?
+
+#plot R6 vs R6 Ser2P / Pol II
+p <- ggplot(reps_Ser2PdPolII_exp_log2_fc_5kb_df_method2, aes(R6_Ser2P_d_PolII, R8_Ser2P_d_PolII) ) +
+  geom_point(alpha=0.8, size=1) + 
+ # xlim(c(-2,2)) + ylim(c(-2,2)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+
+#save
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/comparing_replicates/R6vR8_Ser2PdPolII_regline_NOLOG_FC_Rpb1_vs_Ser2P_scatterplot.pdf", 5, 5)
+print(p)
+dev.off()
+
+```
+
+
+```{r avg counts then ratio or ratio then avg?}
+#avg counts then ratio - did this previously above
+fc_5kb_df <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/HSdNHS_fold_change_first5kbds.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#filter
+filtered_fc_5kb_df <- filter(fc_5kb_df, fc_5kb_df$transcriptID %in% reps_exp_fc_5kb_df$transcriptID)
+
+#fc -> ratio then avg reps - start from previous chunk with separate reps
+  #reps_exp_fc_5kb_df
+  #reps_Ser2PdPolII_exp_log2_fc_5kb_df
+
+reps_exp_fc_5kb_df$Rpb1_avg <- (reps_exp_fc_5kb_df$R6_Rpb1_FC + reps_exp_fc_5kb_df$R8_Rpb1_FC) /2
+reps_exp_fc_5kb_df$Ser2P_avg <- (reps_exp_fc_5kb_df$R6_Ser2P_FC + reps_exp_fc_5kb_df$R8_Ser2P_FC) /2
+
+#compare fc for different methods
+identical(filtered_fc_5kb_df$Rpb1_FC, reps_exp_fc_5kb_df$Rpb1_avg) #not the same number
+filtered_fc_5kb_df$Rpb1_FC[1:10]
+ # 0.8271922 0.5503352 0.4772004 0.3731621 0.5366413 2.2854454 0.2769758 0.3154958 0.6207150 0.6752574
+reps_exp_fc_5kb_df$Rpb1_avg[1:10]
+ # 0.8861578 0.6001651 0.5059211 0.4312079 0.5898592 2.4971170 0.2790628 0.3608659 0.6192118 0.7081625
+
+#numbers are close but not identical
+
+#what about Ser2P / Pol II?
+#have Ser2P/Pol II for each rep separate, now let's avg
+reps_Ser2PdPolII_exp_fc_5kb_df$avg <- (reps_Ser2PdPolII_exp_fc_5kb_df$R6_Ser2P_d_PolII + reps_Ser2PdPolII_exp_fc_5kb_df$R8_Ser2P_d_PolII) /2
+
+#vs avg counts then calc fc ratio
+filtered_fc_5kb_df$Ser2PdPolII <- filtered_fc_5kb_df$Ser2P_FC / filtered_fc_5kb_df$Rpb1_FC
+
+reps_Ser2PdPolII_exp_fc_5kb_df$avg[1:10]
+filtered_fc_5kb_df$Ser2PdPolII[1:10]
+#again, similar but not the same
+
+plotting_df <- data.frame(transcriptID = reps_Ser2PdPolII_exp_fc_5kb_df$transcriptID, 
+                          avg_Rpb1_FC = filtered_fc_5kb_df$Rpb1_FC,
+                          avg_Ser2P_FC = filtered_fc_5kb_df$Ser2P_FC,
+                          Rpb1_FC_avg = reps_exp_fc_5kb_df$Rpb1_avg,
+                          Ser2P_FC_avg = reps_exp_fc_5kb_df$Ser2P_avg,
+                          Ser2PdPolII_avg = reps_Ser2PdPolII_exp_fc_5kb_df$avg, 
+                          avg_Ser2PdPolII = filtered_fc_5kb_df$Ser2PdPolII )
+
+
+##plot these! - same?
+p <- ggplot(plotting_df, aes(Ser2PdPolII_avg, avg_Ser2PdPolII) ) +
+  geom_point(alpha=0.8, size=1) + 
+ # xlim(c(-2,2)) + ylim(c(-2,2)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+
+#Rpb1 vs Rpb1 is the same - doesn't matter how you avg
+#Ser2P vs Ser2P isn't quite the same so avg counts vs avg fc matters for Ser2P
+#Ser2PdPolII isn't quite the same either
+
+
+#let's plot Ser2P vs Rpb1 and for each method and see if it gives different answers
+p <- ggplot(plotting_df, aes(log(avg_Rpb1_FC,2), log(avg_Ser2P_FC,2) ) ) +
+  geom_point(alpha=0.8, size=1) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)
+
+#save
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/comparing_avg_methods/avg_then_fc_Ser2P_vs_PolII_log2_FC_scatterplot.pdf", 5, 5)
+print(p)
+dev.off()
+
+
+#make final df of fc then avg df
+FC_then_AVG_df <- data.frame(transcriptID = reps_Ser2PdPolII_exp_fc_5kb_df$transcriptID, 
+                          Rpb1_FC_avg = reps_exp_fc_5kb_df$Rpb1_avg,
+                          Ser2P_FC_avg = reps_exp_fc_5kb_df$Ser2P_avg,
+                          Ser2PdPolII_d_then_avg = reps_Ser2PdPolII_exp_fc_5kb_df$avg
+                           )
+#save
+write_delim(FC_then_AVG_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/avg_after_calc_FC.tsv", delim = "\t", col_names = TRUE)
+
+#add to master_df
+thioU_master_df <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/FINAL_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+  #sooo master_df and FC then Avg aren't the same gene list
+nrow( inner_join(thioU_master_df, FC_then_AVG_df, by = "transcriptID") ) 
+  #927 genes in common with old ChIP analyzable genes
+  #all 1034 in common with 4sU Master DF list - so will use this list and filter for those 1000 from the 4sU master df
+
+ChIP_master_df_new <- filter(thioU_master_df, thioU_master_df$transcriptID %in% FC_then_AVG_df$transcriptID)
+#get rid of extra notes that were in FINAL_master_df
+ChIP_master_df_new <- ChIP_master_df_new[1:25]
+
+#add scatterplot columns to master_df_new
+ChIP_master_df_new <- left_join(ChIP_master_df_new, FC_then_AVG_df, by = "transcriptID")
+#make new col names more specific
+colnames(ChIP_master_df_new) <- c(colnames(ChIP_master_df_new[1:25]), "Rpb1_TTSto5kb_FC_R6R8avg", "Ser2P_TTSto5kb_FC_R6R8avg", "Ser2PdPolII_TTSto5kb_ratio_then_avg", "over_2SD_from_trendline", "over_2SD_from_diag")
+
+#save
+write_delim(ChIP_master_df_new, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/Master_df_ChIP_genes_NEW_AVG.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+
+VIOLIN and BOX PLOTS FOR SER2P AND POLII
+```{r}
+t <- ChIP_master_df_new[c(1,26,27)]
+colnames(t) <- c("transcriptID", "Rpb1", "Ser2P") #clean up names
+v_plot_df <- pivot_longer(t, cols = c("Rpb1", "Ser2P") )
+
+
+v <- ggplot(v_plot_df, aes(y=value, x=name, color = name ) ) +
+  #geom_violin() +
+  geom_boxplot(width=0.5, outlier.size = 0.75) +
+  ylab("TTS-5kb ds HS Fold Change") + 
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13), legend.position="none") +
+  #ylim(c(0,2)) + 
+  #stat_summary(fun.y=median, geom="point", shape = 4, size=2, color = "red") +
+  #stat_summary(fun.y=mean, geom="point", size=2) + 
+  scale_color_manual(values=c("#2A2A2A", "#591D8E"))
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/FC_then_AVG/box_plot_w_outliers_Rpb1_Ser2P.pdf", 4,4)
+print(v)
+dev.off()
+
+
+```
+
+
+
+
+COMPARING REPS
+```{r TTS-5kbds for ChIP-seq genes to compare reps}
+#set up data (already have sum 5kb df, filtered for ~1000 ChIP-analyzable genes)
+colnames(reps_exp_sum_5kb_df)
+
+#plot R6 vs R8 for each sample (ie NHS Rpb1, HS Ser2P, etc.)
+p <- ggplot(reps_exp_sum_5kb_df, aes(HS_Ser2P_R6, HS_Ser2P_R8) ) + ggtitle("HS Ser2P") +
+  geom_point(alpha=0.8, size=1) + 
+  xlim(c(0,5000) ) + ylim(c(0,10000)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+
+
+#save
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/comparing_replicates/HS_Ser2P_5kbcounts_R6_vs_R8_scatterplot_cropped.pdf", 5, 5)
+print(p)
+dev.off()
+
+```
+
+```{r compare reps Ser2P / PolII no FC just NHS and HS}
+#using reps_exp_sum_5kb_df, add new col for NHS R6 Ser2P / Pol II, etc.
+reps_exp_sum_5kb_df$NHS_Ser2PdPolII_R6 <- reps_exp_sum_5kb_df$NHS_Ser2P_R6 / reps_exp_sum_5kb_df$NHS_Rpb1_R6
+reps_exp_sum_5kb_df$HS_Ser2PdPolII_R6 <- reps_exp_sum_5kb_df$HS_Ser2P_R6 / reps_exp_sum_5kb_df$HS_Rpb1_R6
+reps_exp_sum_5kb_df$NHS_Ser2PdPolII_R8 <- reps_exp_sum_5kb_df$NHS_Ser2P_R8 / reps_exp_sum_5kb_df$NHS_Rpb1_R8
+reps_exp_sum_5kb_df$HS_Ser2PdPolII_R8 <- reps_exp_sum_5kb_df$HS_Ser2P_R8 / reps_exp_sum_5kb_df$HS_Rpb1_R8
+
+#plot
+nhs <- ggplot(reps_exp_sum_5kb_df, aes(NHS_Ser2PdPolII_R6, NHS_Ser2PdPolII_R8) ) + ggtitle("NHS Ser2P / Pol II") +
+  geom_point(alpha=0.8, size=1) + 
+  xlim(c(0,2) ) + ylim(c(0,2)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+
+hs <- ggplot(reps_exp_sum_5kb_df, aes(HS_Ser2PdPolII_R6, HS_Ser2PdPolII_R8) ) + ggtitle("HS Ser2P / Pol II") +
+  geom_point(alpha=0.8, size=1) + 
+  xlim(c(0,2) ) + ylim(c(0,2)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+
+#save
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/comparing_replicates/NHS_Ser2PdPolII_5kbcounts_R6_vs_R8_scatterplot.pdf", 5, 5)
+print(nhs)
+dev.off()
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/comparing_replicates/HS_Ser2PdPolII_5kbcounts_R6_vs_R8_scatterplot.pdf", 5, 5)
+print(hs)
+dev.off()
+
+```
+
+
+
+```{r FC then AVG plots}
+#read-in file
+FC_then_AVG_df <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/avg_after_calc_FC.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+###Ser2P vs Pol II: 2 stdev from trendline
+  #+2SD line: y = 0.5882x + 1.5795
+  #-2SD line: y = 0.5882x - 0.7805
+#calc points outside of 2SDs
+FC_then_AVG_df$over_2SD <- FC_then_AVG_df$Ser2P_FC_avg > (0.5882*FC_then_AVG_df$Rpb1_FC_avg + 1.5795) | FC_then_AVG_df$Ser2P_FC_avg < (0.5882*FC_then_AVG_df$Rpb1_FC_avg - 0.7805)
+
+#plot, color by outlier
+p <- ggplot(FC_then_AVG_df, aes(log(Rpb1_FC_avg,2), log(Ser2P_FC_avg,2), colour = over_2SD, label = transcriptID) ) +
+  geom_point(alpha=0.8) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) + #lim for log2 graphs
+  #xlim(c(0,40)) + ylim(c(0,40)) + #lim for untransformed FC graphs
+  labs(title = "Sum ChIP-seq reads TTS-5kb ds", x="log2 Pol II Fold Change in 5kb ds of TTS", y="log2 Ser2P Fold Change in 5kb ds of TTS")+
+  scale_colour_manual(values=c("#666666", "#850f09")) +
+  #geom_abline(color="gray40", lty=2, slope =  0.5882, intercept =  1.5795) + # +2SD line
+  #geom_abline(color="gray40", lty=2, slope =  0.5882, intercept =  -0.7805) + # -2SD line
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diagonal line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +
+  theme(legend.position="none") #+ #hide legend
+#  scale_x_continuous(expand = c(0, 0), limits = c(0, 40)) + #use these last 2 lines to put 0,0 in the corner of the graph
+#  scale_y_continuous(expand = c(0, 0), limits = c(0, 40))
+
+#save
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/FC_then_AVG/2SD_lines_Ser2P_vs_PolII_log2_FC_scatterplot.pdf", 5, 5)
+print(p)
+dev.off()
+
+
+###Ser2P vs Pol II: 2 stdev from true diagonal
+  # diagonal line: y=x
+  #+2SD line: y = x + 1.9684
+  #-2SD line: y = x - 1.9684
+
+#calc points outside of 2SDs from diag.
+FC_then_AVG_df$over_2SD_from_diag <- FC_then_AVG_df$Ser2P_FC_avg > (FC_then_AVG_df$Rpb1_FC_avg + 1.9684) | FC_then_AVG_df$Ser2P_FC_avg < (FC_then_AVG_df$Rpb1_FC_avg - 1.9684)
+
+#plot, color by outlier
+p <- ggplot(FC_then_AVG_df, aes(Rpb1_FC_avg, Ser2P_FC_avg, colour = over_2SD_from_diag, label = transcriptID) ) +
+  geom_point(alpha=0.8) + 
+  #xlim(c(-5,5)) + ylim(c(-5,5)) + #lim for log2 graphs
+  xlim(c(0,40)) + ylim(c(0,40)) + #lim for untransformed FC graphs
+  labs(title = "Sum ChIP-seq reads TTS-5kb ds", subtitle = "2SD from diagonal", x="log2 Pol II Fold Change in 5kb ds of TTS", y="log2 Ser2P Fold Change in 5kb ds of TTS")+
+  scale_colour_manual(values=c("#666666", "#850f09")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  1.9684) + # +2SD line
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  -1.9684) + # -2SD line
+  #geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diagonal line
+  #geom_hline(yintercept=0) + geom_vline(xintercept=0) +
+  theme(legend.position="none") + #hide legend
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 40)) + #use these last 2 lines to put 0,0 in the corner of the graph
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 40))
+
+#save
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/FC_then_AVG/diag_2SD_lines_00inCorner_Ser2P_vs_PolII_FC_scatterplot.pdf", 5, 5)
+print(p)
+dev.off()
+
+#add to master DF
+read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/Master_DF_ChIP_analyzable_genes_above_background.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+
+
+
+
+###act or rep coloring
+  #add act or rep col to df
+colnames(master_df) <- c("transcriptID", colnames(master_df[2:25])) #need to make key name match
+FC_then_AVG_df <- left_join(FC_then_AVG_df, master_df[c(1,25)], by = "transcriptID")
+
+  #plot w/color by cat.
+p <- ggplot(FC_then_AVG_df, aes(log(Rpb1_FC_avg,2), log(Ser2P_FC_avg,2), colour = DESeq_2fold_cat) ) +
+  geom_point(alpha=0.8, size = 0.5) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) + #lim for log2 graphs
+  #xlim(c(0,40)) + ylim(c(0,40)) + #lim for untransformed FC graphs
+  labs(title = "Sum ChIP-seq reads TTS-5kb ds", x="Pol II Fold Change in 5kb ds of TTS", y="Ser2P Fold Change in 5kb ds of TTS")+
+  scale_colour_manual(values=c("#00AFBB", "#999999", "#FC4E07")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diagonal line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/FC_then_AVG/act_and_rep_Ser2P_vs_PolII_log2_FC_scatterplot_smallPoints.pdf", 6, 5)
+print(p)
+dev.off()
+
+
+#density plot
+p <- ggplot(FC_then_AVG_df, aes(log(Rpb1_FC_avg,2), log(Ser2P_FC_avg,2)) ) +
+  geom_hex(bins = 100) +
+  scale_fill_continuous(type = "viridis") +
+  theme_bw() +
+  geom_abline(color="black", lty=2, slope =  1, intercept =  0) + #draw diagonal line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +
+  xlim(c(-5,5)) + ylim(c(-5,5))  #lim for log2 graphs
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/FC_then_AVG/density_Ser2P_vs_PolII_log2_FC_scatterplot.pdf", 6, 5)
+print(p)
+dev.off()
+
+```
+
+```{r color for if increased uncleaved reads from 4sU-seq}
+FC_then_AVG_df <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/avg_after_calc_FC.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#add cleaved or uncleaved cat
+#read-in data from master df
+master_df <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/Master_df_ChIP_genes_NEW_AVG.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+  #add col to df
+FC_then_AVG_df <- left_join(FC_then_AVG_df, master_df[c(1,33)], by = "transcriptID")
+#remove NA and no change points to see others better
+filtered_FC_then_AVG_df <- filter(FC_then_AVG_df, FC_then_AVG_df$cleaved_cat == "increased" | FC_then_AVG_df$cleaved_cat == "decreased")
+
+  #plot w/color by cat.
+p <- ggplot(filtered_FC_then_AVG_df, aes(log(Rpb1_FC_avg,2), log(Ser2P_FC_avg,2), colour = cleaved_cat) ) +
+  geom_point(alpha=0.8, size = 1) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) + #lim for log2 graphs
+  #xlim(c(0,40)) + ylim(c(0,40)) + #lim for untransformed FC graphs
+  labs(title = "Sum ChIP-seq reads TTS-5kb ds", subtitle = "fold change in 4sU reads accross cleavage site", x="Pol II Fold Change in 5kb ds of TTS", y="Ser2P Fold Change in 5kb ds of TTS")+
+  #scale_colour_manual(values=c("#999999", "#FC4E07", "#00AFBB", "#767676FF")) + #four cat.
+  scale_colour_manual(values=c("#FC4E07", "#00AFBB")) + #two cat.
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diagonal line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/FC_then_AVG/cleavage_Ser2P_vs_PolII_log2_FC_scatterplot_no_unchanged_genes.pdf", 6, 5)
+print(p)
+dev.off()
+
+
+```
+
+
+
+------------
+
+
+
+
+boxplots: RPK, normalized to gnbd, sub input, etc.
+---------------------------
+```{r comparing MANE versions}
+#MANE 0.95 (used previously) vs 1.0
+MANE_v95_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v095_whole_gene.bed", header = FALSE, sep="\t", stringsAsFactors = FALSE, quote = "")
+MANE_v100_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v100_whole_genes.bed", header = FALSE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#non-overlapping genes
+added_genes <- filter(MANE_v100_bed, !(MANE_v100_bed$V4 %in% MANE_v95_bed$V4) )#510
+removed_genes <- filter(MANE_v95_bed, !(MANE_v95_bed$V4 %in% MANE_v100_bed$V4) )#30
+#are gene annotations different?
+changed_genes <- filter(MANE_v100_bed, !(MANE_v100_bed$V2 %in% MANE_v95_bed$V2) | !(MANE_v100_bed$V3 %in% MANE_v95_bed$V3)) #503
+
+#all altered genes list
+all_altered_genes <- rbind(added_genes, removed_genes, changed_genes)
+
+#are any of these in my current ChIP list?
+overlapp <- filter(all_altered_genes, all_altered_genes$V4 %in% TTS_bed$V4) #4 genes
+#are they in final 1,000?
+final_overlapp <- filter(all_altered_genes, all_altered_genes$V4 %in% ChIP_master_df_new$transcriptID) #none, good
+```
+ok so the new V100 might have a few extra genes that we could analyze but none of the genes in the current 1,034 list are affected
+I'm continuing with the V95 for consistency
+
+
+```{r making gnbd bed file}
+# TSS+250 to TTS
+
+#get gene ID's from list used for ds
+TTS_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/ChIP_genes_TTS.bed", header = FALSE, sep="\t", stringsAsFactors = FALSE, quote = "")
+colnames(TTS_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+#read in MANE gnbd bed file
+MANE_whole_gnbd_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v095_whole_gene.bed", header = FALSE, sep="\t", stringsAsFactors = FALSE, quote = "")
+MANE_whole_gnbd_bed <- MANE_whole_gnbd_bed[1:6]
+colnames(MANE_whole_gnbd_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+#get whole gene for 4k list of ChIP analyzable genes
+ChIP_whole_genes_bed <- filter(MANE_whole_gnbd_bed, MANE_whole_gnbd_bed$id %in% TTS_bed$id)
+
+
+
+#make gnbd bed windows (remove PPP, first 250 bp)
+ChIP_gnbd_bed <- ChIP_whole_genes_bed #so we don't accidentally overwrite the gnbd bed file
+
+i=1
+while(i <= nrow(ChIP_gnbd_bed)){
+  #if on + strand, start = TSS and end = TTS
+  #for downstream window: start = end & end = end - 5kb
+  if(ChIP_gnbd_bed$strand[i]=="+"){
+    ChIP_gnbd_bed$start[i] = ChIP_gnbd_bed$start[i] + 250
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #for downstream window: start = start - 5000 & end = start (remeber to set end = start before changing start to not = TTS anymore)
+  else if(ChIP_gnbd_bed$strand[i]=="-"){
+    ChIP_gnbd_bed$end[i] = ChIP_gnbd_bed$end[i] - 250
+    }
+  else{
+    print("no strand annotation!!")
+  }
+  i = i+1
+}
+#remove any negative values
+ChIP_gnbd_bed <- filter(ChIP_gnbd_bed, ChIP_gnbd_bed$start >= 0)
+ChIP_gnbd_bed <- filter(ChIP_gnbd_bed, ChIP_gnbd_bed$end >= 0) #nothing was removed
+
+
+#save
+write_delim(ChIP_gnbd_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/ChIP_analyzable_genes_MANE_v095_gnbd.bed", delim = "\t", col_names = FALSE)
+```
+
+  
+    homer ghist gnbd (+250 to TTS), bins = 1% of gene length-250bp (100 bins), using size given so 0 = +250 and 100 = TTS
+    bash script: 07f_gnbd_ghist_ChIP.sh (in 4sU bash scripts)
+    *NEED to use bedtools or analyze repeats
+      
+```{r read-in files}
+#read-in hist outputs
+fl <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/homer_hist_outputs/gnbd_ghist_all_ChIP_genes", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+gnbd_ghist <- lapply(fl, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(gnbd_ghist) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/homer_hist_outputs/gnbd_ghist_all_ChIP_genes/|.tsv", "", fl)
+
+```
+
+```{r making gnbd counts df}
+#make gene IDs into rownames
+rownames(gnbd_ghist$NHS_Rpb1_R6) <- gnbd_ghist$NHS_Rpb1_R6$Gene
+rownames(gnbd_ghist$NHS_Rpb1_R8) <- gnbd_ghist$NHS_Rpb1_R8$Gene
+rownames(gnbd_ghist$HS_Rpb1_R6) <- gnbd_ghist$HS_Rpb1_R6$Gene
+rownames(gnbd_ghist$HS_Rpb1_R8) <- gnbd_ghist$HS_Rpb1_R8$Gene
+rownames(gnbd_ghist$NHS_Ser2P_R6) <- gnbd_ghist$NHS_Ser2P_R6$Gene
+rownames(gnbd_ghist$NHS_Ser2P_R8) <- gnbd_ghist$NHS_Ser2P_R8$Gene
+rownames(gnbd_ghist$HS_Ser2P_R6) <- gnbd_ghist$HS_Ser2P_R6$Gene
+rownames(gnbd_ghist$HS_Ser2P_R8) <- gnbd_ghist$HS_Ser2P_R8$Gene
+rownames(gnbd_ghist$input) <- gnbd_ghist$input$Gene
+
+#make df of sum gnbd counts
+gnbd_ghist$input$input <- rowSums(gnbd_ghist$input[,2:101])
+gnbd_ghist$NHS_Rpb1_R6$NHS_Rpb1_R6 <- rowSums(gnbd_ghist$NHS_Rpb1_R6[,2:101])
+gnbd_ghist$NHS_Rpb1_R8$NHS_Rpb1_R8 <- rowSums(gnbd_ghist$NHS_Rpb1_R8[,2:101])
+gnbd_ghist$NHS_Ser2P_R6$NHS_Ser2P_R6 <- rowSums(gnbd_ghist$NHS_Ser2P_R6[,2:101])
+gnbd_ghist$NHS_Ser2P_R8$NHS_Ser2P_R8 <- rowSums(gnbd_ghist$NHS_Ser2P_R8[,2:101])
+gnbd_ghist$HS_Rpb1_R6$HS_Rpb1_R6 <- rowSums(gnbd_ghist$HS_Rpb1_R6[,2:101])
+gnbd_ghist$HS_Rpb1_R8$HS_Rpb1_R8 <- rowSums(gnbd_ghist$HS_Rpb1_R8[,2:101])
+gnbd_ghist$HS_Ser2P_R6$HS_Ser2P_R6 <- rowSums(gnbd_ghist$HS_Ser2P_R6[,2:101])
+gnbd_ghist$HS_Ser2P_R8$HS_Ser2P_R8 <- rowSums(gnbd_ghist$HS_Ser2P_R8[,2:101])
+
+#filter to final 1000 genes list
+filtered_input <- filter(gnbd_ghist$input[c(1,102)], gnbd_ghist$input$Gene %in% ChIP_master_df_new$transcriptID)
+filtered_NHS_Rpb1_R6 <- filter(gnbd_ghist$NHS_Rpb1_R6[c(1,102)], gnbd_ghist$NHS_Rpb1_R6$Gene %in% ChIP_master_df_new$transcriptID)
+filtered_NHS_Rpb1_R8 <- filter(gnbd_ghist$NHS_Rpb1_R8[c(1,102)], gnbd_ghist$NHS_Rpb1_R8$Gene %in% ChIP_master_df_new$transcriptID)
+filtered_NHS_Ser2P_R6 <- filter(gnbd_ghist$NHS_Ser2P_R6[c(1,102)], gnbd_ghist$NHS_Ser2P_R6$Gene %in% ChIP_master_df_new$transcriptID)
+filtered_NHS_Ser2P_R8 <- filter(gnbd_ghist$NHS_Ser2P_R8[c(1,102)], gnbd_ghist$NHS_Ser2P_R8$Gene %in% ChIP_master_df_new$transcriptID)
+filtered_HS_Rpb1_R6 <- filter(gnbd_ghist$HS_Rpb1_R6[c(1,102)], gnbd_ghist$HS_Rpb1_R6$Gene %in% ChIP_master_df_new$transcriptID)
+filtered_HS_Rpb1_R8 <- filter(gnbd_ghist$HS_Rpb1_R8[c(1,102)], gnbd_ghist$HS_Rpb1_R8$Gene %in% ChIP_master_df_new$transcriptID)
+filtered_HS_Ser2P_R6 <- filter(gnbd_ghist$HS_Ser2P_R6[c(1,102)], gnbd_ghist$HS_Ser2P_R6$Gene %in% ChIP_master_df_new$transcriptID)
+filtered_HS_Ser2P_R8 <- filter(gnbd_ghist$HS_Ser2P_R8[c(1,102)], gnbd_ghist$HS_Ser2P_R8$Gene %in% ChIP_master_df_new$transcriptID)
+
+
+#join into one df
+gnbd_sum_df <- full_join( full_join( full_join( full_join( full_join( full_join( full_join( full_join(
+  filtered_input, filtered_NHS_Rpb1_R6, by = "Gene"), 
+  filtered_NHS_Rpb1_R8, by = "Gene") , 
+  filtered_HS_Rpb1_R6, by = "Gene") ,
+  filtered_HS_Rpb1_R8, by = "Gene") , 
+  filtered_NHS_Ser2P_R6, by = "Gene") ,
+  filtered_NHS_Ser2P_R8, by = "Gene") ,
+  filtered_HS_Ser2P_R6, by = "Gene") ,
+  filtered_HS_Ser2P_R8, by = "Gene") 
+#don't know where the extra "Rpb1 NHS avg" col came from but let's remove it
+gnbd_sum_df <- gnbd_sum_df[1:10]
+#save
+write_delim(gnbd_sum_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/gnbd_sum_ChIP_genes_all_reps.tsv", delim = "\t", col_names = TRUE)
+
+
+
+#also calc gnbd RPK
+gnbd_RPK_df <- gnbd_sum_df
+#need to change "gene" col to "transcriptID to use join
+colnames(gnbd_RPK_df) <- c("transcriptID", colnames(gnbd_RPK_df[2:10]))
+gnbd_RPK_df <- left_join(gnbd_RPK_df, ChIP_master_df_new[c(1,19)], by = "transcriptID") #ID and gene length from master df
+#divide by gene length in kb
+i=2
+while (i<=ncol(gnbd_sum_df)) {
+  gnbd_RPK_df[,i] <- gnbd_sum_df[,i] / (gnbd_RPK_df$gene_length / 1000)
+  i=i+1
+}
+
+#save
+write_delim(gnbd_RPK_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/gnbd_RPK_ChIP_genes_all_reps.tsv", delim = "\t", col_names = TRUE)
+
+
+
+#calc fold change, avg reps and save to master_df
+gnbd_FC_df <- data.frame(transcriptID = gnbd_sum_df$Gene,
+                         Rpb1_R6_FC = gnbd_sum_df$HS_Rpb1_R6 / gnbd_sum_df$NHS_Rpb1_R6,
+                         Rpb1_R8_FC = gnbd_sum_df$HS_Rpb1_R8 / gnbd_sum_df$NHS_Rpb1_R8,
+                         Ser2P_R6_FC = gnbd_sum_df$HS_Ser2P_R6 / gnbd_sum_df$NHS_Ser2P_R6,
+                         Ser2P_R8_FC = gnbd_sum_df$HS_Ser2P_R8 / gnbd_sum_df$NHS_Ser2P_R8   )
+
+gnbd_FC_df$Rpb1_FC_avg <- rowMeans(gnbd_FC_df[2:3])
+gnbd_FC_df$Ser2P_FC_avg <- rowMeans(gnbd_FC_df[4:5])
+
+ChIP_master_df_new <- left_join(ChIP_master_df_new, gnbd_FC_df[c(1,6,7)], by = "transcriptID")
+colnames(ChIP_master_df_new) <- c( colnames(ChIP_master_df_new[1:30]), "Gnbd_Rpb1_FC_avg", "Gnbd_Ser2P_FC_avg")
+
+#save master_df
+write_delim(ChIP_master_df_new, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/Master_df_ChIP_genes_NEW_AVG.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+now I have gnbd counts in gnbd_sum_df and TTS to 5kb sum in ChIP_master_df_new (26-28)
+    need 5-20kb ds counts (have data in ghist, just need to extract)
+```{r ds counts}
+
+##make df with sum of first 6kb-20kb ds
+  #first make input and filter to 1000 gene list then left join the rest on
+  #making initial df's
+sum_6to20kb_df <- data.frame(transcriptID = ghist$input$Gene,
+                             input = rowSums(ghist$input[,28:42]),
+                             HS_Ser2P_R8 = rowSums(ghist$HS_Ser2P_R8[,28:42]))
+join_me <- data.frame(transcriptID = ghist$NHS_Rpb1_R6$Gene,
+                             NHS_Rpb1_R6 = rowSums(ghist$NHS_Rpb1_R6[,28:42]),
+                             NHS_Rpb1_R8 = rowSums(ghist$NHS_Rpb1_R8[,28:42]),
+                             HS_Rpb1_R6 = rowSums(ghist$HS_Rpb1_R6[,28:42]),
+                             HS_Rpb1_R8 = rowSums(ghist$HS_Rpb1_R8[,28:42]),
+                             NHS_Ser2P_R6 = rowSums(ghist$NHS_Ser2P_R6[,28:42]),
+                             NHS_Ser2P_R8 = rowSums(ghist$NHS_Ser2P_R8[,28:42]),
+                             HS_Ser2P_R6 = rowSums(ghist$HS_Ser2P_R6[,28:42])
+                      )
+
+
+  #now filter to final gene list
+sum_6to20kb_df <- filter(sum_6to20kb_df, sum_6to20kb_df$transcriptID %in% ChIP_master_df_new$transcriptID)
+
+  #now left join others on
+sum_6to20kb_df <- left_join(sum_6to20kb_df, join_me, by = "transcriptID")
+
+  #clac RPK (div by length)
+RPK_6to20kb_df <- sum_6to20kb_df
+i=2 #first col is gene IDs so want to start with col 2
+while(i<=ncol(RPK_6to20kb_df)){
+  RPK_6to20kb_df[,i] <- sum_6to20kb_df[,i] / 14  #20-6 = 14kb
+  i=i+1
+}
+
+#save
+write_delim(sum_6to20kb_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/sum_counts_6to20kbds.tsv", delim = "\t", col_names = TRUE)
+write_delim(RPK_6to20kb_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/RPK_6to20kbds.tsv", delim = "\t", col_names = TRUE)
+
+
+
+
+
+
+##also for 10-20kb ds in case I'm including some longer 3'peaks at 6kb that's confounding data
+sum_10to20kb_df <- data.frame(transcriptID = ghist$input$Gene,
+                             input = rowSums(ghist$input[,32:42]),
+                             HS_Ser2P_R8 = rowSums(ghist$HS_Ser2P_R8[,32:42]))
+join_me <- data.frame(transcriptID = ghist$NHS_Rpb1_R6$Gene,
+                             NHS_Rpb1_R6 = rowSums(ghist$NHS_Rpb1_R6[,32:42]),
+                             NHS_Rpb1_R8 = rowSums(ghist$NHS_Rpb1_R8[,32:42]),
+                             HS_Rpb1_R6 = rowSums(ghist$HS_Rpb1_R6[,32:42]),
+                             HS_Rpb1_R8 = rowSums(ghist$HS_Rpb1_R8[,32:42]),
+                             NHS_Ser2P_R6 = rowSums(ghist$NHS_Ser2P_R6[,32:42]),
+                             NHS_Ser2P_R8 = rowSums(ghist$NHS_Ser2P_R8[,32:42]),
+                             HS_Ser2P_R6 = rowSums(ghist$HS_Ser2P_R6[,32:42])
+                      )
+
+
+  #now filter to final gene list
+sum_10to20kb_df <- filter(sum_10to20kb_df, sum_10to20kb_df$transcriptID %in% ChIP_master_df_new$transcriptID)
+
+  #now left join others on
+sum_10to20kb_df <- left_join(sum_10to20kb_df, join_me, by = "transcriptID")
+
+  #clac RPK (div by length)
+RPK_10to20kb_df <- sum_10to20kb_df
+i=2 #first col is gene IDs so want to start with col 2
+while(i<=ncol(RPK_10to20kb_df)){
+  RPK_10to20kb_df[,i] <- sum_10to20kb_df[,i] / 10
+  i=i+1
+}
+
+
+#save
+write_delim(sum_10to20kb_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/sum_counts_10to20kbds.tsv", delim = "\t", col_names = TRUE)
+write_delim(RPK_10to20kb_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/RPK_10to20kbds.tsv", delim = "\t", col_names = TRUE)
+
+
+#make RPK df for TTS-5kb ds
+sum_5kb_df <- read.table( "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/sum_counts_first5kbds.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#calc RPK
+RPK_5kb_df <- reps_exp_sum_5kb_df
+i=2 #first col is gene IDs so want to start with col 2
+while(i<=ncol(RPK_5kb_df)){
+  RPK_5kb_df[,i] <- reps_exp_sum_5kb_df[,i] / 5
+  i=i+1
+}
+#save
+write_delim(RPK_5kb_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/RPK_TTSto5kbds.tsv", delim = "\t", col_names = TRUE)
+
+
+```
+
+now have all df's, can make boxplots comparing RPK ds/gnbd for various ds regions
+  is the 3' peak different from far ds?
+  norm Ser2P to Pol II?
+```{r norm ds RPK to gnbd RPK}
+#data frames to use: 
+gnbd_RPK_df
+RPK_5kb_df
+RPK_6to20kb_df
+RPK_10to20kb_df
+#all in "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/"
+
+
+#norm to gnbd
+temp <- column_to_rownames(gnbd_RPK_df, var = "transcriptID")
+gnbd_RPK_df_2 <- temp[-10]
+
+RPK_5kb_df <- column_to_rownames(RPK_5kb_df, var = "transcriptID")
+RPK_norm_5kb_df <- RPK_5kb_df / gnbd_RPK_df_2
+
+RPK_6to20kb_df <- column_to_rownames(RPK_6to20kb_df, var = "transcriptID")
+RPK_norm_6to20kb_df <- RPK_6to20kb_df / gnbd_RPK_df_2
+
+RPK_10to20kb_df <- column_to_rownames(RPK_10to20kb_df, var = "transcriptID")
+RPK_norm_10to20kb_df <- RPK_10to20kb_df / gnbd_RPK_df_2
+
+
+#now avg reps
+RPK_norm_5kb_df$NHS_Rpb1_avg <- (RPK_norm_5kb_df$NHS_Rpb1_R6 + RPK_norm_5kb_df$NHS_Rpb1_R8) / 2
+RPK_norm_5kb_df$HS_Rpb1_avg <- (RPK_norm_5kb_df$HS_Rpb1_R6 + RPK_norm_5kb_df$HS_Rpb1_R8) / 2
+RPK_norm_5kb_df$NHS_Ser2P_avg <- (RPK_norm_5kb_df$NHS_Ser2P_R6 + RPK_norm_5kb_df$NHS_Ser2P_R8) / 2
+RPK_norm_5kb_df$HS_Ser2P_avg <- (RPK_norm_5kb_df$HS_Ser2P_R6 + RPK_norm_5kb_df$HS_Ser2P_R8) / 2
+RPK_norm_5kb_df$transcriptID <- rownames(RPK_norm_5kb_df) #add gene IDs back in own col so can save
+RPK_norm_5kb_df <- RPK_norm_5kb_df[c(14,1:13)] #and put IDs in first col
+
+RPK_norm_6to20kb_df$NHS_Rpb1_avg <- (RPK_norm_6to20kb_df$NHS_Rpb1_R6 + RPK_norm_6to20kb_df$NHS_Rpb1_R8) / 2
+RPK_norm_6to20kb_df$HS_Rpb1_avg <- (RPK_norm_6to20kb_df$HS_Rpb1_R6 + RPK_norm_6to20kb_df$HS_Rpb1_R8) / 2
+RPK_norm_6to20kb_df$NHS_Ser2P_avg <- (RPK_norm_6to20kb_df$NHS_Ser2P_R6 + RPK_norm_6to20kb_df$NHS_Ser2P_R8) / 2
+RPK_norm_6to20kb_df$HS_Ser2P_avg <- (RPK_norm_6to20kb_df$HS_Ser2P_R6 + RPK_norm_6to20kb_df$HS_Ser2P_R8) / 2
+RPK_norm_6to20kb_df$transcriptID <- rownames(RPK_norm_6to20kb_df) #add gene IDs back in own col so can save
+RPK_norm_6to20kb_df <- RPK_norm_6to20kb_df[c(14,1:13)] #and put IDs in first col
+
+RPK_norm_10to20kb_df$NHS_Rpb1_avg <- (RPK_norm_10to20kb_df$NHS_Rpb1_R6 + RPK_norm_10to20kb_df$NHS_Rpb1_R8) / 2
+RPK_norm_10to20kb_df$HS_Rpb1_avg <- (RPK_norm_10to20kb_df$HS_Rpb1_R6 + RPK_norm_10to20kb_df$HS_Rpb1_R8) / 2
+RPK_norm_10to20kb_df$NHS_Ser2P_avg <- (RPK_norm_10to20kb_df$NHS_Ser2P_R6 + RPK_norm_10to20kb_df$NHS_Ser2P_R8) / 2
+RPK_norm_10to20kb_df$HS_Ser2P_avg <- (RPK_norm_10to20kb_df$HS_Ser2P_R6 + RPK_norm_10to20kb_df$HS_Ser2P_R8) / 2
+RPK_norm_10to20kb_df$transcriptID <- rownames(RPK_norm_10to20kb_df) #add gene IDs back in own col so can save
+RPK_norm_10to20kb_df <- RPK_norm_10to20kb_df[c(14,1:13)] #and put IDs in first col
+
+#save
+write_delim(RPK_norm_5kb_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/RPK_norm_to_gnbd_TTSto5kb.tsv", delim = "\t", col_names = TRUE)
+write_delim(RPK_norm_6to20kb_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/RPK_norm_to_gnbd_6kbto20kb.tsv", delim = "\t", col_names = TRUE)
+write_delim(RPK_norm_10to20kb_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/RPK_norm_to_gnbd_10kbto20kb.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+```{r make RPK boxplots of ds counts norm to gnbd}
+#dfs to use:
+#   RPK_norm_5kb_df
+#   RPK_norm_6to20kb_df
+#   RPK_norm_10to20kb_df
+
+
+#pivot longer to be suitable for boxplots
+plotting_5kb_norm <- pivot_longer(RPK_norm_5kb_df[c(2,11:14)], cols =  c(colnames(RPK_norm_5kb_df[c(2,11:14)])) )
+plotting_6to20kb_norm <- pivot_longer(RPK_norm_6to20kb_df[c(2,11:14)], cols =  c(colnames(RPK_norm_6to20kb_df[c(2,11:14)])) )
+plotting_10to20kb_norm <- pivot_longer(RPK_norm_10to20kb_df[c(2,11:14)], cols =  c(colnames(RPK_norm_10to20kb_df[c(2,11:14)])) )
+#factor to make them plot in order I want
+plotting_5kb_norm$name <- factor(plotting_5kb_norm$name, c("input", "NHS_Rpb1_avg", "HS_Rpb1_avg", "NHS_Ser2P_avg", "HS_Ser2P_avg"))
+plotting_6to20kb_norm$name <- factor(plotting_6to20kb_norm$name, c("input", "NHS_Rpb1_avg", "HS_Rpb1_avg", "NHS_Ser2P_avg", "HS_Ser2P_avg"))
+plotting_10to20kb_norm$name <- factor(plotting_10to20kb_norm$name, c("input", "NHS_Rpb1_avg", "HS_Rpb1_avg", "NHS_Ser2P_avg", "HS_Ser2P_avg"))
+
+
+#for setting y-axis limits
+yp <- subset(plotting_10to20kb_norm, value>0)  # Choosing only +ve values in col x
+sts <- boxplot.stats(yp$value)$stats  # Compute lower and upper whisker limits
+
+#make boxplots
+b <- ggplot(plotting_10to20kb_norm, aes(y=value, x=name, color = name ) ) +
+  geom_violin() +
+  #geom_boxplot(width=0.5, outlier.shape = 16) + 
+  coord_cartesian(ylim = c(sts[2]/2,max(sts)*1.05)) +
+  ylab("10kb to 20kb ds RPK norm to Gene Body RPK") + 
+  ggtitle("10kb to 20kb ds normalized to gene body") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13), legend.position="none", axis.text.x = element_text(angle = -45, vjust=1, hjust = 0)) +
+  #ylim(c(-1,1)) + 
+  stat_summary(fun.y=median, geom="point", shape = 3, size=2) +
+  stat_summary(fun.y=mean, geom="point", size=2) + 
+  scale_color_manual(values=c("#7E6148B2", "#F39B7FB2", "#E64B35B2", "#8491B4B2", "#3C5488B2"))
+
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/FC_then_AVG/RPK_norm_to_gnbd_boxplots/10kbto20kbds_RPK_violin_plot_zoom.pdf", 9,7)
+print(b)
+dev.off()
+
+
+
+
+#what if I normalized everything to input?
+  ##can't just norm to input because that would be saying input having 5 RPK ds / 10 RPK gnbd  is the same as 500 RPK ds / 1,000 RPK gnbd in the ChIP which I don't think is fair
+  ##need to subtract input RPK from sample RPK avg, then plot
+#get data and sub input
+RPK_5kb_df_subI <- RPK_5kb_df[2:9]
+i=1
+while (i<=ncol(RPK_5kb_df_subI)) {
+  RPK_5kb_df_subI[i] <- RPK_5kb_df[i+1] - RPK_5kb_df$input
+  i=i+1
+}
+#
+RPK_6to20kb_df_subI <- RPK_6to20kb_df[2:9]
+i=1
+while (i<=ncol(RPK_6to20kb_df_subI)) {
+  RPK_6to20kb_df_subI[i] <- RPK_6to20kb_df[i+1] - RPK_6to20kb_df$input
+  i=i+1
+}
+#
+RPK_10to20kb_df_subI <- RPK_10to20kb_df[2:9]
+i=1
+while (i<=ncol(RPK_10to20kb_df_subI)) {
+  RPK_10to20kb_df_subI[i] <- RPK_10to20kb_df[i+1] - RPK_10to20kb_df$input
+  i=i+1
+}
+#gnbd too
+RPK_gnbd_df_subI <- gnbd_RPK_df_2[2:9]
+i=1
+while (i<=ncol(RPK_gnbd_df_subI)) {
+  RPK_gnbd_df_subI[i] <- gnbd_RPK_df_2[i+1] - gnbd_RPK_df_2$input
+  i=i+1
+}
+
+#now norm to gnbd
+gnbd_norm_RPK_5kb_df_subI <- RPK_5kb_df_subI / RPK_gnbd_df_subI
+gnbd_norm_RPK_6to20kb_df_subI <- RPK_6to20kb_df_subI / RPK_gnbd_df_subI
+gnbd_norm_RPK_10to20kb_df_subI <- RPK_10to20kb_df_subI / RPK_gnbd_df_subI
+
+#now avg reps
+gnbd_norm_RPK_5kb_df_subI$NHS_Rpb1_avg <- (gnbd_norm_RPK_5kb_df_subI$NHS_Rpb1_R6 + gnbd_norm_RPK_5kb_df_subI$NHS_Rpb1_R8 ) /2
+gnbd_norm_RPK_5kb_df_subI$HS_Rpb1_avg <- (gnbd_norm_RPK_5kb_df_subI$HS_Rpb1_R6 + gnbd_norm_RPK_5kb_df_subI$HS_Rpb1_R8 )/2
+gnbd_norm_RPK_5kb_df_subI$NHS_Ser2P_avg <- (gnbd_norm_RPK_5kb_df_subI$NHS_Ser2P_R6 + gnbd_norm_RPK_5kb_df_subI$NHS_Ser2P_R8 )/2
+gnbd_norm_RPK_5kb_df_subI$HS_Ser2P_avg <- (gnbd_norm_RPK_5kb_df_subI$HS_Ser2P_R6 + gnbd_norm_RPK_5kb_df_subI$HS_Ser2P_R8 )/2
+#
+gnbd_norm_RPK_6to20kb_df_subI$NHS_Rpb1_avg <- (gnbd_norm_RPK_6to20kb_df_subI$NHS_Rpb1_R6 + gnbd_norm_RPK_6to20kb_df_subI$NHS_Rpb1_R8 ) /2
+gnbd_norm_RPK_6to20kb_df_subI$HS_Rpb1_avg <- (gnbd_norm_RPK_6to20kb_df_subI$HS_Rpb1_R6 + gnbd_norm_RPK_6to20kb_df_subI$HS_Rpb1_R8 )/2
+gnbd_norm_RPK_6to20kb_df_subI$NHS_Ser2P_avg <- (gnbd_norm_RPK_6to20kb_df_subI$NHS_Ser2P_R6 + gnbd_norm_RPK_6to20kb_df_subI$NHS_Ser2P_R8 )/2
+gnbd_norm_RPK_6to20kb_df_subI$HS_Ser2P_avg <- (gnbd_norm_RPK_6to20kb_df_subI$HS_Ser2P_R6 + gnbd_norm_RPK_6to20kb_df_subI$HS_Ser2P_R8 )/2
+#
+gnbd_norm_RPK_10to20kb_df_subI$NHS_Rpb1_avg <- (gnbd_norm_RPK_10to20kb_df_subI$NHS_Rpb1_R6 + gnbd_norm_RPK_10to20kb_df_subI$NHS_Rpb1_R8 ) /2
+gnbd_norm_RPK_10to20kb_df_subI$HS_Rpb1_avg <- (gnbd_norm_RPK_10to20kb_df_subI$HS_Rpb1_R6 + gnbd_norm_RPK_10to20kb_df_subI$HS_Rpb1_R8 )/2
+gnbd_norm_RPK_10to20kb_df_subI$NHS_Ser2P_avg <- (gnbd_norm_RPK_10to20kb_df_subI$NHS_Ser2P_R6 + gnbd_norm_RPK_10to20kb_df_subI$NHS_Ser2P_R8 )/2
+gnbd_norm_RPK_10to20kb_df_subI$HS_Ser2P_avg <- (gnbd_norm_RPK_10to20kb_df_subI$HS_Ser2P_R6 + gnbd_norm_RPK_10to20kb_df_subI$HS_Ser2P_R8 )/2
+
+  
+  
+#now make plotting df's
+plotting_5kb_norm_subI <- gnbd_norm_RPK_5kb_df_subI[9:12]
+plotting_6to20kb_norm_subI <- gnbd_norm_RPK_6to20kb_df_subI[9:12]
+plotting_10to20kb_norm_subI <- gnbd_norm_RPK_10to20kb_df_subI[9:12]
+#pivot longer for plotting
+plotting_5kb_norm_subI <- pivot_longer(plotting_5kb_norm_subI, cols =  c(colnames(plotting_5kb_norm_subI)) )
+plotting_6to20kb_norm_subI <- pivot_longer(plotting_6to20kb_norm_subI, cols =  c(colnames(plotting_6to20kb_norm_subI)) )
+plotting_10to20kb_norm_subI <- pivot_longer(plotting_10to20kb_norm_subI, cols =  c(colnames(plotting_10to20kb_norm_subI)) )
+#factor to set order of boxplots
+plotting_5kb_norm_subI$name <- factor(plotting_5kb_norm_subI$name, c("NHS_Rpb1_avg", "HS_Rpb1_avg", "NHS_Ser2P_avg", "HS_Ser2P_avg") )
+plotting_6to20kb_norm_subI$name <- factor(plotting_6to20kb_norm_subI$name, c("NHS_Rpb1_avg", "HS_Rpb1_avg", "NHS_Ser2P_avg", "HS_Ser2P_avg"))
+plotting_10to20kb_norm_subI$name <- factor(plotting_10to20kb_norm_subI$name, c("NHS_Rpb1_avg", "HS_Rpb1_avg", "NHS_Ser2P_avg", "HS_Ser2P_avg"))
+
+
+
+
+#for setting y-axis limits
+#pull stats from plot
+sts_data <- layer_data( ggplot(plotting_10to20kb_norm_subI, aes(y=value, x=name, color = name ) ) + 
+                         geom_boxplot(width=0.5, outlier.shape = 16)
+                       )
+#find min and max values
+lim <- c( min(sts_data$ymin), max(sts_data$ymax))
+
+
+#plotting
+b <- ggplot(plotting_10to20kb_norm_subI, aes(y=value, x=name, color = name ) ) +
+  geom_violin() +
+  #geom_boxplot(width=0.5, outlier.shape = NA) + 
+  #coord_cartesian(ylim = c( min(sts_data$ymin)*1.25, max(sts_data$ymax)*1.25) ) +
+  ggtitle("10kb to 20kb ds sub input and norm to Gene Body") + 
+  ylab("10kb to 20kb ds RPK - input RPK and then normalized to gene body RPK") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13), legend.position="none", axis.text.x = element_text(angle = -45, vjust=1, hjust = 0)) +
+  #ylim(c( min(sts_data$ymin)*1.25, max(sts_data$ymax)*1.25)) + 
+  stat_summary(fun.y=median, geom="point", shape = 3, size=2) +
+  stat_summary(fun.y=mean, geom="point", size=2) + 
+  scale_color_manual(values=c( "#F39B7FB2", "#E64B35B2", "#8491B4B2", "#3C5488B2"))
+
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/FC_then_AVG/RPK_norm_to_gnbd_boxplots/subtract_input/10to20kbds_RPKsubI_violin_plot.pdf", 9,7)
+print(b)
+dev.off()
+
+
+
+```
+
+one last boxplot: gnbd vs 3'peak vs ds (term defect definition)
+```{r}
+### with input as a separate plot
+#df's:  gnbd_RPK_df_2
+#       RPK_5kb_df
+#       RPK_6to20kb_df
+#       RPK_10to20kb_df
+#input
+input_plot_df <- data.frame(gnbd = gnbd_RPK_df_2$input, TTS_peak = RPK_5kb_df$input, Six_to_20kb_ds = RPK_6to20kb_df$input, Ten_to_20kb_ds = RPK_10to20kb_df$input)
+input_plot_df <- pivot_longer(input_plot_df, cols = c(colnames(input_plot_df)))
+input_plot_df$name <- factor(input_plot_df$name, c("gnbd", "TTS_peak", "Six_to_20kb_ds", "Ten_to_20kb_ds"))
+#Rpb1 NHS
+Rpb1_NHS_plot_df <- data.frame(gnbd = ((gnbd_RPK_df_2$NHS_Rpb1_R6 + gnbd_RPK_df_2$NHS_Rpb1_R8) /2), 
+                               TTS_peak = ((RPK_5kb_df$NHS_Rpb1_R6 + RPK_5kb_df$NHS_Rpb1_R8) /2), 
+                               Six_to_20kb_ds = ((RPK_6to20kb_df$NHS_Rpb1_R6 + RPK_6to20kb_df$NHS_Rpb1_R8) /2), 
+                               Ten_to_20kb_ds = ((RPK_10to20kb_df$NHS_Rpb1_R6 + RPK_10to20kb_df$NHS_Rpb1_R8) /2))
+Rpb1_NHS_plot_df <- pivot_longer(Rpb1_NHS_plot_df, cols = c(colnames(Rpb1_NHS_plot_df)))
+Rpb1_NHS_plot_df$name <- factor(Rpb1_NHS_plot_df$name, c("gnbd", "TTS_peak", "Six_to_20kb_ds", "Ten_to_20kb_ds"))
+#Rpb1 HS
+Rpb1_HS_plot_df <- data.frame(gnbd = ((gnbd_RPK_df_2$HS_Rpb1_R6 + gnbd_RPK_df_2$HS_Rpb1_R8) /2), 
+                               TTS_peak = ((RPK_5kb_df$HS_Rpb1_R6 + RPK_5kb_df$HS_Rpb1_R8) /2), 
+                               Six_to_20kb_ds = ((RPK_6to20kb_df$HS_Rpb1_R6 + RPK_6to20kb_df$HS_Rpb1_R8) /2), 
+                               Ten_to_20kb_ds = ((RPK_10to20kb_df$HS_Rpb1_R6 + RPK_10to20kb_df$HS_Rpb1_R8) /2))
+Rpb1_HS_plot_df <- pivot_longer(Rpb1_HS_plot_df, cols = c(colnames(Rpb1_HS_plot_df)))
+Rpb1_HS_plot_df$name <- factor(Rpb1_HS_plot_df$name, c("gnbd", "TTS_peak", "Six_to_20kb_ds", "Ten_to_20kb_ds"))
+#Ser2P NHS
+Ser2P_NHS_plot_df <- data.frame(gnbd = ((gnbd_RPK_df_2$NHS_Ser2P_R6 + gnbd_RPK_df_2$NHS_Ser2P_R8) /2), 
+                               TTS_peak = ((RPK_5kb_df$NHS_Ser2P_R6 + RPK_5kb_df$NHS_Ser2P_R8) /2), 
+                               Six_to_20kb_ds = ((RPK_6to20kb_df$NHS_Ser2P_R6 + RPK_6to20kb_df$NHS_Ser2P_R8) /2), 
+                               Ten_to_20kb_ds = ((RPK_10to20kb_df$NHS_Ser2P_R6 + RPK_10to20kb_df$NHS_Ser2P_R8) /2))
+Ser2P_NHS_plot_df <- pivot_longer(Ser2P_NHS_plot_df, cols = c(colnames(Ser2P_NHS_plot_df)))
+Ser2P_NHS_plot_df$name <- factor(Ser2P_NHS_plot_df$name, c("gnbd", "TTS_peak", "Six_to_20kb_ds", "Ten_to_20kb_ds"))
+#Ser2P HS
+Ser2P_HS_plot_df <- data.frame(gnbd = ((gnbd_RPK_df_2$HS_Ser2P_R6 + gnbd_RPK_df_2$HS_Ser2P_R8) /2), 
+                               TTS_peak = ((RPK_5kb_df$HS_Ser2P_R6 + RPK_5kb_df$HS_Ser2P_R8) /2), 
+                               Six_to_20kb_ds = ((RPK_6to20kb_df$HS_Ser2P_R6 + RPK_6to20kb_df$HS_Ser2P_R8) /2), 
+                               Ten_to_20kb_ds = ((RPK_10to20kb_df$HS_Ser2P_R6 + RPK_10to20kb_df$HS_Ser2P_R8) /2))
+Ser2P_HS_plot_df <- pivot_longer(Ser2P_HS_plot_df, cols = c(colnames(Ser2P_HS_plot_df)))
+Ser2P_HS_plot_df$name <- factor(Ser2P_HS_plot_df$name, c("gnbd", "TTS_peak", "Six_to_20kb_ds", "Ten_to_20kb_ds"))
+
+#Ser2P div Pol II 
+#(rerun just make df line for above plots then run this)
+NHS_Ser2_d_polII_plotting_df <- data.frame(gnbd = (Ser2P_NHS_plot_df$gnbd / Rpb1_NHS_plot_df$gnbd), 
+                               TTS_peak = (Ser2P_NHS_plot_df$TTS_peak / Rpb1_NHS_plot_df$TTS_peak), 
+                               Six_to_20kb_ds = (Ser2P_NHS_plot_df$Six_to_20kb_ds / Rpb1_NHS_plot_df$Six_to_20kb_ds), 
+                               Ten_to_20kb_ds = (Ser2P_NHS_plot_df$Ten_to_20kb_ds / Rpb1_NHS_plot_df$Ten_to_20kb_ds)  )
+NHS_Ser2_d_polII_plotting_df <- pivot_longer(NHS_Ser2_d_polII_plotting_df, cols = c(colnames(NHS_Ser2_d_polII_plotting_df)))
+NHS_Ser2_d_polII_plotting_df$name <- factor(NHS_Ser2_d_polII_plotting_df$name, c("gnbd", "TTS_peak", "Six_to_20kb_ds", "Ten_to_20kb_ds"))
+
+HS_Ser2_d_polII_plotting_df <- data.frame(gnbd = (Ser2P_HS_plot_df$gnbd / Rpb1_HS_plot_df$gnbd), 
+                               TTS_peak = (Ser2P_HS_plot_df$TTS_peak / Rpb1_HS_plot_df$TTS_peak), 
+                               Six_to_20kb_ds = (Ser2P_HS_plot_df$Six_to_20kb_ds / Rpb1_HS_plot_df$Six_to_20kb_ds), 
+                               Ten_to_20kb_ds = (Ser2P_HS_plot_df$Ten_to_20kb_ds / Rpb1_HS_plot_df$Ten_to_20kb_ds)  )
+HS_Ser2_d_polII_plotting_df <- pivot_longer(HS_Ser2_d_polII_plotting_df, cols = c(colnames(HS_Ser2_d_polII_plotting_df)))
+HS_Ser2_d_polII_plotting_df$name <- factor(HS_Ser2_d_polII_plotting_df$name, c("gnbd", "TTS_peak", "Six_to_20kb_ds", "Ten_to_20kb_ds"))
+
+
+#plotting min and max
+#pull stats from plot
+sts_data <- layer_data( ggplot(NHS_Ser2_d_polII_plotting_df, aes(y=value, x=name, color = name ) ) + 
+                         geom_boxplot(width=0.5, outlier.shape = 16)
+                       )
+#plot
+b <- ggplot(Rpb1_NHS_plot_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.5, outlier.shape = NA) + 
+  #coord_cartesian(ylim = c( min(sts_data$ymin)*1.25, max(sts_data$ymax)*1.25) ) +
+  ggtitle("Rpb1 NHS") + 
+  ylab("RPK") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13), legend.position="none", 
+        axis.text.x = element_text(angle = -45, vjust=1, hjust = 0)) +
+  scale_color_manual(values=c( "#F39B7FB2", "#E64B35B2", "#8491B4B2", "#3C5488B2"))
+
+#save plots
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/FC_then_AVG/all_regions_per_sample/Rpb1_NHS_RPK_boxplot_with_outliers_example.pdf", 9,7)
+print(b)
+dev.off()
+
+### subtract input
+#df's:  RPK_gnbd_df_subI
+#       RPK_5kb_df_subI
+#       RPK_6to20kb_df_subI
+#       RPK_10to20kb_df_subI
+
+#Rpb1 NHS
+sI_Rpb1_NHS_plot_df <- data.frame(gnbd = ((RPK_gnbd_df_subI$NHS_Rpb1_R6 + RPK_gnbd_df_subI$NHS_Rpb1_R8) /2), 
+                               TTS_peak = ((RPK_5kb_df_subI$NHS_Rpb1_R6 + RPK_5kb_df_subI$NHS_Rpb1_R8) /2), 
+                               Six_to_20kb_ds = ((RPK_6to20kb_df$NHS_Rpb1_R6 + RPK_6to20kb_df$NHS_Rpb1_R8) /2), 
+                               Ten_to_20kb_ds = ((RPK_10to20kb_df$NHS_Rpb1_R6 + RPK_10to20kb_df$NHS_Rpb1_R8) /2))
+sI_Rpb1_NHS_plot_df <- pivot_longer(sI_Rpb1_NHS_plot_df, cols = c(colnames(sI_Rpb1_NHS_plot_df)))
+sI_Rpb1_NHS_plot_df$name <- factor(sI_Rpb1_NHS_plot_df$name, c("gnbd", "TTS_peak", "Six_to_20kb_ds", "Ten_to_20kb_ds"))
+#Rpb1 HS
+sI_Rpb1_HS_plot_df <- data.frame(gnbd = ((RPK_gnbd_df_subI$HS_Rpb1_R6 + RPK_gnbd_df_subI$HS_Rpb1_R8) /2), 
+                               TTS_peak = ((RPK_5kb_df_subI$HS_Rpb1_R6 + RPK_5kb_df_subI$HS_Rpb1_R8) /2), 
+                               Six_to_20kb_ds = ((RPK_6to20kb_df$HS_Rpb1_R6 + RPK_6to20kb_df$HS_Rpb1_R8) /2), 
+                               Ten_to_20kb_ds = ((RPK_10to20kb_df$HS_Rpb1_R6 + RPK_10to20kb_df$HS_Rpb1_R8) /2))
+sI_Rpb1_HS_plot_df <- pivot_longer(sI_Rpb1_HS_plot_df, cols = c(colnames(sI_Rpb1_HS_plot_df)))
+sI_Rpb1_HS_plot_df$name <- factor(sI_Rpb1_HS_plot_df$name, c("gnbd", "TTS_peak", "Six_to_20kb_ds", "Ten_to_20kb_ds"))
+#Ser2P NHS
+sI_Ser2P_NHS_plot_df <- data.frame(gnbd = ((RPK_gnbd_df_subI$NHS_Ser2P_R6 + RPK_gnbd_df_subI$NHS_Ser2P_R8) /2), 
+                               TTS_peak = ((RPK_5kb_df_subI$NHS_Ser2P_R6 + RPK_5kb_df_subI$NHS_Ser2P_R8) /2), 
+                               Six_to_20kb_ds = ((RPK_6to20kb_df$NHS_Ser2P_R6 + RPK_6to20kb_df$NHS_Ser2P_R8) /2), 
+                               Ten_to_20kb_ds = ((RPK_10to20kb_df$NHS_Ser2P_R6 + RPK_10to20kb_df$NHS_Ser2P_R8) /2))
+sI_Ser2P_NHS_plot_df <- pivot_longer(sI_Ser2P_NHS_plot_df, cols = c(colnames(sI_Ser2P_NHS_plot_df)))
+sI_Ser2P_NHS_plot_df$name <- factor(sI_Ser2P_NHS_plot_df$name, c("gnbd", "TTS_peak", "Six_to_20kb_ds", "Ten_to_20kb_ds"))
+#Ser2P HS
+sI_Ser2P_HS_plot_df <- data.frame(gnbd = ((RPK_gnbd_df_subI$HS_Ser2P_R6 + RPK_gnbd_df_subI$HS_Ser2P_R8) /2), 
+                               TTS_peak = ((RPK_5kb_df_subI$HS_Ser2P_R6 + RPK_5kb_df_subI$HS_Ser2P_R8) /2), 
+                               Six_to_20kb_ds = ((RPK_6to20kb_df$HS_Ser2P_R6 + RPK_6to20kb_df$HS_Ser2P_R8) /2), 
+                               Ten_to_20kb_ds = ((RPK_10to20kb_df$HS_Ser2P_R6 + RPK_10to20kb_df$HS_Ser2P_R8) /2))
+sI_Ser2P_HS_plot_df <- pivot_longer(sI_Ser2P_HS_plot_df, cols = c(colnames(sI_Ser2P_HS_plot_df)))
+sI_Ser2P_HS_plot_df$name <- factor(sI_Ser2P_HS_plot_df$name, c("gnbd", "TTS_peak", "Six_to_20kb_ds", "Ten_to_20kb_ds"))
+
+#Ser2P div Pol II 
+#(rerun just make df line for above plots then run this)
+sI_NHS_Ser2_d_polII_plotting_df <- data.frame(gnbd = (sI_Ser2P_NHS_plot_df$gnbd / sI_Rpb1_NHS_plot_df$gnbd), 
+                               TTS_peak = (sI_Ser2P_NHS_plot_df$TTS_peak / sI_Rpb1_NHS_plot_df$TTS_peak), 
+                               Six_to_20kb_ds = (sI_Ser2P_NHS_plot_df$Six_to_20kb_ds / sI_Rpb1_NHS_plot_df$Six_to_20kb_ds), 
+                               Ten_to_20kb_ds = (sI_Ser2P_NHS_plot_df$Ten_to_20kb_ds / sI_Rpb1_NHS_plot_df$Ten_to_20kb_ds)  )
+sI_NHS_Ser2_d_polII_plotting_df <- pivot_longer(sI_NHS_Ser2_d_polII_plotting_df, cols = c(colnames(sI_NHS_Ser2_d_polII_plotting_df)))
+sI_NHS_Ser2_d_polII_plotting_df$name <- factor(sI_NHS_Ser2_d_polII_plotting_df$name, c("gnbd", "TTS_peak", "Six_to_20kb_ds", "Ten_to_20kb_ds"))
+
+sI_HS_Ser2_d_polII_plotting_df <- data.frame(gnbd = (sI_Ser2P_HS_plot_df$gnbd / sI_Rpb1_HS_plot_df$gnbd), 
+                               TTS_peak = (sI_Ser2P_HS_plot_df$TTS_peak / sI_Rpb1_HS_plot_df$TTS_peak), 
+                               Six_to_20kb_ds = (sI_Ser2P_HS_plot_df$Six_to_20kb_ds / sI_Rpb1_HS_plot_df$Six_to_20kb_ds), 
+                               Ten_to_20kb_ds = (sI_Ser2P_HS_plot_df$Ten_to_20kb_ds / sI_Rpb1_HS_plot_df$Ten_to_20kb_ds)  )
+sI_HS_Ser2_d_polII_plotting_df <- pivot_longer(sI_HS_Ser2_d_polII_plotting_df, cols = c(colnames(sI_HS_Ser2_d_polII_plotting_df)))
+sI_HS_Ser2_d_polII_plotting_df$name <- factor(sI_HS_Ser2_d_polII_plotting_df$name, c("gnbd", "TTS_peak", "Six_to_20kb_ds", "Ten_to_20kb_ds"))
+
+
+#ploting!
+#pull stats from plot
+sts_data <- layer_data( ggplot(sI_NHS_Ser2_d_polII_plotting_df, aes(y=value, x=name, color = name ) ) + 
+                         geom_boxplot(width=0.5, outlier.shape = 16)
+                       )
+#plot
+b <- ggplot(sI_HS_Ser2_d_polII_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.5, outlier.shape = NA) + 
+  coord_cartesian(ylim = c( min(sts_data$ymin)*1.25, max(sts_data$ymax)*1.25) ) +
+  ggtitle("Ser2P / total Pol II HS - subtracted input") + 
+  ylab("RPK") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13), legend.position="none", 
+        axis.text.x = element_text(angle = -45, vjust=1, hjust = 0)) +
+  scale_color_manual(values=c( "#F39B7FB2", "#E64B35B2", "#8491B4B2", "#3C5488B2"))
+
+#save plots
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/FC_then_AVG/all_regions_per_sample/sub_input/Ser2PdPolII_HS_RPK_boxplot.pdf", 9,7)
+print(b)
+dev.off()
+
+```
+
+fold change for each region on one plot
+```{r}
+#df's:  gnbd_RPK_df_2
+#       RPK_5kb_df
+#       RPK_6to20kb_df
+#       RPK_10to20kb_df
+
+FC_Rpb1_plot_df <- data.frame(gnbd = ((gnbd_RPK_df_2$HS_Rpb1_R6 + gnbd_RPK_df_2$HS_Rpb1_R8) /2) / 
+                                ((gnbd_RPK_df_2$NHS_Rpb1_R6 + gnbd_RPK_df_2$NHS_Rpb1_R8) /2), 
+                               TTS_peak = ((RPK_5kb_df$HS_Rpb1_R6 + RPK_5kb_df$HS_Rpb1_R8) /2) / 
+                                ((RPK_5kb_df$NHS_Rpb1_R6 + RPK_5kb_df$NHS_Rpb1_R8) /2), 
+                               Six_to_20kb_ds = ((RPK_6to20kb_df$HS_Rpb1_R6 + RPK_6to20kb_df$HS_Rpb1_R8) /2) / 
+                                ((RPK_6to20kb_df$NHS_Rpb1_R6 + RPK_6to20kb_df$NHS_Rpb1_R8) /2), 
+                               Ten_to_20kb_ds = ((RPK_10to20kb_df$HS_Rpb1_R6 + RPK_10to20kb_df$HS_Rpb1_R8) /2) / 
+                                ((RPK_10to20kb_df$NHS_Rpb1_R6 + RPK_10to20kb_df$NHS_Rpb1_R8) /2)
+                              )
+FC_Rpb1_plot_df <- pivot_longer(FC_Rpb1_plot_df, cols = c(colnames(FC_Rpb1_plot_df)))
+FC_Rpb1_plot_df$name <- factor(FC_Rpb1_plot_df$name, c("gnbd", "TTS_peak", "Six_to_20kb_ds", "Ten_to_20kb_ds"))
+
+FC_Ser2P_plot_df <- data.frame(gnbd = ((gnbd_RPK_df_2$HS_Ser2P_R6 + gnbd_RPK_df_2$HS_Ser2P_R8) /2) / 
+                                ((gnbd_RPK_df_2$NHS_Ser2P_R6 + gnbd_RPK_df_2$NHS_Ser2P_R8) /2), 
+                               TTS_peak = ((RPK_5kb_df$HS_Ser2P_R6 + RPK_5kb_df$HS_Ser2P_R8) /2) / 
+                                ((RPK_5kb_df$NHS_Ser2P_R6 + RPK_5kb_df$NHS_Ser2P_R8) /2), 
+                               Six_to_20kb_ds = ((RPK_6to20kb_df$HS_Ser2P_R6 + RPK_6to20kb_df$HS_Ser2P_R8) /2) / 
+                                ((RPK_6to20kb_df$NHS_Ser2P_R6 + RPK_6to20kb_df$NHS_Ser2P_R8) /2), 
+                               Ten_to_20kb_ds = ((RPK_10to20kb_df$HS_Ser2P_R6 + RPK_10to20kb_df$HS_Ser2P_R8) /2) / 
+                                ((RPK_10to20kb_df$NHS_Ser2P_R6 + RPK_10to20kb_df$NHS_Ser2P_R8) /2)
+                              )
+FC_Ser2P_plot_df <- pivot_longer(FC_Ser2P_plot_df, cols = c(colnames(FC_Ser2P_plot_df)))
+FC_Ser2P_plot_df$name <- factor(FC_Ser2P_plot_df$name, c("gnbd", "TTS_peak", "Six_to_20kb_ds", "Ten_to_20kb_ds"))
+
+#ser2P div Pol II
+SdP_NHS_df <- data.frame(gnbd = ((gnbd_RPK_df_2$NHS_Ser2P_R6 + gnbd_RPK_df_2$NHS_Ser2P_R8) /2) / 
+                                ((gnbd_RPK_df_2$NHS_Rpb1_R6 + gnbd_RPK_df_2$NHS_Rpb1_R8) /2), 
+                               TTS_peak = ((RPK_5kb_df$NHS_Ser2P_R6 + RPK_5kb_df$NHS_Ser2P_R8) /2) / 
+                                ((RPK_5kb_df$NHS_Rpb1_R6 + RPK_5kb_df$NHS_Rpb1_R8) /2), 
+                               Six_to_20kb_ds = ((RPK_6to20kb_df$NHS_Ser2P_R6 + RPK_6to20kb_df$NHS_Ser2P_R8) /2) / 
+                                ((RPK_6to20kb_df$NHS_Rpb1_R6 + RPK_6to20kb_df$NHS_Rpb1_R8) /2), 
+                               Ten_to_20kb_ds = ((RPK_10to20kb_df$NHS_Ser2P_R6 + RPK_10to20kb_df$NHS_Ser2P_R8) /2) / 
+                                ((RPK_10to20kb_df$NHS_Rpb1_R6 + RPK_10to20kb_df$NHS_Rpb1_R8) /2)
+  
+                          )
+SdP_HS_df <- data.frame(gnbd = ((gnbd_RPK_df_2$HS_Ser2P_R6 + gnbd_RPK_df_2$HS_Ser2P_R8) /2) / 
+                                ((gnbd_RPK_df_2$HS_Rpb1_R6 + gnbd_RPK_df_2$HS_Rpb1_R8) /2), 
+                               TTS_peak = ((RPK_5kb_df$HS_Ser2P_R6 + RPK_5kb_df$HS_Ser2P_R8) /2) / 
+                                ((RPK_5kb_df$HS_Rpb1_R6 + RPK_5kb_df$HS_Rpb1_R8) /2), 
+                               Six_to_20kb_ds = ((RPK_6to20kb_df$HS_Ser2P_R6 + RPK_6to20kb_df$HS_Ser2P_R8) /2) / 
+                                ((RPK_6to20kb_df$HS_Rpb1_R6 + RPK_6to20kb_df$HS_Rpb1_R8) /2), 
+                               Ten_to_20kb_ds = ((RPK_10to20kb_df$HS_Ser2P_R6 + RPK_10to20kb_df$HS_Ser2P_R8) /2) / 
+                                ((RPK_10to20kb_df$HS_Rpb1_R6 + RPK_10to20kb_df$HS_Rpb1_R8) /2)
+  
+                          )
+FC_SdP_plotting_df <- data.frame(gnbd = SdP_HS_df$gnbd / SdP_NHS_df$gnbd, 
+                               TTS_peak = SdP_HS_df$TTS_peak / SdP_NHS_df$TTS_peak, 
+                               Six_to_20kb_ds = SdP_HS_df$Six_to_20kb_ds / SdP_NHS_df$Six_to_20kb_ds, 
+                               Ten_to_20kb_ds = SdP_HS_df$Ten_to_20kb_ds / SdP_NHS_df$Ten_to_20kb_ds
+                              )
+FC_SdP_plotting_df <- pivot_longer(FC_SdP_plotting_df, cols = c(colnames(FC_SdP_plotting_df)))
+FC_SdP_plotting_df$name <- factor(FC_SdP_plotting_df$name, c("gnbd", "TTS_peak", "Six_to_20kb_ds", "Ten_to_20kb_ds"))
+
+
+##plotting
+#pull stats from plot
+sts_data <- layer_data( ggplot(FC_SdP_plotting_df, aes(y=value, x=name, color = name ) ) + 
+                         geom_boxplot(width=0.5, outlier.shape = 16)
+                       )
+#plot
+b <- ggplot(FC_SdP_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.5, outlier.shape = NA) + 
+  coord_cartesian(ylim = c( min(sts_data$ymin)*1.25, max(sts_data$ymax)*1.25) ) +
+  ggtitle("Ser2P / total Pol II") + 
+  ylab("Fold Change with Heat Shock") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13), legend.position="none", 
+        axis.text.x = element_text(angle = -45, vjust=1, hjust = 0)) #+
+  #scale_color_manual(values=c( "#F39B7FB2", "#E64B35B2", "#8491B4B2", "#3C5488B2"))
+
+#save plots
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/figures/FC_then_AVG/RPK_box_plots/Fold_change/Ser2PdPolII_FC_all_regions_boxplot.pdf", 9,7)
+print(b)
+dev.off()
+
+
+```
+
+---------------------------
+
+
+
+

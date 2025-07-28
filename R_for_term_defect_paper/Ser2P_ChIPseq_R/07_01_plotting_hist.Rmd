@@ -1,0 +1,251 @@
+---
+title: "07_01_plotting_hist"
+author: "Katy Walsh"
+date: "5/12/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+wd: /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+
+###defining plot histogram function###
+#testing
+#hist_df <- Rpb1_hist_data
+#plot_title <- "Metagene Analysis of Pol II ocupancy at the TTS"
+
+plot_hist_function <- function(hist_df, plot_title, subt = "isolated genes"){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_center, y=value, group=name, color=name))+
+    geom_line() +
+    labs(subtitle = subt, x= "distance from TTS", y="norm tag counts") +
+    ggtitle(plot_title) +
+    scale_color_manual(values=c("black", "red", "grey"))
+}
+
+```
+
+make TTS bed file for isolated genes
+```{r make tts bed file}
+#read-in bed file for isolated expressed genes
+iso_exp_genes_bed <- read.table("05_making_isolated_genes_list_hg38/gene_lists_bed_files/03c_isolated_expressed_genes.bed", header = FALSE, sep="\t", stringsAsFactors = FALSE, quote="")
+colnames(iso_exp_genes_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+
+#make TTS annotations where start = end = TTS
+tts_iso_exp_genes_bed <- iso_exp_genes_bed
+i = 1
+while(i <= nrow(tts_iso_exp_genes_bed)){
+  #if on + strand, start = TSS and end = TTS
+  if(tts_iso_exp_genes_bed$strand[i]=="+"){
+    tts_iso_exp_genes_bed$start[i] = tts_iso_exp_genes_bed$end[i]
+  } 
+  #if on - strand, end = TSS and start = TTS
+  else if(tts_iso_exp_genes_bed$strand[i]=="-"){
+    tts_iso_exp_genes_bed$end[i] = tts_iso_exp_genes_bed$start[i]
+  }
+  i = i+1
+}
+#check
+for (n in row(tts_iso_exp_genes_bed)) {
+  stopifnot(tts_iso_exp_genes_bed$start == tts_iso_exp_genes_bed$end)
+  print(n)
+}
+
+#write out
+write_delim(tts_iso_exp_genes_bed, "07_analysis/07_02_bed_files/TTS_isolated_expressed_genes.bed", delim = "\t", col_names = FALSE)
+
+```
+
+command line using homer to bin counts to make hist data tables -
+
+using TTS bed file for isolated expressed genes:
+#annotatePeaks.pl /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/07_analysis/07_02_bed_files/TTS_isolated_expressed_genes.bed hg38 -size -20000,20000 -hist 200 -norm 5E7 -d /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/03_tag_directories/NHS_Rpb1_pooled_TD > /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/07_analysis/TTS_hist/20kb_ds_window/hist_TTS_NHS_Rpb1_pooled.tsv
+all commands in bash script 07_01_TTS_hist.sh or 07_02
+*norm all to 5E7 (50 million) reads*
+
+
+```{r import data}
+TTS_NHS_Rpb1 <- read.table("07_analysis/TTS_hist/Ser2P_categories/Ser2P_5kb_nc/hist_TTS_NHS_Rpb1_pooled.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(TTS_NHS_Rpb1) <- c("distance_from_center", "coverage", "sense_tags", "antisense_tags")
+
+TTS_HS_Rpb1 <- read.table("07_analysis/TTS_hist/Ser2P_categories/Ser2P_5kb_nc/hist_TTS_HS_Rpb1_pooled.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(TTS_HS_Rpb1) <- c("distance_from_center", "coverage", "sense_tags", "antisense_tags")
+
+TTS_NHS_Ser2P <- read.table("07_analysis/TTS_hist/Ser2P_categories/Ser2P_5kb_nc/hist_TTS_NHS_Ser2P_pooled.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(TTS_NHS_Ser2P) <- c("distance_from_center", "coverage", "sense_tags", "antisense_tags")
+
+TTS_HS_Ser2P <- read.table("07_analysis/TTS_hist/Ser2P_categories/Ser2P_5kb_nc/hist_TTS_HS_Ser2P_pooled.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(TTS_HS_Ser2P) <- c("distance_from_center", "coverage", "sense_tags", "antisense_tags")
+
+TTS_input <- read.table("07_analysis/TTS_hist/Ser2P_categories/Ser2P_5kb_nc/hist_TTS_input.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(TTS_input) <- c("distance_from_center", "coverage", "sense_tags", "antisense_tags")
+
+#fl <- list.files("07_analysis/TTS_hist/", 
+#                  full.names = TRUE)
+#importing_TTS_df <- lapply(fl, read.table, header=TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+#names(importing_TTS_df) <- gsub("07_analysis/TTS_hist//hist_TTS_|_pooled", "", fl)
+
+```
+
+```{r plot with input}
+#read in input TTS hist file (re-run import chunk)
+
+#set up df
+Rpb1_hist_data_w_input <- data.frame(distance_from_center = TTS_input$distance_from_center,
+                                     NHS = TTS_NHS_Rpb1$coverage,
+                                     HS = TTS_HS_Rpb1$coverage,
+                                     input = TTS_input$coverage)
+Ser2P_hist_data_w_input <- data.frame(distance_from_center = TTS_input$distance_from_center,
+                                     NHS = TTS_NHS_Ser2P$coverage,
+                                     HS = TTS_HS_Ser2P$coverage,
+                                     input = TTS_input$coverage)
+
+#make window -2.5kb to 20kb ds (if using -size -20000,20000 in homer command)
+#Rpb1_hist_data_w_input <- filter(Rpb1_hist_data_w_input, distance_from_center >= -2500)
+#Ser2P_hist_data_w_input <- filter(Ser2P_hist_data_w_input, distance_from_center >= -2500)
+#trim 20kb end
+#Rpb1_hist_data_w_input<- filter(Rpb1_hist_data_w_input, distance_from_center < 20000)
+#Ser2P_hist_data_w_input<- filter(Ser2P_hist_data_w_input, distance_from_center < 20000)
+
+#convert % to kb relative to TTS (when used -size "given" in homer command)
+#-2,000 to +20,000 = 22,000 bp total
+#200 bins of 0.05% each = 110 bp per bin
+22000/200
+#convert to bp then shift so TTS is 0
+Rpb1_hist_data_w_input$distance_from_center <- (Rpb1_hist_data_w_input$distance_from_center * 22000) -2000
+Ser2P_hist_data_w_input$distance_from_center <- (Ser2P_hist_data_w_input$distance_from_center * 22000) -2000
+
+
+
+#pivot longer
+Rpb1_hist_data_w_input <- pivot_longer(Rpb1_hist_data_w_input, cols =2:4)
+Rpb1_hist_data_w_input$name <- factor(Rpb1_hist_data_w_input$name, levels = c('NHS', 'HS', 'input'))
+Ser2P_hist_data_w_input <- pivot_longer(Ser2P_hist_data_w_input, cols =2:4)
+Ser2P_hist_data_w_input$name <- factor(Ser2P_hist_data_w_input$name, levels = c('NHS', 'HS', 'input'))
+
+#plot
+r_i <- plot_hist_function(Rpb1_hist_data_w_input, "Metagene Analysis of Pol II occupancy at the TTS", "Genes with no change in Ser2P/Pol II TTS-5kb ds")
+r_i
+s_i <- plot_hist_function(Ser2P_hist_data_w_input, "Metagene Analysis of Ser2P occupancy at the TTS", "Genes with no change in Ser2P/Pol II 5-20kb ds")
+s_i
+```
+
+```{r save}
+#save
+pdf("07_analysis/TTS_hist/figures/Ser2P_div_polII_categories/PolII_Ser2PdPolII_5kb_nc.pdf")
+print(r_i)
+dev.off()
+
+pdf("07_analysis/TTS_hist/figures/Ser2P_div_polII_categories/Ser2P_Ser2PdPolII_20kb_nc.pdf")
+print(s_i)
+dev.off()
+
+```
+
+
+individual steps:
+```{r trim data if needed}
+#for 10kb ds had to also do 10kb upstream of the TTS, but we don't need to go that far into the gene so I'm trimming it to 2.5kb into the gene
+
+TTS_NHS_Rpb1 <- filter(TTS_NHS_Rpb1, distance_from_center >= -2500)
+TTS_HS_Rpb1 <- filter(TTS_HS_Rpb1, distance_from_center >= -2500)
+TTS_NHS_Ser2P <- filter(TTS_NHS_Ser2P, distance_from_center >= -2500)
+TTS_HS_Ser2P <- filter(TTS_HS_Ser2P, distance_from_center >= -2500)
+TTS_input <- filter(TTS_input, distance_from_center >= -2500)
+```
+
+```{r setup data}
+Rpb1_hist_data <- data.frame(distance_from_center = TTS_NHS_Rpb1$distance_from_center,
+                            NHS = TTS_NHS_Rpb1$coverage,
+                            HS = TTS_HS_Rpb1$coverage)
+
+Ser2P_hist_data <- data.frame(distance_from_center = TTS_NHS_Rpb1$distance_from_center,
+                            NHS = TTS_NHS_Ser2P$coverage,
+                            HS = TTS_HS_Ser2P$coverage)
+
+Rpb1_hist_data <- pivot_longer(Rpb1_hist_data, cols =2:3)
+Ser2P_hist_data <- pivot_longer(Ser2P_hist_data, cols =2:3)
+
+Rpb1_hist_data$name <- factor(Rpb1_hist_data$name, levels = c('NHS', 'HS'))
+Ser2P_hist_data$name <- factor(Ser2P_hist_data$name, levels = c('NHS', 'HS'))
+```
+
+```{r quick plot}
+#Pol II ChIP
+r <- plot_hist_function(Rpb1_hist_data, "Metagene Analysis of Pol II occupancy at the TTS")
+
+#Ser2P ChIP
+s <- plot_hist_function(Ser2P_hist_data, "Metagene Analysis of CTD Ser2P occupancy at the TTS")
+
+```
+
+```{r save figures}
+#Rpb1
+pdf("07_analysis/TTS_hist/figures/Rpb1_10kb_ds_isolated_genes_TTS_hist.pdf")
+print(r)
+dev.off()
+
+#Ser2P
+pdf("07_analysis/TTS_hist/figures/Ser2P_10kb_ds_isolated_genes_TTS_hist.pdf")
+print(s)
+dev.off()
+
+```
+
+
+plotting Ser2P/PolII
+```{r Ser2P/Pol II}
+#import isolated genes -hist outputs
+
+#set up df:
+#Ser2P counts column / Pol II counts column
+Ser2P_PolII_ratio_df <- data.frame(distance_from_center = TTS_NHS_Ser2P$distance_from_center,
+                                   NHS = TTS_NHS_Ser2P$coverage / TTS_NHS_Rpb1$coverage,
+                                   HS = TTS_HS_Ser2P$coverage / TTS_HS_Rpb1$coverage)
+#trim for 2.5kb into the gnbd
+Ser2P_PolII_ratio_df<- filter(Ser2P_PolII_ratio_df, distance_from_center >= -2500)
+#OR convert % to bp relative to TTS
+#Ser2P_PolII_ratio_df$distance_from_center <- (Ser2P_PolII_ratio_df$distance_from_center * 22000) -2000
+
+#then pivot longer
+Ser2P_PolII_ratio_df <- pivot_longer(Ser2P_PolII_ratio_df, cols =2:3)
+Ser2P_PolII_ratio_df$name <- factor(Ser2P_PolII_ratio_df$name, levels = c('NHS', 'HS'))
+
+#plot
+s_p <- plot_hist_function(Ser2P_PolII_ratio_df, "Metagene Analysis of Ser2P/PolII at the TTS", "isolated expressed genes")
+s_p
+
+#save
+pdf("07_analysis/TTS_hist/figures/Ser2P_div_polII_categories/Ser2P_div_PolII_Ser2PdPolII_both_inc.pdf")
+print(s_p)
+dev.off()
+
+#trim for 20kb (genes just ds of 20kb are skewing the end of the graph)
+Ser2P_PolII_ratio_df<- filter(Ser2P_PolII_ratio_df, distance_from_center < 19300)
+#OR convert % to bp relative to TTS
+#Rpb1_hist_data_w_input$distance_from_center <- (Rpb1_hist_data_w_input$distance_from_center * 22000) -2000
+
+#re-plot
+s_p <- plot_hist_function(Ser2P_PolII_ratio_df, "Metagene Analysis of Ser2P/PolII at the TTS", "isolated expressed genes")
+s_p
+#save
+pdf("07_analysis/TTS_hist/figures/all_iso_exp_genes/Ser2P_div_PolII_all_iso_exp_genes_trimmed_20kb_ds_TTS_hist.pdf")
+print(s_p)
+dev.off()
+```
+
+
+

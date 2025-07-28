@@ -1,0 +1,544 @@
+---
+title: "07g_counting_4sU_reads_accross_cleavage_site"
+author: "Katy Walsh"
+date: "5/13/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+bedtools approach - count reads that must overlap with TTS by at least 10bp (100% of TTS window, 13.3% of 75bp read)
+
+make bed file for TTS window
+```{r setup}
+library(tidyverse)
+library(grid)
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+library(ggfortify)
+library(gtable)
+
+setwd("~/Desktop/Katy/HS_4sU-Seq_2021")
+
+```
+
+```{r make bed file for window around TTS}
+#read in bed file of analyzable genes
+analyzable_genes_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gene_annotation_bed_files/strandediso_exp_clean_genes_MANE_v095_gnbd.bed", header = FALSE, sep="\t", stringsAsFactors = FALSE, quote = "")
+analyzable_genes_bed <- analyzable_genes_bed[1:6]
+colnames(analyzable_genes_bed) <- c("chr", "start", "end", "id", "score", "strand")
+
+
+#make window around TTS
+TTS_analyzable_genes_bed <- analyzable_genes_bed
+i=1
+while(i <= nrow(TTS_analyzable_genes_bed)){
+  #if on + strand, start = TSS and end = TTS
+  if(TTS_analyzable_genes_bed$strand[i]=="+"){
+    TTS_analyzable_genes_bed$start[i] = analyzable_genes_bed$end[i] - 5 #using orignial df so don't accidentally use changed coordinate
+    TTS_analyzable_genes_bed$end[i] = analyzable_genes_bed$end[i] + 5
+  } 
+  #if on - strand, end = TSS and start = TTS
+  else if(TTS_analyzable_genes_bed$strand[i]=="-"){
+    TTS_analyzable_genes_bed$start[i] = analyzable_genes_bed$start[i] - 5
+    TTS_analyzable_genes_bed$end[i] = analyzable_genes_bed$start[i] + 5 
+    }
+  else{
+    print("no strand annotation!!")
+  }
+  i = i+1
+}
+
+summary(TTS_analyzable_genes_bed$end - TTS_analyzable_genes_bed$start == 10) #good, all have correct window size
+
+#save bed file
+write_delim(TTS_analyzable_genes_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/TTS_10bp_windows_4sU_analyzable_genes.bed", delim = "\t", col_names = FALSE)
+
+```
+
+set up bedtools command
+  want read to cover all of TTS window (bed file A): -f 1
+  stranded: -s
+  histogram for each window in A (each TTS) and total hist: -hist
+
+#bedtools coverage -s -f 1 -a /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/TTS_10bp_windows_4sU_analyzable_genes.bed -b /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/05_evaluating_replicates/bed_files/rep1_HS_sorted.Bed
+
+counting reads accross cleavage sites genome-wide - using analyzable genes (isolated, expressed, no read-in)
+gene list -> "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/06_defining_gene_lists/FINAL_clean_genes_list_strandediso_exp_genes.txt"
+
+read in bed files, avg and normalize to total mapped reads
+```{r formatting counts data into df's}
+fl_bed <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/TTS_bedtools_counting", pattern = "*.bed", full.names = TRUE)
+uncleaved_TTS_beds <- lapply(fl_bed, read.table, header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(uncleaved_TTS_beds) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/TTS_bedtools_counting/|.tsv", "", fl_bed)
+
+raw_counts_df <- data.frame(gene_IDs = uncleaved_TTS_beds$uncleaved_HS_rep1_TTS_counts.bed$V4,
+                        NHS_R1 = uncleaved_TTS_beds$uncleaved_NHS_rep1_TTS_counts.bed$V7,
+                        NHS_R2 = uncleaved_TTS_beds$uncleaved_NHS_rep2_TTS_counts.bed$V7,
+                        NHS_R3 = uncleaved_TTS_beds$uncleaved_NHS_rep3_TTS_counts.bed$V7,
+                        HS_R1 = uncleaved_TTS_beds$uncleaved_HS_rep1_TTS_counts.bed$V7,
+                        HS_R2 = uncleaved_TTS_beds$uncleaved_HS_rep2_TTS_counts.bed$V7,
+                        HS_R3 = uncleaved_TTS_beds$uncleaved_HS_rep3_TTS_counts.bed$V7 )
+
+#read in norm. factors for 4sU
+norm_factors_df <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/mapping_numbers.txt", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+norm_counts_df <- data.frame(gene_IDs = raw_counts_df$gene_IDs,
+                        NHS_R1 = raw_counts_df$NHS_R1 * norm_factors_df$mapping.normalization.factor[1],
+                        NHS_R2 = raw_counts_df$NHS_R2 * norm_factors_df$mapping.normalization.factor[3],
+                        NHS_R3 = raw_counts_df$NHS_R3 * norm_factors_df$mapping.normalization.factor[5],
+                        HS_R1 = raw_counts_df$HS_R1 * norm_factors_df$mapping.normalization.factor[2],
+                        HS_R2 = raw_counts_df$HS_R2 * norm_factors_df$mapping.normalization.factor[4],
+                        HS_R3 = raw_counts_df$HS_R3 * norm_factors_df$mapping.normalization.factor[6] )
+
+norm_counts_df$NHS_avg <- (norm_counts_df$NHS_R1 + norm_counts_df$NHS_R2 + norm_counts_df$NHS_R3) /3
+norm_counts_df$HS_avg <- (norm_counts_df$HS_R1 + norm_counts_df$HS_R2 + norm_counts_df$HS_R3) /3
+norm_counts_df$FC <- norm_counts_df$HS_avg / norm_counts_df$NHS_avg
+
+sum(norm_counts_df$NHS_avg)
+sum(norm_counts_df$HS_avg)
+
+#make final df
+final_df <- norm_counts_df[c(1,8:10)]
+
+#save all df's
+write_delim(final_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/avg_norm_uncleaved_counts.tsv", delim = "\t", col_names = TRUE)
+write_delim(norm_counts_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/reps_norm_uncleaved_counts.tsv", delim = "\t", col_names = TRUE)
+write_delim(raw_counts_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/raw_norm_uncleaved_counts.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+```{r norm and FC calculations}
+
+#read-in avg df if needed
+avg_uncleaved_counts_df <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/avg_norm_uncleaved_counts.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+
+#need to filter genes for exp genes... where was that gene list...
+expressed_genes_list <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/master_df_expressed_genes.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#filter
+exp_avg_uncleaved_counts_df <- filter(avg_uncleaved_counts_df, avg_uncleaved_counts_df$gene_IDs %in% expressed_genes_list$transcriptID)
+#save again
+write_delim(exp_avg_uncleaved_counts_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/exp_avg_norm_uncleaved_counts.tsv", delim = "\t", col_names = TRUE)
+
+
+
+#need to normalize FC to gnbd FC
+  #where is gnbd FC data...
+fl <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gnbd_counts_final_gene_list", pattern = "*.bed", full.names = TRUE)
+gnbd_counts <- lapply(fl, read.table, header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(gnbd_counts) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gnbd_counts_final_gene_list/|_gnbd_counts.bed", "", fl)
+
+gnbd_counts_df <- data.frame( gene_IDs = gnbd_counts$rep1_HS$V4,
+                              NHS_rep1 = gnbd_counts$rep1_NHS$V13,
+                              NHS_rep2 = gnbd_counts$rep2_NHS$V13,
+                              NHS_rep3 = gnbd_counts$rep3_NHS$V13,
+                              HS_rep1 = gnbd_counts$rep1_HS$V13,
+                              HS_rep2 = gnbd_counts$rep2_HS$V13,
+                              HS_rep3 = gnbd_counts$rep3_HS$V13)
+
+#norm for total mapped reads
+norm_gnbd_counts_df <- data.frame(gene_IDs = gnbd_counts_df$gene_IDs,
+                        NHS_rep1 = gnbd_counts_df$NHS_rep1 * norm_factors_df$mapping.normalization.factor[1],
+                        NHS_rep2 = gnbd_counts_df$NHS_rep2 * norm_factors_df$mapping.normalization.factor[3],
+                        NHS_rep3 = gnbd_counts_df$NHS_rep3 * norm_factors_df$mapping.normalization.factor[5],
+                        HS_rep1 = gnbd_counts_df$HS_rep1 * norm_factors_df$mapping.normalization.factor[2],
+                        HS_rep2 = gnbd_counts_df$HS_rep2 * norm_factors_df$mapping.normalization.factor[4],
+                        HS_rep3 = gnbd_counts_df$HS_rep3 * norm_factors_df$mapping.normalization.factor[6] )
+
+#avg
+norm_gnbd_counts_df$NHS_avg = (norm_gnbd_counts_df$NHS_rep1 + norm_gnbd_counts_df$NHS_rep2 + norm_gnbd_counts_df$NHS_rep3) /3
+norm_gnbd_counts_df$HS_avg = (norm_gnbd_counts_df$HS_rep1 + norm_gnbd_counts_df$HS_rep2 + norm_gnbd_counts_df$HS_rep3) /3
+
+
+#FC
+norm_gnbd_counts_df$FC = norm_gnbd_counts_df$HS_avg / norm_gnbd_counts_df$NHS_avg
+
+#filter for expressed genes
+exp_norm_gnbd_counts_df <- filter(norm_gnbd_counts_df, norm_gnbd_counts_df$gene_IDs %in% exp_avg_uncleaved_counts_df$gene_IDs)
+#save
+write_delim(exp_norm_gnbd_counts_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/exp_norm_gnbd_counts.tsv", delim = "\t", col_names = TRUE)
+
+
+
+#norm uncleaved FC / gnbd FC
+exp_avg_uncleaved_counts_df$gnbd_norm_FC <- exp_avg_uncleaved_counts_df$FC / exp_norm_gnbd_counts_df$FC
+#re-save
+write_delim(exp_avg_uncleaved_counts_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/exp_avg_norm_uncleaved_counts.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+```{r analysis and plotting}
+### are there more uncleaved reads in HS?
+#count total uncleaved reads
+sum(exp_avg_uncleaved_counts_df$NHS_avg) #39171.92 reads (norm for seq depth and avg accross reps)
+sum(exp_avg_uncleaved_counts_df$HS_avg) #50246.38 reads
+
+
+#box plot of uncleaved reads NHS vs HS
+  #in excel sheet "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/FIGURES_exp_avg_norm_uncleaved_counts.xlsx"
+
+
+
+### there are clearly more uncleaved reads in HS condition, but are only term defect genes unceaved?
+#read in master DF to pull defect and no defect cat.
+master_df <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/FINAL_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+master_df  <- master_df[1:25] #apparenty accidentally saved some extra notes so let's cut those off
+#need to change transcriptID and gene_IDs to match between df's
+colnames(master_df) <- c("gene_IDs", colnames(master_df)[2:25])
+
+#add defect cat. to exp_avg_uncleaved_counts_df
+cat_exp_avg_uncleaved_counts_df <- left_join(exp_avg_uncleaved_counts_df, master_df[c(1,14,17,20,21,25)], by = "gene_IDs")
+#save
+write_delim(cat_exp_avg_uncleaved_counts_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/categories_exp_avg_norm_uncleaved_counts.tsv", delim = "\t", col_names = TRUE)
+```
+
+plot fc uncleaved reads - defect vs no defect genes
+  boxplots in excel sheet "FIGURES_categories_exp_avg_norm_uncleaved_counts.xlsx"
+  also plotting here for uniform figures
+```{r}
+cat_exp_avg_uncleaved_counts_df <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/categories_exp_avg_norm_uncleaved_counts.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#factor cols for correct order
+cat_exp_avg_uncleaved_counts_df$term_defect_final <- factor(cat_exp_avg_uncleaved_counts_df$term_defect_final, c("FALSE", "TRUE") )
+cat_exp_avg_uncleaved_counts_df$defect_cat <- factor(cat_exp_avg_uncleaved_counts_df$defect_cat, c("no defect", "moderate defect", "severe defect", "max defect") )
+
+
+#plot defect vs no defect
+d <- ggplot(cat_exp_avg_uncleaved_counts_df, aes(y=gnbd_norm_FC, x=term_defect_final, color = term_defect_final ) ) +
+  geom_boxplot(width=0.85, outlier.shape = NA, lwd=1) + 
+  coord_cartesian(ylim = c(0,6)) +
+  ylab("Uncleaved RNA\nFC after HS") + xlab("")+
+  #ggtitle("") +
+  scale_x_discrete(labels=c("No RT", "RT"))+ 
+  theme(axis.title.y = element_text(size = 12), 
+        axis.text = element_text(size = 12), 
+        legend.position="none", 
+        plot.title = element_text(size = 12, face = "bold"),
+        plot.caption = element_text(size = 12, color = "gray40", vjust = 4),              #caption font and color
+        plot.margin = margin(10, 10, 10, 10)
+        ) +
+  scale_colour_manual(values=c("gray30", "darkred")) +
+  annotate("text", x=1.5, y=5.6, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 1, xend = 2, y = 5.6, yend = 5.6, colour = "gray40") #+ #line and * for stats
+  #labs(caption = "****p<0.0001") #+#add caption specifying pval (one caption when plotting together)
+
+jpeg("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/polished_figures/uncleaved_reads_term_defect_boxplot.jpeg", width=2, height=3, units="in", res=300)
+print(d)
+dev.off()
+
+## defect cats
+dc <- ggplot(cat_exp_avg_uncleaved_counts_df, aes(y=gnbd_norm_FC, x=defect_cat, color = defect_cat ) ) +
+  geom_boxplot(width=0.85, outlier.shape = NA, lwd=1) + 
+  coord_cartesian(ylim = c(0,6.5)) + #scale_y_continuous(breaks = c(0,1,2,3,4,5,6,7)) +
+  ylab("Uncleaved RNA\nFC after HS") + xlab("")+
+  #ggtitle("") +
+  #scale_x_discrete(labels=c("No\nDefect", "Term\nDefect"))+ 
+  theme(axis.title.y = element_text(size = 12), 
+        axis.text = element_text(size = 12), 
+        legend.position="none", 
+        plot.title = element_text(size = 12, face = "bold"),
+        plot.caption = element_text(size = 12, color = "gray40", vjust = 4),              #caption font and color
+        plot.margin = margin(10, 10, 10, 10)
+        ) +
+  scale_x_discrete(labels=c("No RT", "1-9kb", "10-19kb", "20kb+"))+     #rename x axis labels
+  scale_colour_manual(values=c("gray30","#d45050","#b50d0d", "darkred"))+ #golds 
+  annotate("text", x=1.5, y=5.5, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 1, xend = 2, y = 5.5, yend = 5.5, colour = "gray40")+ #left line and * for stats
+  annotate("text", x=2.5, y=6, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 2, xend = 3, y = 6, yend = 6, colour = "gray40")+ #middle line and * for stats
+  annotate("text", x=3.5, y=6.5, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 3, xend = 4, y = 6.5, yend = 6.5, colour = "gray40") #+ #right line and * for stats
+  #labs(caption = "****p<0.0001") #+#add caption specifying pval (one caption when plotting together)
+
+jpeg("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/polished_figures/uncleaved_reads_defect_length_boxplot.jpeg", width=3.5, height=3, units="in", res=300)
+print(dc)
+dev.off()
+
+```
+  
+```{r boxplot statistics}
+#have each dataset being compared in different cols/dfs
+res <- wilcox.test(x, y)
+
+#all from cat_exp_avg_uncleaved_counts_df
+#defect vs no defect
+d <- filter(cat_exp_avg_uncleaved_counts_df, cat_exp_avg_uncleaved_counts_df$term_defect_final == TRUE)[5]
+nd <- filter(cat_exp_avg_uncleaved_counts_df, cat_exp_avg_uncleaved_counts_df$term_defect_final == FALSE)[5]
+
+d_nd_res <- wilcox.test(as.numeric(d[,1]), as.numeric(nd[,1]) )
+d_nd_res$p.value #2.689769e-36
+#useful way to check the structure of data below
+#class(as.numeric(d[,1]))
+
+##defect cat. (FC norm to gnbd FC)
+nd <- filter(cat_exp_avg_uncleaved_counts_df, cat_exp_avg_uncleaved_counts_df$defect_cat == "no defect" )[5]
+mod <- filter(cat_exp_avg_uncleaved_counts_df, cat_exp_avg_uncleaved_counts_df$defect_cat == "moderate defect" )[5]
+severe <- filter(cat_exp_avg_uncleaved_counts_df, cat_exp_avg_uncleaved_counts_df$defect_cat == "severe defect" )[5]
+maxd <- filter(cat_exp_avg_uncleaved_counts_df, cat_exp_avg_uncleaved_counts_df$defect_cat == "max defect" )[5]
+
+#nd vs mod
+nd_mod_res <- wilcox.test(as.numeric(nd[,1]), as.numeric(mod[,1]) )
+nd_mod_res$p.value #6.599265e-11 ****
+
+#nd vs severe
+nd_sev_res <- wilcox.test(as.numeric(nd[,1]), as.numeric(severe[,1]) )
+nd_sev_res$p.value #2.107467e-26 ****
+
+#nd vs max
+nd_max_res <- wilcox.test(as.numeric(nd[,1]), as.numeric(maxd[,1]) )
+nd_max_res$p.value #4.287876e-56 ****
+
+#mod vs severe
+mod_sev_res <- wilcox.test(as.numeric(mod[,1]), as.numeric(severe[,1]) )
+mod_sev_res$p.value #7.524504e-07 ****
+
+#mod vs max
+mod_max_res <- wilcox.test(as.numeric(mod[,1]), as.numeric(maxd[,1]) )
+mod_max_res$p.value #5.182838e-36 ****
+
+#severe vs max
+sev_max_res <- wilcox.test(as.numeric(severe[,1]), as.numeric(maxd[,1]) )
+sev_max_res$p.value #1.21085e-19 ****
+
+
+##leaky vs sharp
+l <- filter(cat_exp_avg_uncleaved_counts_df, cat_exp_avg_uncleaved_counts_df$cat_NHS_term == "leaky" )[5]
+s <- filter(cat_exp_avg_uncleaved_counts_df, cat_exp_avg_uncleaved_counts_df$cat_NHS_term == "sharp" )[5]
+
+#L vs S
+l_s_res <- wilcox.test(as.numeric(l[,1]), as.numeric(s[,1]) )
+l_s_res$p.value #2.60125e-31
+
+
+####uncleaved seq depth norm counts
+nhs_hs_res <- wilcox.test(as.numeric(cat_exp_avg_uncleaved_counts_df[,2]),  as.numeric(cat_exp_avg_uncleaved_counts_df[,3]) )
+nhs_hs_res$p.value #1.40139e-27
+
+```
+
+
+
+```{r}
+#are there two populations of genes with loss of cleavage and genes without?
+#plot histogram of term defect genes
+h <- filter(cat_exp_avg_uncleaved_counts_df, cat_exp_avg_uncleaved_counts_df$term_defect_final == TRUE)
+hist(h$gnbd_norm_FC , breaks = 50) #no, only one population it looks like
+
+#all genes
+hist(log2(cat_exp_avg_uncleaved_counts_df$gnbd_norm_FC) , breaks = 50)
+h <- ggplot(cat_exp_avg_uncleaved_counts_df, aes(x=log2(gnbd_norm_FC))) + 
+  geom_histogram(binwidth = 0.3, color="black", fill="#a6c2f7") + #alpha = 0.5
+  geom_vline(xintercept = 0, lty=2) +
+  xlab("Fold Change in Uncleaved RNA \n(log2 scale)") +
+  ylab("Number of Genes") +
+  labs(title = "Increase in Uncleaved RNA after Heat Shock \nIndicates Impaired Transcription Termination")
+#save
+png("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/polished_figures/hist_uncleaved_reads_FC_norm_to_gnbd.png", 300, 300)
+print(h)
+dev.off()
+
+#NHS vs HS
+hist(cat_exp_avg_uncleaved_counts_df$NHS_avg, breaks = 50) + hist(cat_exp_avg_uncleaved_counts_df$HS_avg)
+long_df <- pivot_longer(cat_exp_avg_uncleaved_counts_df[1:3], cols = NHS_avg:HS_avg, names_to = "condition", values_to = "avg_uncleaved_reads_counts" )
+ggplot(long_df, aes(x = long_df$avg_uncleaved_reads_counts, fill = long_df$condition)) + geom_density(alpha = 0.5)
+#not impressive
+```
+
+
+
+
+
+
+
+
+
+
+
+categorize if increased or decreased cleavage and add to 4sU master df
+```{r add cat to master df}
+#can run DESeq at some point but needs un-normalized and unprocessed reads so for now I'm just going to set a threshold at 2-fold change
+master_df <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/FINAL_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+uncleaved_counts_df <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/categories_exp_avg_norm_uncleaved_counts.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#cat. cleaved or uncleaved
+uncleaved_counts_df$cleaved_cat <- "test"
+i=1
+while (i<=nrow(uncleaved_counts_df)) {
+  if (is.na(uncleaved_counts_df$gnbd_norm_FC[i]) ) {
+    uncleaved_counts_df$cleaved_cat[i] <- "NA"
+  } else if (uncleaved_counts_df$gnbd_norm_FC[i] >= 2) {
+  uncleaved_counts_df$cleaved_cat[i] <- "increased"
+} else if (uncleaved_counts_df$gnbd_norm_FC[i] <= 0.5) {
+    uncleaved_counts_df$cleaved_cat[i] <- "decreased"
+} else{    
+  uncleaved_counts_df$cleaved_cat[i] <- "no change"
+}
+  i=i+1
+}
+table(uncleaved_counts_df$cleaved_cat)
+#decreased increased        NA no change 
+#      373      2395       112      3098 
+
+
+#add to master df (more data in this list than ChIP master df list so use left join to match)
+#need to cnage to same col name first...
+colnames(uncleaved_counts_df) <- c("transcriptID", colnames(uncleaved_counts_df[2:11]))
+#now join
+#master_df <- left_join(master_df, uncleaved_counts_df[c(1,11)], by = "transcriptID")
+#needed to redo with gnbd norm FC instead of just straight FC
+master_df <- left_join(master_df[c(1:25)], uncleaved_counts_df[c(1,11)], by = "transcriptID")
+table(master_df$cleaved_cat) #good matches now
+
+#write out
+write_delim(master_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/FINAL_master_df.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+
+**METHOD 2: norm uncleaved reads # to gnbd rpk then calc FC**
+ok they're mathematically the same thing, can flip fractions around to convert one method to the other
+```{r read in data}
+#uncleaved counts df
+  #avg reps, norm for seq depth, filtered for only expressed genes
+exp_avg_uncleaved_counts_df <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/exp_avg_norm_uncleaved_counts.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#gene body counts df
+  #avg reps, norm for seq depth, filtered for only expressed genes
+exp_norm_gnbd_counts_df <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/exp_norm_gnbd_counts.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+```
+```{r norm uncleaved reads to gnbd rpk}
+#calc gnbd rpk
+temp <- master_df[c(1,19)]
+colnames(temp) <- c("gene_IDs", "gene_length")
+exp_norm_gnbd_counts_df <- left_join(exp_norm_gnbd_counts_df, temp, by = "gene_IDs")
+exp_norm_gnbd_counts_df$NHS_gnbd_RPK <- exp_norm_gnbd_counts_df$NHS_avg / (exp_norm_gnbd_counts_df$gene_length / 1000)#per kb not per bp
+exp_norm_gnbd_counts_df$HS_gnbd_RPK <- exp_norm_gnbd_counts_df$HS_avg / (exp_norm_gnbd_counts_df$gene_length / 1000)
+#save
+write_delim(exp_norm_gnbd_counts_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/exp_norm_gnbd_counts.tsv", delim = "\t", col_names = TRUE)
+
+
+#NHS uncleaved reads / gnbd RPK
+uncleaved_calc_df <- left_join(exp_avg_uncleaved_counts_df[1:3], exp_norm_gnbd_counts_df[c(1,12,13)], by = "gene_IDs")
+colnames(uncleaved_calc_df) <- c( "gene_ID", "NHS_uncleaved", "HS_uncleaved", "NHS_gnbd_RPK", "HS_gnbd_RPK")
+
+uncleaved_calc_df$NHS_un_d_gnbd <- uncleaved_calc_df$NHS_uncleaved / uncleaved_calc_df$NHS_gnbd_RPK
+uncleaved_calc_df$HS_un_d_gnbd <- uncleaved_calc_df$HS_uncleaved / uncleaved_calc_df$HS_gnbd_RPK
+
+
+#HS / NHS fold change
+uncleaved_calc_df$HSdNHS_FC <- uncleaved_calc_df$HS_un_d_gnbd / uncleaved_calc_df$NHS_un_d_gnbd
+summary(uncleaved_calc_df$HSdNHS_FC)
+#clean up NAs and inf then summary
+t <- uncleaved_calc_df$HSdNHS_FC[is.finite( uncleaved_calc_df$HSdNHS_FC)]
+summary( filter(as.data.frame(t), t > 0)  ) 
+
+#vs method 1
+cat_exp_avg_uncleaved_counts_df <-  read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/categories_exp_avg_norm_uncleaved_counts.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+summary(cat_exp_avg_uncleaved_counts_df$gnbd_norm_FC)
+
+t2 <- cat_exp_avg_uncleaved_counts_df$gnbd_norm_FC[is.finite( cat_exp_avg_uncleaved_counts_df$gnbd_norm_FC)]
+summary( filter(as.data.frame(t2), t2 > 0)  ) 
+
+#exactly the same?
+summary(uncleaved_calc_df$HSdNHS_FC == cat_exp_avg_uncleaved_counts_df$gnbd_norm_FC) #no... about half are exact
+  #making sure comparing the same genes to eachother
+colnames(cat_exp_avg_uncleaved_counts_df) <- c("gene_ID", colnames(cat_exp_avg_uncleaved_counts_df[2:10]))
+t3 <- left_join(uncleaved_calc_df[c(1,8)], cat_exp_avg_uncleaved_counts_df[c(1,5)])
+summary(t3$HSdNHS_FC == t3$gnbd_norm_FC) #they were in the same order... still about half are the same
+
+#how different? rounding differences?
+samesy <- filter(t3, t3$HSdNHS_FC == t3$gnbd_norm_FC)
+different <- filter(t3, !(t3$HSdNHS_FC == t3$gnbd_norm_FC) )
+#I don't know why these are flagged as different, they all look the same to me
+
+#why...
+  #ok they're mathematically the same thing, can flip fractions around to convert one method to the other
+```
+
+
+
+
+
+-----------
+Boxplots!!! (1/23/25)
+-----------
+Act and rep genes (DESeq 2 fold cat)
+```{r act rep boxplots}
+uncleaved_counts_df <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/categories_exp_avg_norm_uncleaved_counts.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+ar_bp_plotting_df <- uncleaved_counts_df[c(5,10)]
+colnames(ar_bp_plotting_df) <- c("uncleaved_reads_FC", "DESeq_2fold_cat" )
+
+#plot boxplot
+  #counts norm for 100M mapped reads and norm to gnbd
+p <- ggplot(ar_bp_plotting_df, aes(y=uncleaved_reads_FC, x=DESeq_2fold_cat, color = DESeq_2fold_cat ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,7)) +
+  geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Uncleaved RNA\nFC after HS") + 
+  #labs(caption = "****p<0.0001") + #title = "FC in uncleaved reads for activated or repressed genes"
+  theme(axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 20),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  theme(plot.title = element_text(size = 11, face = "bold")) + #change size of title
+  scale_colour_manual(values=c( "#648c68","gray40", "#b86253")) + #box colors
+  scale_x_discrete(labels=c("Act", "NC", "Rep"))+     #rename x axis labels
+  annotate("text", x=1, y=6.5, label= "****", colour = "gray40", size = 6) + #add * above boxplot
+  annotate("text", x=2, y=6.5, label= "****", colour = "gray40", size = 6) + 
+  annotate("text", x=3, y=6.5, label= "****", colour = "gray40", size = 6) 
+
+jpeg("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/polished_figures/uncleaved_reads_act_rep_boxplot.jpeg", width=2.5, height=2.5, units="in", res=300)
+print(p)
+dev.off()
+
+
+#stats: act vs rep vs nc
+a <- filter(ar_bp_plotting_df, ar_bp_plotting_df$DESeq_2fold_cat == "activated")[1] #365 genes
+r <- filter(ar_bp_plotting_df, ar_bp_plotting_df$DESeq_2fold_cat == "repressed")[1] #851 genes
+nc <- filter(ar_bp_plotting_df, ar_bp_plotting_df$DESeq_2fold_cat == "no change")[1] #4762 genes
+#remove inf?
+a <- filter(a, is.finite(a[,1]) )
+r <- filter(r, is.finite(r[,1]) )
+nc <- filter(nc, is.finite(nc[,1]) )
+
+
+a_r_res <- wilcox.test(as.numeric(a[,1]), as.numeric(r[,1]) )
+a_r_res$p.value #0.00606033 ** (0.8730692 if remove inf)
+
+a_nc_res <- wilcox.test(as.numeric(a[,1]), as.numeric(nc[,1]) )
+a_nc_res$p.value #2.636035e-08 **** (0.00645854 if remove inf)
+
+r_nc_res <- wilcox.test(as.numeric(r[,1]), as.numeric(nc[,1]) )
+r_nc_res$p.value #0.0001415163 *** (0.0001228652 if remove inf)
+
+
+### stats compared to FC 1 (one sample t-test) ####
+a_1_res <- wilcox.test(as.numeric(a[,1]), mu = 1, alternative = "two.sided")
+a_1_res$p.value #1.460237e-44 (7.870846e-34 if remove inf) ****
+
+nc_1_res <- wilcox.test(as.numeric(nc[,1]), mu = 1, alternative = "two.sided")
+nc_1_res$p.value #0 (double checked, p-val is just super tiny so it rounds to 0?)   ****
+
+r_1_res <- wilcox.test(as.numeric(r[,1]), mu = 1, alternative = "two.sided")
+r_1_res$p.value #4.339137e-86 (2.089387e-77 if remove inf) ****
+
+```
+
+
+
+
+
+
+
+
+
+

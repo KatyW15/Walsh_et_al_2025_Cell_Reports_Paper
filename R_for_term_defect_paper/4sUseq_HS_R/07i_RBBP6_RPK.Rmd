@@ -1,0 +1,239 @@
+---
+title: "07i_RBBP6_RPK_4sU"
+author: "Katy Walsh"
+date: "5/7/2024"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(grid)
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+library(ggfortify)
+library(gtable)
+library(ggpmisc)
+#install.packages("VennDiagram")
+library(VennDiagram)
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+library(ggpmisc)
+
+#wd: 
+setwd("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021")
+
+```
+setup plot settings:
+```{r plotting theme}
+
+theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+    )
+
+```
+
+iso 1 NM_006910.5
+iso 2 NM_018703.4
+iso 3 NM_032626.6
+
+
+tag directory bed files here: /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/05_evaluating_replicates/bed_files/
+
+1. need RBBP6 isoforms bed file
+2. run bedtools coverage
+3. norm to seq depth
+4. calc RPK for each replicate and avg reps
+5. plot
+  
+
+
+
+1. make RBBP6 isoforms bed file:
+downloaded from UCSC table browser
+used NCBI RefSeq (all) gene annotations
+either whole gene or exons (two bed files)
+/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07i_RBBP6_RPK/RBBP6_gene_bed_files/RBBP6_gene_isoforms.bed
+
+
+
+2. bedtools coverage
+bas script: 07i_bedtools_RBBP6_counts
+bedtools coverage -s -a /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07i_RBBP6_RPK/RBBP6_gene_bed_files/RBBP6_gene_isoforms.bed -b 05_evaluating_replicates/bed_files/rep1_NHS_sorted.Bed > /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07i_RBBP6_RPK/bedtools_output/rep1_NHS_gnbd_counts.bed
+
+
+
+3. norm to seq depth
+seq depth numbers: /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/mapping_numbers.txt
+```{r read-in tables}
+#read all data into list of df's
+#whole gene
+fl <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07i_RBBP6_RPK/bedtools_output/whole_gene", 
+                  full.names = TRUE)
+ls <- lapply(fl, read.table, header=FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ls) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07i_RBBP6_RPK/bedtools_output/whole_gene/|_gnbd_counts.bed", "", fl)
+
+#exon
+fl <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07i_RBBP6_RPK/bedtools_output/exon", 
+                  full.names = TRUE)
+ls <- lapply(fl, read.table, header=FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ls) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07i_RBBP6_RPK/bedtools_output/exon/|_exon_counts.bed", "", fl)
+
+```
+bedtools coverage will report:
+V7: The number of features in B that overlapped (by at least one base pair) the A interval.
+V8: The number of bases in A that had non-zero coverage from features in B.
+V9: The length of the entry in A.
+V10: The fraction of bases in A that had non-zero coverage from features in B.
+(A = gnbd or 20kb ds bed file, B = reads bed file)
+
+We want a table of V7 with a col for each sample:
+```{r put into df}
+RBBP6_gene_df <- data.frame(transcriptID = ls$rep1_HS$V4,
+                            NHS_rep1 = ls$rep1_NHS$V7,
+                            NHS_rep2 = ls$rep2_NHS$V7,
+                            NHS_rep3 = ls$rep3_NHS$V7,
+                            HS_rep1 = ls$rep1_HS$V7,
+                            HS_rep2 = ls$rep2_HS$V7,
+                            HS_rep3 = ls$rep3_HS$V7)
+
+#read in seq depth table
+seq_num_4sU_df <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/mapping_numbers.txt", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#using mapped reads norm factor because used that in 07b
+RBBP6_norm_gene_df <- data.frame(transcriptID = RBBP6_gene_df$transcriptID,
+                            NHS_rep1 = RBBP6_gene_df$NHS_rep1 * seq_num_4sU_df[1,7],
+                            NHS_rep2 = RBBP6_gene_df$NHS_rep1 * seq_num_4sU_df[3,7],
+                            NHS_rep3 = RBBP6_gene_df$NHS_rep1 * seq_num_4sU_df[5,7],
+                            HS_rep1 = RBBP6_gene_df$NHS_rep1 * seq_num_4sU_df[2,7],
+                            HS_rep2 = RBBP6_gene_df$NHS_rep1 * seq_num_4sU_df[4,7],
+                            HS_rep3 = RBBP6_gene_df$NHS_rep1 * seq_num_4sU_df[6,7])
+
+#avg reps
+RBBP6_norm_gene_df$NHS_avg <- (RBBP6_norm_gene_df$NHS_rep1 + RBBP6_norm_gene_df$NHS_rep2 + RBBP6_norm_gene_df$NHS_rep3)/3
+RBBP6_norm_gene_df$HS_avg <- (RBBP6_norm_gene_df$HS_rep1 + RBBP6_norm_gene_df$HS_rep2 + RBBP6_norm_gene_df$HS_rep3)/3
+
+#save
+write_delim(RBBP6_gene_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07i_RBBP6_RPK/RBBP6_raw_gene_counts.tsv", delim = "\t", col_names = TRUE)
+write_delim(RBBP6_norm_gene_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07i_RBBP6_RPK/RBBP6_norm_gene_counts.tsv", delim = "\t", col_names = TRUE)
+
+```
+```{r EXON put into df}
+RBBP6_exon_df <- data.frame(transcriptID = ls$rep1_HS$V4,
+                            NHS_rep1 = ls$rep1_NHS$V7,
+                            NHS_rep2 = ls$rep2_NHS$V7,
+                            NHS_rep3 = ls$rep3_NHS$V7,
+                            HS_rep1 = ls$rep1_HS$V7,
+                            HS_rep2 = ls$rep2_HS$V7,
+                            HS_rep3 = ls$rep3_HS$V7)
+
+#read in seq depth table
+seq_num_4sU_df <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/mapping_numbers.txt", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#using mapped reads norm factor because used that in 07b
+RBBP6_norm_exon_df <- data.frame(transcriptID = RBBP6_exon_df$transcriptID,
+                            NHS_rep1 = RBBP6_exon_df$NHS_rep1 * seq_num_4sU_df[1,7],
+                            NHS_rep2 = RBBP6_exon_df$NHS_rep1 * seq_num_4sU_df[3,7],
+                            NHS_rep3 = RBBP6_exon_df$NHS_rep1 * seq_num_4sU_df[5,7],
+                            HS_rep1 = RBBP6_exon_df$NHS_rep1 * seq_num_4sU_df[2,7],
+                            HS_rep2 = RBBP6_exon_df$NHS_rep1 * seq_num_4sU_df[4,7],
+                            HS_rep3 = RBBP6_exon_df$NHS_rep1 * seq_num_4sU_df[6,7])
+
+#avg reps
+RBBP6_norm_exon_df$NHS_avg <- (RBBP6_norm_exon_df$NHS_rep1 + RBBP6_norm_exon_df$NHS_rep2 + RBBP6_norm_exon_df$NHS_rep3)/3
+RBBP6_norm_exon_df$HS_avg <- (RBBP6_norm_exon_df$HS_rep1 + RBBP6_norm_exon_df$HS_rep2 + RBBP6_norm_exon_df$HS_rep3)/3
+
+#save
+write_delim(RBBP6_exon_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07i_RBBP6_RPK/RBBP6_raw_exon_counts.tsv", delim = "\t", col_names = TRUE)
+write_delim(RBBP6_norm_exon_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07i_RBBP6_RPK/RBBP6_norm_exon_counts.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+4. RPK
+  reads / kb
+```{r}
+#need to read-in gene bed files to get gene lengths
+RBBP6_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07i_RBBP6_RPK/RBBP6_gene_bed_files/RBBP6_gene_isoforms.bed", header = FALSE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#calc length
+RBBP6_lengths_df <- data.frame(transcriptID = RBBP6_bed$V4,
+                               gene_length = ((RBBP6_bed$V3 - RBBP6_bed$V2)/1000) )
+
+#calc RPK
+RBBP6_RPK_df <- data.frame(transcriptID = RBBP6_norm_gene_df$transcriptID,
+                           NHS_rep1 = RBBP6_norm_gene_df$NHS_rep1 / RBBP6_lengths_df$gene_length,
+                           NHS_rep2 = RBBP6_norm_gene_df$NHS_rep2 / RBBP6_lengths_df$gene_length,
+                           NHS_rep3 = RBBP6_norm_gene_df$NHS_rep3 / RBBP6_lengths_df$gene_length,
+                           HS_rep1 =RBBP6_norm_gene_df$HS_rep1 / RBBP6_lengths_df$gene_length,
+                           HS_rep2 = RBBP6_norm_gene_df$HS_rep2 / RBBP6_lengths_df$gene_length,
+                           HS_rep3 = RBBP6_norm_gene_df$HS_rep3 / RBBP6_lengths_df$gene_length)
+
+#avg reps
+#avg reps
+RBBP6_RPK_df$NHS_avg <- (RBBP6_RPK_df$NHS_rep1 + RBBP6_RPK_df$NHS_rep2 + RBBP6_RPK_df$NHS_rep3)/3
+RBBP6_RPK_df$HS_avg <- (RBBP6_RPK_df$HS_rep1 + RBBP6_RPK_df$HS_rep2 + RBBP6_RPK_df$HS_rep3)/3
+
+write_delim(RBBP6_RPK_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07i_RBBP6_RPK/RBBP6_gene_RPK.tsv", delim = "\t", col_names = TRUE)
+
+```
+```{r EXON RPK}
+#need to read-in gene bed files to get gene lengths
+RBBP6_exon_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07i_RBBP6_RPK/RBBP6_gene_bed_files/RBBP6_exons_isoforms.bed", header = FALSE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#calc length
+RBBP6_exon_lengths_df <- data.frame(transcriptID = RBBP6_exon_bed$V4,
+                               gene_length = ((RBBP6_exon_bed$V3 - RBBP6_exon_bed$V2)/1000) )
+
+#calc RPK
+RBBP6_exon_RPK_df <- data.frame(transcriptID = RBBP6_norm_exon_df$transcriptID,
+                           NHS_rep1 = RBBP6_norm_exon_df$NHS_rep1 / RBBP6_exon_lengths_df$gene_length,
+                           NHS_rep2 = RBBP6_norm_exon_df$NHS_rep2 / RBBP6_exon_lengths_df$gene_length,
+                           NHS_rep3 = RBBP6_norm_exon_df$NHS_rep3 / RBBP6_exon_lengths_df$gene_length,
+                           HS_rep1 =RBBP6_norm_exon_df$HS_rep1 / RBBP6_exon_lengths_df$gene_length,
+                           HS_rep2 = RBBP6_norm_exon_df$HS_rep2 / RBBP6_exon_lengths_df$gene_length,
+                           HS_rep3 = RBBP6_norm_exon_df$HS_rep3 / RBBP6_exon_lengths_df$gene_length)
+
+
+#avg reps
+RBBP6_exon_RPK_df$NHS_avg <- (RBBP6_exon_RPK_df$NHS_rep1 + RBBP6_exon_RPK_df$NHS_rep2 + RBBP6_exon_RPK_df$NHS_rep3)/3
+RBBP6_exon_RPK_df$HS_avg <- (RBBP6_exon_RPK_df$HS_rep1 + RBBP6_exon_RPK_df$HS_rep2 + RBBP6_exon_RPK_df$HS_rep3)/3
+
+
+write_delim(RBBP6_exon_RPK_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07i_RBBP6_RPK/RBBP6_exon_RPK.tsv", delim = "\t", col_names = TRUE)
+
+
+##now combine all exons per gene
+  #rows 1-18 are iso1 NM_006910.5
+  #rows 19-35 are iso2 NM_006910.5
+  #rows 36-38 are iso3 NM_032626.6
+#avg RPK from each exon
+RBBP6_combined_exon_RPK_df <- data.frame(isoform = c("iso 1", "iso 2", "iso 3"),
+                transcriptID = c("NM_006910.5", "NM_006910.5", "NM_032626.6"),
+                NHS_rep1 = c(mean(RBBP6_exon_RPK_df$NHS_rep1[1:18]), mean(RBBP6_exon_RPK_df$NHS_rep1[19:35]), mean(RBBP6_exon_RPK_df$NHS_rep1[36:38]) ),
+                NHS_rep2 = c(mean(RBBP6_exon_RPK_df$NHS_rep2[1:18]), mean(RBBP6_exon_RPK_df$NHS_rep2[19:35]), mean(RBBP6_exon_RPK_df$NHS_rep2[36:38]) ),
+                NHS_rep3 = c(mean(RBBP6_exon_RPK_df$NHS_rep3[1:18]), mean(RBBP6_exon_RPK_df$NHS_rep3[19:35]), mean(RBBP6_exon_RPK_df$NHS_rep3[36:38]) ),
+                HS_rep1 = c(mean(RBBP6_exon_RPK_df$HS_rep1[1:18]), mean(RBBP6_exon_RPK_df$HS_rep1[19:35]), mean(RBBP6_exon_RPK_df$HS_rep1[36:38]) ),
+                HS_rep2 = c(mean(RBBP6_exon_RPK_df$HS_rep2[1:18]), mean(RBBP6_exon_RPK_df$HS_rep2[19:35]), mean(RBBP6_exon_RPK_df$HS_rep2[36:38]) ),
+                HS_rep3 = c(mean(RBBP6_exon_RPK_df$HS_rep3[1:18]), mean(RBBP6_exon_RPK_df$HS_rep3[19:35]), mean(RBBP6_exon_RPK_df$HS_rep3[36:38]) ),
+                NHS_avg = c(mean(RBBP6_exon_RPK_df$NHS_avg[1:18]), mean(RBBP6_exon_RPK_df$NHS_avg[19:35]), mean(RBBP6_exon_RPK_df$NHS_avg[36:38]) ),
+                HS_avg = c(mean(RBBP6_exon_RPK_df$HS_avg[1:18]), mean(RBBP6_exon_RPK_df$HS_avg[19:35]), mean(RBBP6_exon_RPK_df$HS_avg[36:38]) )
+                )
+
+write_delim(RBBP6_combined_exon_RPK_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07i_RBBP6_RPK/RBBP6_combined_exon_RPK.tsv", delim = "\t", col_names = TRUE)
+```
+
+
+
+5. plot using excel
+(transfered to personal computer because excel expired on this computer until OS is updated)
+
+

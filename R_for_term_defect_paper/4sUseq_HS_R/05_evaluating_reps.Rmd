@@ -1,0 +1,717 @@
+---
+title: "evaluating_replicates"
+author: "Katy Walsh"
+date: "12/7/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(grid)
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+library(ggfortify)
+library(gtable)
+
+#wd: ~/Desktop/Katy/HS_4sU-Seq_2021
+
+```
+
+have bed files for genes from ChIP analysis:
+/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/06_evaluating_replicates/gene_list_bed_files/whole_gene_mRNA_genes.bed
+/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/06_evaluating_replicates/gene_list_bed_files/whole_gene_isolated_mRNA_genes.bed
+
+
+1. count tags across each region using bed files made above
+in command line:
+(setup)
+#cd to homer bin folder, conda activate homer
+#<homer> tagDir2bed.pl TD > ouptut_file_1.Bed
+#conda deactivate, cd to Bed_Tools bin folder, conda activate Bed_Tools
+#<bedtools> Bedtools sort -i output_file_1.Bed > ouput_file_sorted.Bed
+
+#<Bed_Tools> bedtools coverage -s -a count_window.bed -b output_file_sorted.Bed > final_count.bed
+*important to include -s for considering strand orientation of reads and genes so only - strand reads are counted for - strand genes*
+see bash script "05a_making_bed_files" and "05b_counting_tags_mRNA_MANE_genes" in /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/bash_scripts/ for full commands
+
+
+Bed file format:
+V1-6 for each bed file is the information for each gene (chr, start, end, name, score, strand)
+V7-10 are outputs from bedtools calculating the coverage per gene
+  V7: num of reads that overlapped with the gene by at least 1 bp
+  V8: number of bases in the gene that had at least one read align
+  V9: the length of the gene/ region counted over (in bp)
+  V10: the fraction of bases in the gene that had at least one read / # of bases with zero reads
+(V7 = "counts per gene")
+
+```{r read in counts and set up df's}
+#read-in bed read count files
+  #whole gene, MANE mRNA genes
+fl_counts <- list.files("05_evaluating_replicates/mRNA_gene_counts/", 
+                  pattern = "*.bed",
+                  full.names = TRUE)
+raw_gene_counts_ls <- lapply(fl_counts, read.table)
+names(raw_gene_counts_ls) <- gsub("05_evaluating_replicates/mRNA_gene_counts//|_counts_mRNA_genes.bed", "", fl_counts)
+
+
+#pull out just read counts per gene for each sample (df has genes going down and samples going accross) 
+  #make a df with only gene IDs and tag counts
+  #make the df structure and add gene ID coulumn
+df_raw_whole_gene_counts <- data.frame(genes = raw_gene_counts_ls$rep1_HS[4]) #copy all gene names into first col
+names(df_raw_whole_gene_counts) <- c('geneID') #set col name
+
+#loop through gene_counts to pull out the gene counts for each sample
+i=1
+col_names_list <- list('geneID') #make list of col names to set them when done making df, so far just first col with genes
+while (i <= length(raw_gene_counts_ls)) { #loop through all samples 
+  #pull out counts
+  df <- as.data.frame(raw_gene_counts_ls[i])
+  counts <- as.list(df[7])
+  #add col of counts to new df
+  df_raw_whole_gene_counts[(i+1)] <- counts
+  
+  #add col name to list to assign the names after the loop
+  my_name <- names(raw_gene_counts_ls[i])
+  col_names_list <- append(col_names_list, my_name)
+  i=i+1
+}
+#assign col names
+names(df_raw_whole_gene_counts) <- col_names_list
+#move geneID to rownames
+df_raw_whole_gene_counts <- column_to_rownames(df_raw_whole_gene_counts, var = "geneID")
+
+
+
+
+
+```
+
+
+
+
+```{r normalization}
+#read in total read numbers for each sample
+reads_df <- read.table("documentation/mapping_numbers.txt", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+#raw = unnormalized, read in count files (above section)
+  #whole gene, MANE mRNA genes
+  #df_raw_whole_gene_counts
+
+
+#norm for seq depth (hg38 mapped reads)
+  #normalize to 100 million reads
+  #100,000,000 = factor * num mapped reads to hg38
+  #norm counts = raw counts * factor
+#factor already calculated in reads_df$mapping.normalization.factor
+seq_depth_norm_counts_df <- df_raw_whole_gene_counts #make new df (will overwrte this data but want the df structure)
+#normalize
+i=1 ##this is a dumb way to set up a loop but it works (hybrid for/while loop?)
+for (n in names(df_raw_whole_gene_counts)) {
+  seq_depth_norm_counts_df[,n] <- df_raw_whole_gene_counts[,n] * reads_df$mapping.normalization.factor[i]
+  i=i+1
+}
+
+
+#norm for spike-in aka cell count (total ERCC mapped reads)
+  #will need to look at individual "genes" at some point and go back and make a TD and count and then can come back to see if this normalization factor was good
+  #300,000 = factor * num mapped reads to ERCC
+spike_in_norm_counts_df <- df_raw_whole_gene_counts #make new df (will overwrte this data but want the df structure)
+#normalize
+i=1 ##this is a dumb way to set up a loop but it works (hybrid for/while loop?)
+for (n in names(df_raw_whole_gene_counts)) {
+  spike_in_norm_counts_df[,n] <- df_raw_whole_gene_counts[,n] * reads_df$spike.in.normalization.factor[i]
+  i=i+1
+}
+
+
+#norm for seq depth and spike-in
+both_norm_counts_df <- df_raw_whole_gene_counts #make new df (will overwrte this data but want the df structure)
+#normalize
+i=1 ##this is a dumb way to set up a loop but it works (hybrid for/while loop?)
+for (n in names(df_raw_whole_gene_counts)) {
+  both_norm_counts_df[,n] <- df_raw_whole_gene_counts[,n] * reads_df$mapping.normalization.factor[i] * reads_df$spike.in.normalization.factor[i]
+  i=i+1
+}
+
+
+#now have counts per gene for all samples using 3 different normalization conditions
+  #seq depth norm
+  #spike-in norm (cell #)
+  #seq depth and spike-in
+```
+
+```{r write out normalized reads}
+#first need to change geneID back to col from rownames
+print_df_raw_whole_gene_counts <- rownames_to_column(df_raw_whole_gene_counts)
+names(print_df_raw_whole_gene_counts) <- c("geneID", names(df_raw_whole_gene_counts[2:7]))
+print_seq_depth_norm_counts_df <- rownames_to_column(seq_depth_norm_counts_df)
+names(print_df_raw_whole_gene_counts) <- c("geneID", names(seq_depth_norm_counts_df[2:7]))
+print_both_norm_counts_df <- rownames_to_column(both_norm_counts_df)
+names(print_df_raw_whole_gene_counts) <- c("geneID", names(both_norm_counts_df[2:7]))
+
+write_delim(print_df_raw_whole_gene_counts, "05_evaluating_replicates/mRNA_gene_counts/combined_reps/raw_gene_counts.tsv", delim = "\t", col_names = TRUE)
+write_delim(print_seq_depth_norm_counts_df, "05_evaluating_replicates/mRNA_gene_counts/combined_reps/seq_depth_norm_gene_counts.tsv", delim = "\t", col_names = TRUE)
+write_delim(spike_in_norm_counts_df, "05_evaluating_replicates/mRNA_gene_counts/combined_reps/spikein_norm_gene_counts.tsv", delim = "\t", col_names = TRUE)
+write_delim(print_both_norm_counts_df, "05_evaluating_replicates/mRNA_gene_counts/combined_reps/both_norm_gene_counts.tsv", delim = "\t", col_names = TRUE)
+```
+
+
+```{r rpk}
+gene_length_df <- read_tsv("06_termination_defects/gene_length_info.tsv", col_names = TRUE)
+
+#calc RPK
+unnorm_rpk_df <- data.frame(geneID = gene_length_df$geneID, rep1_NHS = round((df_raw_whole_gene_counts$rep1_NHS / (gene_length_df$g_length/1000)), 2), rep2_NHS = round((df_raw_whole_gene_counts$rep2_NHS / (gene_length_df$g_length/1000)), 2), rep3_NHS = round((df_raw_whole_gene_counts$rep3_NHS / (gene_length_df$g_length/1000)), 2), rep1_HS = round((df_raw_whole_gene_counts$rep1_HS / (gene_length_df$g_length/1000)), 2), rep2_HS = round((df_raw_whole_gene_counts$rep2_HS / (gene_length_df$g_length/1000)), 2), rep3_HS = round((df_raw_whole_gene_counts$rep3_HS / (gene_length_df$g_length/1000)), 2)
+                            )
+
+seq_depth_norm_rpk_df <- data.frame(geneID = gene_length_df$geneID, rep1_NHS = round((seq_depth_norm_counts_df$rep1_NHS / (gene_length_df$g_length/1000)), 2), rep2_NHS = round((seq_depth_norm_counts_df$rep2_NHS / (gene_length_df$g_length/1000)), 2), rep3_NHS = round((seq_depth_norm_counts_df$rep3_NHS / (gene_length_df$g_length/1000)), 2), rep1_HS = round((seq_depth_norm_counts_df$rep1_HS / (gene_length_df$g_length/1000)), 2), rep2_HS = round((seq_depth_norm_counts_df$rep2_HS / (gene_length_df$g_length/1000)), 2), rep3_HS = round((seq_depth_norm_counts_df$rep3_HS / (gene_length_df$g_length/1000)), 2)
+                            )
+
+spikein_norm_rpk_df <- data.frame(geneID = gene_length_df$geneID, rep1_NHS = round((spike_in_norm_counts_df$rep1_NHS / (gene_length_df$g_length/1000)), 2), rep2_NHS = round((spike_in_norm_counts_df$rep2_NHS / (gene_length_df$g_length/1000)), 2), rep3_NHS = round((spike_in_norm_counts_df$rep3_NHS / (gene_length_df$g_length/1000)), 2), rep1_HS = round((spike_in_norm_counts_df$rep1_HS / (gene_length_df$g_length/1000)), 2), rep2_HS = round((spike_in_norm_counts_df$rep2_HS / (gene_length_df$g_length/1000)), 2), rep3_HS = round((spike_in_norm_counts_df$rep3_HS / (gene_length_df$g_length/1000)), 2)
+                            )
+
+both_norm_rpk_df <- data.frame(geneID = gene_length_df$geneID, rep1_NHS = round((both_norm_counts_df$rep1_NHS / (gene_length_df$g_length/1000)), 2), rep2_NHS = round((both_norm_counts_df$rep2_NHS / (gene_length_df$g_length/1000)), 2), rep3_NHS = round((both_norm_counts_df$rep3_NHS / (gene_length_df$g_length/1000)), 2), rep1_HS = round((both_norm_counts_df$rep1_HS / (gene_length_df$g_length/1000)), 2), rep2_HS = round((both_norm_counts_df$rep2_HS / (gene_length_df$g_length/1000)), 2), rep3_HS = round((both_norm_counts_df$rep3_HS / (gene_length_df$g_length/1000)), 2)
+                            )
+
+
+#write out
+write_delim(unnorm_rpk_df, "05_evaluating_replicates/rpk/raw_rpk.tsv", delim = "\t", col_names = TRUE)
+write_delim(seq_depth_norm_rpk_df, "05_evaluating_replicates/rpk/seq_depth_norm_rpk.tsv", delim = "\t", col_names = TRUE)
+write_delim(spikein_norm_rpk_df, "05_evaluating_replicates/rpk/spikein_norm_rpk.tsv", delim = "\t", col_names = TRUE)
+write_delim(both_norm_rpk_df, "05_evaluating_replicates/rpk/both_norm_rpk.tsv", delim = "\t", col_names = TRUE)
+
+
+#expressed genes only (most are not expressed so its hard to evaluate normalization when 0 * norm factor = 0)
+  #expressed in this context = there's at least one read so RPK >0 and >1 since that's a really low threshold for expression
+expressed_unnorm_rpk_df <- unnorm_rpk_df
+expressed_unnorm_rpk_df <- filter(expressed_unnorm_rpk_df, rep1_NHS>1 & rep2_NHS>1 & rep3_NHS>1 & rep1_NHS>1 & rep2_HS>1 & rep3_HS>1)
+
+expressed_seq_depth_norm_rpk_df <- seq_depth_norm_rpk_df
+expressed_seq_depth_norm_rpk_df <- filter(expressed_seq_depth_norm_rpk_df, rep1_NHS>1 & rep2_NHS>1 & rep3_NHS>1 & rep1_NHS>1 & rep2_HS>1 & rep3_HS>1)
+
+expressed_spikein_norm_rpk_df <- spikein_norm_rpk_df
+expressed_spikein_norm_rpk_df <- filter(expressed_spikein_norm_rpk_df, rep1_NHS>1 & rep2_NHS>1 & rep3_NHS>1 & rep1_NHS>1 & rep2_HS>1 & rep3_HS>1)
+
+expressed_both_norm_rpk_df <- both_norm_rpk_df
+expressed_both_norm_rpk_df <- filter(expressed_both_norm_rpk_df, rep1_NHS>1 & rep2_NHS>1 & rep3_NHS>1 & rep1_NHS>1 & rep2_HS>1 & rep3_HS>1)
+
+#write out
+write_delim(expressed_unnorm_rpk_df, "05_evaluating_replicates/rpk/expressed_raw_rpk.tsv", delim = "\t", col_names = TRUE)
+write_delim(expressed_seq_depth_norm_rpk_df, "05_evaluating_replicates/rpk/expressed_seq_depth_norm_rpk.tsv", delim = "\t", col_names = TRUE)
+write_delim(expressed_spikein_norm_rpk_df, "05_evaluating_replicates/rpk/expressed_spikein_norm_rpk.tsv", delim = "\t", col_names = TRUE)
+write_delim(expressed_both_norm_rpk_df, "05_evaluating_replicates/rpk/expressed_both_norm_rpk.tsv", delim = "\t", col_names = TRUE)
+
+
+```
+
+
+
+
+
+
+
+### plotting ###
+```{r plot one scatter plot}
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+#ploting method #1
+p <- ggplot(seq_depth_norm_counts_df, aes(x=rep1_NHS, y=rep1_HS)) +
+        geom_point() +
+        geom_smooth(method=lm, color="black") +
+        ggtitle("NHS_rep1v2") + 
+        geom_bin2d(bins = 500) + scale_fill_viridis_c(breaks = c(100, 250, 500, 1000))
+        #could remove density coloring, doesn't seem to be a ton of overplotting
+p
+
+#plotting method #2
+NHS_rep1v2 <- ggscatter(both_norm_counts_df, x = "rep1_HS", y = "rep1_NHS", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson")
+NHS_rep1v2
+
+
+```
+
+
+```{r PCA plots}
+library(ggfortify)
+
+both_norm_counts_df_pca <- as.data.frame(t(both_norm_counts_df))
+pca_obj <- prcomp(both_norm_counts_df_pca)
+summary(pca_obj)
+
+both_norm_counts_df_pca <- rownames_to_column(both_norm_counts_df_pca, "sample")
+both_norm_counts_df_pca$sample <- c("HS", "NHS", "HS", "NHS", "HS", "NHS")
+
+pca_plot <- autoplot(pca_obj, data = both_norm_counts_df_pca, colour = "sample")
+pca_plot
+#NHS and HS clearly sort by PC1, less so by PC2 but PC1 accounts for 85% of variance
+
+#save PCA plot
+pdf("05_evaluating_replicates/figures/PCA_plots/both_norm_counts_pca_plot.pdf")
+print(pca_plot)
+dev.off()
+```
+
+
+
+
+scatterplots and pearsons
+```{r, grid scatterplots and pearsons}
+
+#make grid for all samples
+#df <- df_raw_whole_gene_counts[,c(2,4,6,1,3,5)] 
+#df <- seq_depth_norm_counts_df[,c(2,4,6,1,3,5)] #done
+#df <- spike_in_norm_counts_df[,c(2,4,6,1,3,5)] #done
+df <- both_norm_counts_df[,c(2,4,6,1,3,5)] #done
+
+##### sanity check #####
+#all stats are the same but these do have different values
+df[1,1] / df[1,2]
+df2[1,1] / df2[1,2]
+#different ratios between samples too
+##### I guess the normalization just doesn't make that much of an impact on the correlation stats #####
+
+n <- dim(df)[2] #number of columns
+labels <- colnames(df) #makes a list of conditions
+sizeItem = 16
+sizeCor = 4
+#list of heatmap plots
+heatmaps <- list()
+for (i in 2:n) { #starting in 2nd row
+   for (j in 1:(i-1)) { #starting in 1st column, limited to number of row - 1/bottom half of diagonal
+      # Data frame  of correlation values
+      df.point <- na.omit(data.frame(cbind(x = df[ , j], y = df[ , i])))
+      x = df.point[, 1]
+      y = df.point[, 2]
+      correlation = cor.test(x, y, method = "pearson")
+      cor <- data.frame(rsquared = correlation$estimate * correlation$estimate)
+      cor$cor = paste0("cor  = ", sprintf("%.4f",correlation$estimate), "\n",
+                       "R^2 = ", sprintf("%.4f", cor$rsquared), "\n",
+                       "P = ", sprintf("%.4f",correlation$p.value))
+      # Plot, color code based on direct comparisons between condition replicates
+      #KW changed orange boxes for 3 replicates, and 2 conditions (4sU-seq data)
+      if((i==2) || (i==3) || (i==5 && j==4) || (i==6 && j>3)){ #i=row, j=col, loops row by row (going through each col in one row)
+        p <- ggplot(cor, aes(x = 1, y = 1)) +
+          geom_tile(fill = "orangered1", width=1, height=1) +
+          geom_text(aes(x = 1, y = 1, label = cor), colour = "White", size = 2, family = "Helvetica", show.legend = FALSE) +
+          theme_bw()+ 
+          theme(panel.grid = element_blank())
+      }else{
+        p <- ggplot(cor, aes(x = 1, y = 1)) +
+          geom_tile(fill = "steelblue") +
+          geom_text(aes(x = 1, y = 1, label = cor), colour = "White", size = 2, family = "Helvetica", show.legend = FALSE) +
+          theme_bw() + 
+          theme(panel.grid = element_blank()) 
+      }
+      name <- paste0("Item", j, i)
+      heatmaps[[name]] <- p
+  }
+}
+
+#diagonals, diagonal line separating halves
+diagonals <- list()
+for(i in 1:n){
+  p <- ggplot()+
+    geom_abline(slope=-1, intercept = 1)+
+    theme_bw() + theme(panel.grid = element_blank())
+  name <- paste0("Item", i)
+  diagonals[[name]] <- p
+}
+
+## List of scatter plots
+scatters <- list()
+for (i in 1:(n-1)) {
+   for (j in (i+1):n) {
+    # Data frame 
+    df.point <- na.omit(data.frame(cbind(x = df[ , j], y = df[ , i])))
+    # Plot, color code based on comparisons between biological replicates
+    if((j==2) || (j==3) || (i==4) || (i==5)){
+      p <- ggplot(df.point, aes(x, y)) +
+      geom_jitter(size = .7, position = position_jitter(width = .2, height= .2), aes(color = "orangered2")) +
+      stat_smooth(method="lm", colour="black") +
+      theme_bw() + theme(panel.grid = element_blank())
+    }else {
+      p <- ggplot(df.point, aes(x, y)) +
+      geom_jitter(size = .7, position = position_jitter(width = .2, height= .2)) +
+      stat_smooth(method="lm", colour="gray84") +
+      theme_bw() + theme(panel.grid = element_blank())
+    }
+    name <- paste0("Item", j, i)
+    scatters[[name]] <- p
+   } 
+}
+
+# Convert the ggplots to grobs, 
+# and select only the plot panels
+library(plyr)
+library(gtable)
+library(grid)
+
+scatterGrob <- llply(scatters, ggplotGrob)
+scatterGrob <- llply(scatterGrob, gtable_filter, "panel")
+tileGrob <- llply(heatmaps, ggplotGrob)
+tileGrob <- llply(tileGrob, gtable_filter, "panel")
+diagonalGrob <- llply(diagonals, ggplotGrob)
+diagonalGrob <- llply(diagonalGrob, gtable_filter, "panel")
+## Set up the gtable layout
+gt <- gtable(unit(rep(1, n), "null"), unit(rep(1, n), "null"))
+
+## Add the plots to the layout
+#Diagonal plots along the diagonal
+for(i in 1:n) {
+  gt <- gtable_add_grob(gt, diagonalGrob[[i]], t=i, l=i)
+}
+# heatmaps in the lower half
+k <- 1
+for (i in 2:n) {
+   for (j in 1:(i-1)) {
+gt <- gtable_add_grob(gt, tileGrob[[k]], t=i, l=j)
+k <- k+1
+} }
+# scatters in the upper half
+k <- 1
+for (i in 1:(n-1)) {
+   for (j in (i+1):n) {
+gt <- gtable_add_grob(gt, scatterGrob[[k]], t=i, l=j)
+k <- k+1
+} }
+#Add item labels
+gt <- gtable_add_cols(gt, unit(1.5, "lines"), 0)
+gt <- gtable_add_rows(gt, unit(1.5, "lines"), 2*n)
+for(i in 1:n) {
+textGrob <- textGrob(labels[i], gp = gpar(fontfamily = "Helvetica", fontsize = 8))
+gt <- gtable_add_grob(gt, textGrob, t=n+1, l=i+1)
+}
+for(i in 1:n) {
+textGrob <- textGrob(labels[i], rot = 90, gp = gpar(fontfamily = "Helvetica", fontsize = 8))
+gt <- gtable_add_grob(gt, textGrob, t=i, l=1)
+}
+# Add small gap between the panels
+for(i in n:1) gt <- gtable_add_cols(gt, unit(0.2, "lines"), i)
+for(i in (n-1):1) gt <- gtable_add_rows(gt, unit(0.2, "lines"), i)
+# Add chart title
+gt <- gtable_add_rows(gt, unit(1.5, "lines"), 0)
+####### change chart title here !!!!!!! #######
+textGrob <- textGrob("Spike-in and Seq Depth Normalized", gp = gpar(fontfamily = "Helvetica", fontface = "bold", fontsize = 8)) 
+gt <- gtable_add_grob(gt, textGrob, t=1, l=3, r=2*n+1)
+#Add margins to the whole plot
+for(i in c(2*n+1, 0)) {
+gt <- gtable_add_cols(gt, unit(.75, "lines"), i)
+gt <- gtable_add_rows(gt, unit(.75, "lines"), i)
+}
+
+```
+
+```{r plot}
+#library(grid)
+#library(ggplot2)
+#plot in r plots tab
+grid.newpage()
+grid.draw(gt)
+```
+
+#Save when ready
+```{r}
+tiff("05_evaluating_replicates/figures/rep_v_rep/both_norm_counts_comparing_4sU_replicates.tiff", height=7, width=7, units="in", res = 400)
+grid.newpage()
+grid.draw(gt)
+while (!is.null(dev.list()))  dev.off()
+```
+
+
+
+compare avg and std dev for gene counts when averaged accross replicates
+raw stdev avg accross all genes vs normalized stdev avg
+*didn't redo with strand specific counts*
+```{r stdev}
+
+sd_df <- data.frame(geneID = rownames(df_raw_whole_gene_counts))
+
+#run loop to make list to add col for each type of normalization (cols added below)
+loop_list <- list()
+r=1
+while (r <= nrow(df_raw_whole_gene_counts[,c(1,3,5)])) {
+  loop_list <- append(loop_list, sd(df_raw_whole_gene_counts[r,c(1,3,5)]))
+  r=r+1
+}
+#add list as col in df
+sd_df$raw_stdev <- unlist(loop_list) #added
+#sd_df$seq_depth_norm_stdev <- unlist(loop_list) #added
+#sd_df$spike_in_norm_stdev <- unlist(loop_list) #added
+#sd_df$both_norm_stdev <- unlist(loop_list) #added
+
+#avg stdev
+mean(sd_df$raw_stdev) #592
+mean(sd_df$seq_depth_norm_stdev) #710
+mean(sd_df$spike_in_norm_stdev) #1299
+mean(sd_df$both_norm_stdev) #1439
+
+summary(sd_df$seq_depth_norm_stdev)
+
+#more normalization = greater stdev...
+
+
+###add averages to sd_df###
+
+#run loop to make list to add col for each type of normalization (cols added below)
+loop_list <- list()
+r=1
+while (r <= nrow(spike_in_norm_counts_df[,c(1,3,5)])) {
+  row <- spike_in_norm_counts_df[r,c(1,3,5)]
+  loop_list <- append(loop_list, mean(c(row[1,1], row[1,2], row[1,3])))
+  r=r+1
+}
+#add list as col in df
+#sd_df$raw_avg <- unlist(loop_list) 
+#sd_df$seq_depth_norm_avg <- unlist(loop_list) 
+#sd_df$spike_in_norm_avg <- unlist(loop_list) 
+#sd_df$both_norm_avg <- unlist(loop_list)
+
+
+
+
+#plot stdev vs counts scatterplot
+raw_stdev_vs_avg <- ggscatter(sd_df, x = "raw_avg", y = "raw_stdev")
+raw_stdev_vs_avg <- ggpar(raw_stdev_vs_avg, xlim = c(0, 200000), ylim = c(0, 40000))
+raw_stdev_vs_avg
+seq_depth_stdev_vs_avg <- ggscatter(sd_df, x = "seq_depth_norm_avg", y = "seq_depth_norm_stdev")
+seq_depth_stdev_vs_avg <- ggpar(seq_depth_stdev_vs_avg, xlim = c(0, 200000), ylim = c(0, 40000))
+seq_depth_stdev_vs_avg
+spikein_stdev_vs_avg <- ggscatter(sd_df, x = "spike_in_norm_avg", y = "spike_in_norm_stdev")
+spikein_stdev_vs_avg <- ggpar(spikein_stdev_vs_avg, xlim = c(0, 200000), ylim = c(0, 40000))
+spikein_stdev_vs_avg
+both_stdev_vs_avg <- ggscatter(sd_df, x = "both_norm_avg", y = "both_norm_stdev")
+both_stdev_vs_avg <- ggpar(both_stdev_vs_avg, xlim = c(0, 200000), ylim = c(0, 40000))
+both_stdev_vs_avg
+
+#the issue seems to come from the spike-in normalization causing increased stdev (norm to different theoretical like 100k mapped ERCC reads?)
+```
+
+
+
+```{r looking at fold changes}
+
+#calc fold changes for each rep
+raw_fold_changes_df <- data.frame(geneID = rownames(df_raw_whole_gene_counts))
+raw_fold_changes_df$rep_1 <- df_raw_whole_gene_counts$rep1_HS / df_raw_whole_gene_counts$rep1_NHS
+raw_fold_changes_df$rep_2 <- df_raw_whole_gene_counts$rep2_HS / df_raw_whole_gene_counts$rep2_NHS
+raw_fold_changes_df$rep_3 <- df_raw_whole_gene_counts$rep3_HS / df_raw_whole_gene_counts$rep3_NHS
+raw_fold_changes_df <- column_to_rownames(raw_fold_changes_df, var = "geneID")
+
+seq_depth_fold_changes_df <- data.frame(geneID = rownames(seq_depth_norm_counts_df))
+seq_depth_fold_changes_df$rep_1 <- seq_depth_norm_counts_df$rep1_HS / seq_depth_norm_counts_df$rep1_NHS
+seq_depth_fold_changes_df$rep_2 <- seq_depth_norm_counts_df$rep2_HS / seq_depth_norm_counts_df$rep2_NHS
+seq_depth_fold_changes_df$rep_3 <- seq_depth_norm_counts_df$rep3_HS / seq_depth_norm_counts_df$rep3_NHS
+seq_depth_fold_changes_df <- column_to_rownames(seq_depth_fold_changes_df, var = "geneID")
+
+both_norm_fold_changes_df <- data.frame(geneID = rownames(both_norm_counts_df))
+both_norm_fold_changes_df$rep_1 <- both_norm_counts_df$rep1_HS / both_norm_counts_df$rep1_NHS
+both_norm_fold_changes_df$rep_2 <- both_norm_counts_df$rep2_HS / both_norm_counts_df$rep2_NHS
+both_norm_fold_changes_df$rep_3 <- both_norm_counts_df$rep3_HS / both_norm_counts_df$rep3_NHS
+both_norm_fold_changes_df <- column_to_rownames(both_norm_fold_changes_df, var = "geneID")
+
+
+raw_fold_changes_df <- do.call(data.frame,                      # Replace Inf in data by NA
+                   lapply(raw_fold_changes_df,
+                          function(x) replace(x, is.infinite(x), NA)))
+
+seq_depth_fold_changes_df <- do.call(data.frame,                      # Replace Inf in data by NA
+                   lapply(seq_depth_fold_changes_df,
+                          function(x) replace(x, is.infinite(x), NA)))
+
+both_norm_fold_changes_df <- do.call(data.frame,                      # Replace Inf in data by NA
+                   lapply(both_norm_fold_changes_df,
+                          function(x) replace(x, is.infinite(x), NA)))
+
+
+
+#### rep v rep scatterplots ####
+#look at replicate similarities for fc's
+rep1v2 <- ggscatter(seq_depth_fold_changes_df, x = "rep_1", y = "rep_2", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson")
+#rep1v2
+
+rep2v3 <- ggscatter(seq_depth_fold_changes_df, x = "rep_2", y = "rep_3", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson")
+#rep2v3
+
+rep1v3 <- ggscatter(seq_depth_fold_changes_df, x = "rep_1", y = "rep_3", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson")
+#rep1v3
+
+fig <- ggarrange(rep1v2, rep2v3, rep1v3, ncol = 2, nrow = 2, top = textGrob(c("Seq depth norm fold changes (HS/NHS)")))
+fig
+## not pretty, but functional ##
+
+#save
+pdf("05_evaluating_replicates/figures/rep_v_rep/fold_change_reps_seq_depth_norm.pdf")
+print(fig)
+dev.off()
+
+#thoughts:
+## all graphs still look identical no matter the normalization
+## so spike-in doesn't significantly change normalization
+
+
+#### box plots ####
+library(vioplot)
+vioplot(raw_fold_changes_df, ylab = "fold change (HS/NHS)", main = "unnormalized")
+vioplot(seq_depth_fold_changes_df, ylab = "fold change (HS/NHS)", main = "seq depth normalized")
+vioplot(both_norm_fold_changes_df, ylab = "fold change (HS/NHS)", main = "seq depth and spike-in normalized")
+
+p <- ggplot(raw_fold_changes_df, aes(x=rep_1, y=rep_2)) + 
+  geom_boxplot()
+p
+
+#combine df's
+summary_raw <- do.call(cbind, lapply(raw_fold_changes_df, summary))
+summary_seq_depth_norm <- do.call(cbind, lapply(seq_depth_fold_changes_df, summary))
+summary_both_norm <- do.call(cbind, lapply(both_norm_fold_changes_df, summary))
+#change col names to include norm type
+colnames(summary_raw) <- c("raw_rep1", "raw_rep2", "raw_rep3")
+colnames(summary_seq_depth_norm) <- c("seq_depth_rep1", "seq_depth_rep2", "seq_depth_rep3")
+colnames(summary_both_norm) <- c("both_norm_rep1", "both_norm_rep2", "both_norm_rep3")
+#merge to one df
+full_summary_df <- merge(summary_raw, summary_seq_depth_norm, by = "row.names")
+rownames(full_summary_df) <- full_summary_df$Row.names
+full_summary_df <- merge(full_summary_df, summary_both_norm, by = "row.names")
+rownames(full_summary_df) <- full_summary_df$Row.names
+full_summary_df <- full_summary_df[3:11]
+full_summary_df <- round(full_summary_df, 2)
+full_summary_df <- rownames_to_column(full_summary_df)
+
+#save df
+write_delim(full_summary_df, "05_evaluating_replicates/fold_change_summary_stats.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+```{r length vs tag counts plot}
+#make length reference
+#V2 and V3 are start/end of each gene, V4 is gene names in raw_gene_counts_ls
+#pull out those and make df
+
+#pull out gene names and coordinates
+gene_length_df <- data.frame(geneID = raw_gene_counts_ls$rep1_HS[4], g_start = raw_gene_counts_ls$rep1_HS[2], g_end = raw_gene_counts_ls$rep1_HS[3] ) 
+
+#calc length
+gene_length_df[4] <- abs(gene_length_df[3] - gene_length_df[2])
+
+#set col names
+names(gene_length_df) <- c('geneID', 'g_start', 'g_end', 'g_length') 
+
+#write out for reference later
+write_delim(gene_length_df, "05_evaluating_replicates/gene_length_info.tsv", delim = "\t", col_names = TRUE)
+write_delim(gene_length_df, "06_termination_defects/gene_length_info.tsv", delim = "\t", col_names = TRUE)
+
+
+#move geneID to rownames
+#df_raw_whole_gene_counts <- column_to_rownames(df_raw_whole_gene_counts, var = "geneID")
+
+
+#add length to "df_raw_whole_gene_counts"
+df_raw_whole_gene_counts$g_length <- gene_length_df$g_length
+
+
+
+#plot counts vs length for each rep
+NHS_rep1_len_x_counts <- ggscatter(df_raw_whole_gene_counts, x = "g_length", y = "rep1_NHS")
+NHS_rep1_len_x_counts <- ggpar(NHS_rep1_len_x_counts, ylim = c(0,250000), xscale = "log10", format.scale = TRUE)
+NHS_rep2_len_x_counts <- ggscatter(df_raw_whole_gene_counts, x = "g_length", y = "rep2_NHS")
+NHS_rep2_len_x_counts <- ggpar(NHS_rep2_len_x_counts, ylim = c(0,250000), xscale = "log10", format.scale = TRUE)
+NHS_rep3_len_x_counts <- ggscatter(df_raw_whole_gene_counts, x = "g_length", y = "rep3_NHS")
+NHS_rep3_len_x_counts <- ggpar(NHS_rep3_len_x_counts, ylim = c(0,250000), xscale = "log10", format.scale = TRUE)
+
+NHS_fig <- ggarrange(NHS_rep1_len_x_counts, NHS_rep2_len_x_counts, NHS_rep3_len_x_counts, ncol = 3, nrow = 1)
+NHS_fig <- annotate_figure(NHS_fig, top = "unnormalized counts vs length (NHS reps)")
+NHS_fig
+
+HS_rep1_len_x_counts <- ggscatter(df_raw_whole_gene_counts, x = "g_length", y = "rep1_HS")
+HS_rep1_len_x_counts <- ggpar(HS_rep1_len_x_counts, ylim = c(0,250000), xscale = "log10", format.scale = TRUE)
+HS_rep2_len_x_counts <- ggscatter(df_raw_whole_gene_counts, x = "g_length", y = "rep2_HS")
+HS_rep2_len_x_counts <- ggpar(HS_rep2_len_x_counts, ylim = c(0,250000), xscale = "log10", format.scale = TRUE)
+HS_rep3_len_x_counts <- ggscatter(df_raw_whole_gene_counts, x = "g_length", y = "rep3_HS")
+HS_rep3_len_x_counts <- ggpar(HS_rep3_len_x_counts, ylim = c(0,250000), xscale = "log10", format.scale = TRUE)
+
+HS_fig <- ggarrange(HS_rep1_len_x_counts, HS_rep2_len_x_counts, HS_rep3_len_x_counts, ncol = 3, nrow = 1)
+HS_fig <- annotate_figure(HS_fig, top = "unnormalized counts vs length (HS reps)")
+HS_fig
+
+#save figures
+pdf("05_evaluating_replicates/figures/NHS_raw_counts_v_length_xlog10.pdf", width = 15, height = 5)
+print(NHS_fig)
+dev.off()
+
+pdf("05_evaluating_replicates/figures/HS_raw_counts_v_length_xlog10.pdf", width = 15, height = 5)
+print(HS_fig)
+dev.off()
+
+
+
+### now for seq depth normalized ###
+#add length to "seq_depth_norm_counts_df"
+seq_depth_norm_counts_df$g_length <- gene_length_df$g_length #rows (genes) in same order so this works
+
+#plot
+NHS_rep1_len_x_counts <- ggscatter(seq_depth_norm_counts_df, x = "g_length", y = "rep1_NHS")
+NHS_rep1_len_x_counts <- ggpar(NHS_rep1_len_x_counts, ylim = c(0,300000))
+NHS_rep2_len_x_counts <- ggscatter(seq_depth_norm_counts_df, x = "g_length", y = "rep2_NHS")
+NHS_rep2_len_x_counts <- ggpar(NHS_rep2_len_x_counts, ylim = c(0,300000))
+NHS_rep3_len_x_counts <- ggscatter(seq_depth_norm_counts_df, x = "g_length", y = "rep3_NHS")
+NHS_rep3_len_x_counts <- ggpar(NHS_rep3_len_x_counts, ylim = c(0,300000))
+
+NHS_fig <- ggarrange(NHS_rep1_len_x_counts, NHS_rep2_len_x_counts, NHS_rep3_len_x_counts, ncol = 3, nrow = 1)
+NHS_fig <- annotate_figure(NHS_fig, top = "seq depth norm counts vs length (NHS reps)")
+NHS_fig
+
+HS_rep1_len_x_counts <- ggscatter(seq_depth_norm_counts_df, x = "g_length", y = "rep1_HS")
+HS_rep1_len_x_counts <- ggpar(HS_rep1_len_x_counts, ylim = c(0,300000))
+HS_rep2_len_x_counts <- ggscatter(seq_depth_norm_counts_df, x = "g_length", y = "rep2_HS")
+HS_rep2_len_x_counts <- ggpar(HS_rep2_len_x_counts, ylim = c(0,300000))
+HS_rep3_len_x_counts <- ggscatter(seq_depth_norm_counts_df, x = "g_length", y = "rep3_HS")
+HS_rep3_len_x_counts <- ggpar(HS_rep3_len_x_counts, ylim = c(0,300000))
+
+HS_fig <- ggarrange(HS_rep1_len_x_counts, HS_rep2_len_x_counts, HS_rep3_len_x_counts, ncol = 3, nrow = 1)
+HS_fig <- annotate_figure(HS_fig, top = "seq depth norm counts vs length (HS reps)")
+HS_fig
+
+#save figures
+pdf("05_evaluating_replicates/figures/counts_v_length/NHS_seq_depth_norm_counts_v_length.pdf", width = 15, height = 5)
+print(NHS_fig)
+dev.off()
+
+pdf("05_evaluating_replicates/figures/counts_v_length/HS_seq_depth_norm_counts_v_length.pdf", width = 15, height = 5)
+print(HS_fig)
+dev.off()
+
+```
+
+
+
+### avg norm counts accross replicates ###
+  decided replicates look like reps and are moving forward with seq depth normalization only (no spike-in norm)
+  now pooling replicates and averaging for each gene
+```{r avg reps}
+#starting with df "seq_depth_norm_counts_df"
+seq_depth_norm_counts_df <- as.data.frame(read_tsv("05_evaluating_replicates/mRNA_gene_counts/combined_reps/seq_depth_norm_gene_counts.tsv", col_names = TRUE))
+seq_depth_norm_counts_df$NHS_avg <- round(((seq_depth_norm_counts_df$rep1_NHS + seq_depth_norm_counts_df$rep2_NHS + seq_depth_norm_counts_df$rep3_NHS) / 3), 2)
+seq_depth_norm_counts_df$HS_avg <- round(((seq_depth_norm_counts_df$rep1_HS + seq_depth_norm_counts_df$rep2_HS + seq_depth_norm_counts_df$rep3_HS) / 3), 2)
+
+#make table with only averages
+avg_norm_counts_df <- seq_depth_norm_counts_df[c(1,8,9)]
+
+#write out avg counts
+write_delim(avg_norm_counts_df, "05_evaluating_replicates/mRNA_gene_counts/combined_reps/avg_seq_depth_norm_counts.tsv", delim = "\t", col_names = TRUE)
+#also save this to 06_term_defects folder
+write_delim(avg_norm_counts_df, "06_termination_defects/avg_seq_depth_norm_counts.tsv", delim = "\t", col_names = TRUE)
+
+
+```
+

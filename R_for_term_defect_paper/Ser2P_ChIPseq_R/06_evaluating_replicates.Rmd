@@ -1,0 +1,662 @@
+---
+title: "06_evaluating_replicates"
+author: "Katy Walsh"
+date: "5/4/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+wd: ~/Desktop/Katy_ChIPseq1/hg38
+
+```{r setup, include=FALSE}
+library(tidyverse)
+```
+
+1. set up gnbd, PPP, and TTS+500kb regions in bed files and export
+```{r make gnbd, PPP and TTS bed files}
+#start with genes_noSG_MANE_v93.bed
+whole_genes_bed <- read.table("05_making_isolated_genes_list_hg38/gene_lists_bed_files/genes_noSG_MANE_v93.bed", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+#set up a loop to recognize + and - strand, and add or subtract accordingly
+#gnbd (TSS+250 to TTS)
+
+#gnbd
+i = 1
+gnbd_bed <- whole_genes_bed
+while(i <= nrow(gnbd_bed)){
+  #if on + strand, start = TSS and end = TTS
+  #therefore: start = start + 250 & end = end
+  if(gnbd_bed$strand[i]=="+"){
+    gnbd_bed$start[i] = gnbd_bed$start[i] + 250
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #therefore: end = end - 250 & start = start
+  else if(gnbd_bed$strand[i] == "-") {
+    gnbd_bed$end[i] = gnbd_bed$end[i] - 250
+  }
+  else{
+    print(c("line", i, "has no strand orientiation!!"))
+  }
+  i = i+1
+}
+
+
+#PPP
+i = 1
+ppp_bed <- whole_genes_bed
+while(i <= nrow(ppp_bed)){
+  #if on + strand, start = TSS and end = TTS
+  #therefore: start = start & end = start + 250 bp
+  if(ppp_bed$strand[i]=="+"){
+    ppp_bed$end[i] = ppp_bed$start[i] + 250
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #therefore: start = end - 250 to get TSS to +250bp in the - direction
+  else if(ppp_bed$strand[i] == "-") {
+    ppp_bed$start[i] = ppp_bed$end[i] - 250
+  }
+  else{
+    print(c("line", i, "has no strand orientiation!!"))
+  }
+  i = i+1
+}
+
+#check
+i=1
+while(i <= nrow(ppp_bed)) {
+  #print(i)
+  stopifnot(abs(ppp_bed$end[i] - ppp_bed$start[i]) == 250)
+  i=i+1
+  }
+#looks like it worked correctly and we now have a bed file with the PPP annotations for each gene
+
+
+#repeat for 3'end (TTS to +500 bp)
+i = 1
+tts_end_bed <- whole_genes_bed
+while(i <= nrow(tts_end_bed)){
+  #if on + strand, start = TSS and end = TTS
+  #therefore: start = end; AND end = end + 500 to get TTS to +500bp ds for the + strand
+  if(tts_end_bed$strand[i]=="+"){
+    tts_end_bed$start[i] = tts_end_bed$end[i]
+    tts_end_bed$end[i] = tts_end_bed$end[i] + 500
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #therefore: end = start; AND start = start - 500
+  else if(tts_end_bed$strand[i] == "-"){
+    tts_end_bed$end[i] = tts_end_bed$start[i]
+    tts_end_bed$start[i] = tts_end_bed$start[i] - 500
+  }
+  else{
+    print("no strand orientiation!!")
+  }
+  i = i+1
+}
+
+
+#check
+i=1
+while(i <= nrow(tts_end_bed)) {
+  #print(i)
+  stopifnot(abs(tts_end_bed$end[i] - tts_end_bed$start[i]) == 500)
+  i=i+1
+}
+#everything looks like it worked correctly, all 500bp windows
+
+
+##remove all genes where the TTS +500 window is past the end of the chromosome
+#need to remove any negative values
+removed_genes <- filter(tts_end_bed, tts_end_bed$start < 0)
+#no genes are within 500bp of the chromosome ends so the bed files are good to write out
+
+#write out
+write_delim(gnbd_bed, "06_evaluating_replicates/gene_list_bed_files/gnbd_mRNA_genes.bed", delim = "\t", col_names = TRUE)
+write_delim(ppp_bed, "06_evaluating_replicates/gene_list_bed_files/ppp_end_mRNA_genes.bed", delim = "\t", col_names = TRUE)
+write_delim(tts_end_bed, "06_evaluating_replicates/gene_list_bed_files/tts_end_mRNA_genes.bed", delim = "\t", col_names = TRUE)
+#whole gene = genes_noSG_MANE_v93.bed
+#copy this into the same folder for easy access
+write_delim(whole_genes_bed, "06_evaluating_replicates/gene_list_bed_files/whole_gene_mRNA_genes.bed", delim = "\t", col_names = TRUE)
+#now have whole gene, gnbd, PPP and TTS_end bed files with all single isoform genes (minus <1kb genes) for counting tags in bedtools
+
+```
+
+```{r repeat with isolated genes list}
+#start with all_isolated_genes_20kb.bed
+isolated_whole_genes_bed <- read.table("05_making_isolated_genes_list_hg38/isolated_genes_lists/final_all_isolated_genes.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(isolated_whole_genes_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+#set up a loop to recognize + and - strand, and add or subtract accordingly
+#gnbd (TSS+250 to TTS)
+
+#gnbd
+i = 1
+gnbd_bed_iso <- isolated_whole_genes_bed
+while(i <= nrow(gnbd_bed_iso)){
+  #if on + strand, start = TSS and end = TTS
+  #therefore: start = start + 250 & end = end
+  if(gnbd_bed_iso$strand[i]=="+"){
+    gnbd_bed_iso$start[i] = gnbd_bed_iso$start[i] + 250
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #therefore: end = end - 250 & start = start
+  else if(gnbd_bed_iso$strand[i] == "-") {
+    gnbd_bed_iso$end[i] = gnbd_bed_iso$end[i] - 250
+  }
+  else{
+    print(c("line", i, "has no strand orientiation!!"))
+  }
+  i = i+1
+}
+
+
+#PPP
+i = 1
+ppp_bed_iso <- isolated_whole_genes_bed
+while(i <= nrow(ppp_bed_iso)){
+  #if on + strand, start = TSS and end = TTS
+  #therefore: start = start & end = start + 250 bp
+  if(ppp_bed_iso$strand[i]=="+"){
+    ppp_bed_iso$end[i] = ppp_bed_iso$start[i] + 250
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #therefore: start = end - 250 to get TSS to +250bp in the - direction
+  else if(ppp_bed_iso$strand[i] == "-") {
+    ppp_bed_iso$start[i] = ppp_bed_iso$end[i] - 250
+  }
+  else{
+    print(c("line", i, "has no strand orientiation!!"))
+  }
+  i = i+1
+}
+
+#check
+i=1
+while(i <= nrow(ppp_bed_iso)) {
+  #print(i)
+  stopifnot(abs(ppp_bed_iso$end[i] - ppp_bed_iso$start[i]) == 250)
+  i=i+1
+  }
+#looks like it worked correctly and we now have a bed file with the PPP annotations for each gene
+
+
+#repeat for 3'end (TTS to +500 bp)
+i = 1
+tts_end_bed_iso <- isolated_whole_genes_bed
+while(i <= nrow(tts_end_bed_iso)){
+  #if on + strand, start = TSS and end = TTS
+  #therefore: start = end; AND end = end + 500 to get TTS to +500bp ds for the + strand
+  if(tts_end_bed_iso$strand[i]=="+"){
+    tts_end_bed_iso$start[i] = tts_end_bed_iso$end[i]
+    tts_end_bed_iso$end[i] = tts_end_bed_iso$end[i] + 500
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #therefore: end = start; AND start = start - 500
+  else if(tts_end_bed_iso$strand[i] == "-"){
+    tts_end_bed_iso$end[i] = tts_end_bed_iso$start[i]
+    tts_end_bed_iso$start[i] = tts_end_bed_iso$start[i] - 500
+  }
+  else{
+    print("no strand orientiation!!")
+  }
+  i = i+1
+}
+
+
+#check
+i=1
+while(i <= nrow(tts_end_bed_iso)) {
+  #print(i)
+  stopifnot(abs(tts_end_bed_iso$end[i] - tts_end_bed_iso$start[i]) == 500)
+  i=i+1
+}
+#everything looks like it worked correctly, all 500bp windows
+
+
+##remove all genes where the TTS +500 window is past the end of the chromosome
+#need to remove any negative values
+removed_genes_iso <- filter(tts_end_bed_iso, tts_end_bed_iso$start < 0)
+#no genes are within 500bp of the chromosome ends so the bed files are good to write out
+
+#write out
+write_delim(gnbd_bed_iso, "06_evaluating_replicates/gene_list_bed_files/gnbd_isolated_mRNA_genes.bed", delim = "\t", col_names = TRUE)
+write_delim(ppp_bed_iso, "06_evaluating_replicates/gene_list_bed_files/ppp_end_isolated_mRNA_genes.bed", delim = "\t", col_names = TRUE)
+write_delim(tts_end_bed_iso, "06_evaluating_replicates/gene_list_bed_files/tts_end_isolated_mRNA_genes.bed", delim = "\t", col_names = TRUE)
+#whole gene = genes_noSG_MANE_v93.bed
+#copy this into the same folder for easy access
+write_delim(isolated_whole_genes_bed, "06_evaluating_replicates/gene_list_bed_files/whole_gene_isolated_mRNA_genes.bed", delim = "\t", col_names = TRUE)
+#now have whole gene, gnbd, PPP and TTS_end bed files with all single isoform genes (minus <1kb genes) for counting tags in bedtools
+
+```
+
+2. count tags across each region using bed files made above
+already done in 05:
+#cd to homer bin folder, source activate homer
+#<homer> tagDir2bed.pl TD > ouptut_file_1.Bed
+#conda deactivate, cd to Bed_Tools bin folder, source activate Bed_Tools
+#<bedtools> Bedtools sort -i output_file_1.Bed > ouput_file_sorted.Bed
+
+in command line:
+#<Bed_Tools> bedtools coverage -a count_window.bed -b output_file_sorted.Bed > final_count.bed
+see bash script "06_..." in hg38/notes/bash_scripts/ for full commands
+
+3. normalize for number of mapped reads
+```{r import tag count bed files}
+#whole gene
+fl_gene <- list.files("06_evaluating_replicates/gene_count_bed_files/whole_gene/", 
+                  pattern = "*_count.bed",
+                  full.names = TRUE)
+whole_gene_counts <- lapply(fl_gene, read.table)
+names(whole_gene_counts) <- gsub("06_evaluating_replicates/gene_count_bed_files/whole_gene//|_whole_gene_count.bed", "", fl_gene)
+
+#gnbd
+fl_gnbd <- list.files("06_evaluating_replicates/gene_count_bed_files/gnbd/", 
+                  pattern = "*_count.bed",
+                  full.names = TRUE)
+gnbd_counts <- lapply(fl_gnbd, read.table)
+names(gnbd_counts) <- gsub("06_evaluating_replicates/gene_count_bed_files/gnbd//|_gnbd_count.bed", "", fl_gnbd)
+
+#PPP
+fl_ppp <- list.files("06_evaluating_replicates/gene_count_bed_files/ppp/", 
+                  pattern = "*_count.bed",
+                  full.names = TRUE)
+ppp_counts <- lapply(fl_ppp, read.table)
+names(ppp_counts) <- gsub("06_evaluating_replicates/gene_count_bed_files/ppp//|_ppp_count.bed", "", fl_ppp)
+
+#TTS
+fl_tts <- list.files("06_evaluating_replicates/gene_count_bed_files/tts/", 
+                  pattern = "*_count.bed",
+                  full.names = TRUE)
+tts_counts <- lapply(fl_tts, read.table)
+names(tts_counts) <- gsub("06_evaluating_replicates/gene_count_bed_files/tts//|_tts_count.bed", "", fl_tts)
+
+
+##repeat for isolated gene counts
+#gnbd isolated genes
+fl_gnbd_iso <- list.files("06_evaluating_replicates/gene_count_bed_files/gnbd_isolated/", 
+                  pattern = "*_count.bed",
+                  full.names = TRUE)
+gnbd_counts_iso <- lapply(fl_gnbd_iso, read.table)
+names(gnbd_counts_iso) <- gsub("06_evaluating_replicates/gene_count_bed_files/gnbd_isolated//|_gnbd_count.bed", "", fl_gnbd_iso)
+
+#PPP isolated genes
+fl_ppp_iso <- list.files("06_evaluating_replicates/gene_count_bed_files/ppp_isolated/", 
+                  pattern = "*_count.bed",
+                  full.names = TRUE)
+ppp_counts_iso <- lapply(fl_ppp_iso, read.table)
+names(ppp_counts_iso) <- gsub("06_evaluating_replicates/gene_count_bed_files/ppp_isolated//|_ppp_count.bed", "", fl_ppp_iso)
+
+#TTS isolated genes
+#*didn't run so files are all empty, need to redo*
+fl_tts_iso <- list.files("06_evaluating_replicates/gene_count_bed_files/tts_isolated/", 
+                  pattern = "*_count.bed",
+                  full.names = TRUE)
+tts_counts_iso <- lapply(fl_tts_iso, read.table)
+names(tts_counts_iso) <- gsub("06_evaluating_replicates/gene_count_bed_files/tts_isolated//|_tts_count.bed", "", fl_tts_iso)
+```
+for each df in the list containing the bed files from each folder:
+V1-6 for each bed file is the information for each gene (chr, start, end, name, score, strand)
+V7-10 are outputs from bedtools calculating the coverage per gene
+  V7: num of reads that overlapped with the gene by at least 1 bp
+  V8: number of bases in the gene that had at least one read align
+  V9: the length of the gene/ region counted over (in bp)
+  V10: the fraction of bases in the gene that had at least one read / # of bases with zero reads
+
+
+```{r normalize to mapped reads}
+#read in mapped reads for each sample
+mapped_reads <- read.table("notes/mapped_reads_per_sample.tsv", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(mapped_reads) <- c("sample","reads")
+mapped_reads <- column_to_rownames(mapped_reads, var = "sample")
+
+#normalize to 50 million reads
+#50,000,000 = factor * num mapped reads
+mapped_reads$factor <- 50000000 / mapped_reads$reads
+
+
+###whole gene
+#make a df with only gene IDs and tag counts
+#make the df structure and add gene ID coulumn
+df_whole_gene_counts <- data.frame(genes = whole_gene_counts$input[4])
+names(df_whole_gene_counts) <- c('geneID')
+
+#loop through gene_counts to pull out the gene counts for each sample
+i=1
+col_names_list <- list('geneID')
+while (i <= length(whole_gene_counts)) {
+  #pull out counts
+  df <- as.data.frame(whole_gene_counts[i])
+  counts <- as.list(df[7])
+  #add to df
+  df_whole_gene_counts[(i+1)] <- counts
+  
+  #add col name to list to assign the names after the loop
+  my_name <- names(whole_gene_counts[i])
+  #my_name <- as.character(strsplit(my_name, split = "_gnbd"))
+  col_names_list <- append(col_names_list, my_name)
+  i=i+1
+}
+#assign col names
+names(df_whole_gene_counts) <- col_names_list
+#move geneID to rownames
+df_whole_gene_counts <- column_to_rownames(df_whole_gene_counts, var = "geneID")
+
+
+###gnbd
+#make a df with only gene IDs and tag counts
+#make the df structure and add gene ID coulumn
+df_gnbd_counts <- data.frame(genes = gnbd_counts$input[4])
+names(df_gnbd_counts) <- c('geneID')
+
+#loop through gene_counts to pull out the gene counts for each sample
+i=1
+col_names_list <- list('geneID')
+while (i <= length(gnbd_counts)) {
+  #pull out counts
+  df <- as.data.frame(gnbd_counts[i])
+  counts <- as.list(df[7])
+  #add to df
+  df_gnbd_counts[(i+1)] <- counts
+  
+  #add col name to list to assign the names after the loop
+  my_name <- names(gnbd_counts[i])
+  my_name <- as.character(strsplit(my_name, split = "_gnbd"))
+  col_names_list <- append(col_names_list, my_name)
+  i=i+1
+}
+#assign col names
+names(df_gnbd_counts) <- col_names_list
+#move geneID to rownames
+df_gnbd_counts <- column_to_rownames(df_gnbd_counts, var = "geneID")
+
+###repeat for ppp
+df_ppp_counts <- data.frame(genes = ppp_counts$input[4])
+names(df_ppp_counts) <- c('geneID')
+i=1
+ppp_col_names_list <- list('geneID')
+while (i <= length(ppp_counts)) {
+  #pull out counts
+  df <- as.data.frame(ppp_counts[i])
+  counts <- as.list(df[7])
+  #add to df
+  df_ppp_counts[(i+1)] <- counts
+  
+  #add col name to list to assign the names after the loop
+  my_name <- names(ppp_counts[i])
+  my_name <- as.character(strsplit(my_name, split = "_ppp"))
+  ppp_col_names_list <- append(ppp_col_names_list, my_name)
+  i=i+1
+}
+#assign col names
+names(df_ppp_counts) <- ppp_col_names_list
+#move geneID to rownames
+df_ppp_counts <- column_to_rownames(df_ppp_counts, var = "geneID")
+
+###repeat for tts
+df_tts_counts <- data.frame(genes = tts_counts$input[4])
+names(df_tts_counts) <- c('geneID')
+i=1
+tts_col_names_list <- list('geneID')
+while (i <= length(tts_counts)) {
+  #pull out counts
+  df <- as.data.frame(tts_counts[i])
+  counts <- as.list(df[7])
+  #add to df
+  df_tts_counts[(i+1)] <- counts
+  
+  #add col name to list to assign the names after the loop
+  my_name <- names(tts_counts[i])
+  my_name <- as.character(strsplit(my_name, split = "_tts"))
+  tts_col_names_list <- append(tts_col_names_list, my_name)
+  i=i+1
+}
+#assign col names
+names(df_tts_counts) <- tts_col_names_list
+#move geneID to rownames
+df_tts_counts <- column_to_rownames(df_tts_counts, var = "geneID")
+```
+
+```{r normalize for num reads}
+#corrected_reads_per_gene = factor * reads_per_gene
+##set up the df's with the gene IDs
+df_whole_gene_corrected_counts <- df_whole_gene_counts
+df_gnbd_corrected_counts <- df_gnbd_counts
+df_ppp_corrected_counts <- df_ppp_counts
+df_tts_corrected_counts <- df_tts_counts
+
+for (n in names(df_whole_gene_counts)) {
+  df_whole_gene_corrected_counts[,n] <- df_whole_gene_counts[,n] * mapped_reads[n,"factor"]
+  #col names are the same in whole gene, gnbd, ppp and tts count df's so can use the same loop to also make the normalized counts df for those too
+  df_gnbd_corrected_counts[,n] <- df_gnbd_counts[,n] * mapped_reads[n,"factor"]
+  df_ppp_corrected_counts[,n] <- df_ppp_counts[,n] * mapped_reads[n,"factor"]
+  df_tts_corrected_counts[,n] <- df_tts_counts[,n] * mapped_reads[n,"factor"]
+}
+
+#write out tags per gene normalized for seq depth (using # of mapped reads)
+##first need to add geneID column back in
+names_order <- c("geneID","HS_Rpb1_pooled","HS_Rpb1_R6","HS_Rpb1_R8","HS_Ser2P_pooled","HS_Ser2P_R6","HS_Ser2P_R8","input","NHS_Rpb1_pooled","NHS_Rpb1_R6","NHS_Rpb1_R8","NHS_Ser2P_pooled","NHS_Ser2P_R6","NHS_Ser2P_R8")
+
+df_whole_gene_corrected_counts$geneID <- rownames(df_whole_gene_corrected_counts)
+df_whole_gene_corrected_counts <- df_whole_gene_corrected_counts[,c("geneID","HS_Rpb1_R6","HS_Rpb1_R8","HS_Ser2P_R6","HS_Ser2P_R8","input","NHS_Rpb1_R6","NHS_Rpb1_R8","NHS_Ser2P_R6","NHS_Ser2P_R8")]
+write_delim(df_gnbd_corrected_counts, "06_evaluating_replicates/whole_gene_tag_corrected_counts.tsv", delim = "\t", col_names = TRUE)
+
+df_gnbd_corrected_counts$geneID <-  rownames(df_gnbd_corrected_counts)
+df_gnbd_corrected_counts <- df_gnbd_corrected_counts[,names_order]
+write_delim(df_gnbd_corrected_counts, "06_evaluating_replicates/gnbd_tag_corrected_counts.tsv", delim = "\t", col_names = TRUE)
+
+df_ppp_corrected_counts$geneID <-  rownames(df_ppp_corrected_counts)
+df_ppp_corrected_counts <- df_ppp_corrected_counts[,names_order]
+write_delim(df_ppp_corrected_counts, "06_evaluating_replicates/ppp_tag_corrected_counts.tsv", delim = "\t", col_names = TRUE)
+
+df_tts_corrected_counts$geneID <-  rownames(df_tts_corrected_counts)
+df_tts_corrected_counts <- df_tts_corrected_counts[,names_order]
+write_delim(df_tts_corrected_counts, "06_evaluating_replicates/tts_tag_corrected_counts.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+
+4. look at how well replicates line up - pearson/spearman coeficients, scatterplots of r6 vs r8
+using normalized tag counts of RefSeq Select genes (>1kb) gnbd (+250-TTS)
+```{r import corrected tag counts}
+library(tidyverse)
+df_whole_gene_corrected_counts <- read.table("06_evaluating_replicates/whole_gene_tag_corrected_counts.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+df_gnbd_corrected_counts <- read.table("06_evaluating_replicates/gnbd_tag_corrected_counts.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+df_ppp_corrected_counts <- read.table("06_evaluating_replicates/ppp_tag_corrected_counts.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+df_tts_corrected_counts <- read.table("06_evaluating_replicates/tts_tag_corrected_counts.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+```
+
+```{r scatterplots}
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+p <- ggplot(df_gnbd_corrected_counts, aes(x=NHS_Rpb1_R6, y=NHS_Rpb1_R8)) +
+        geom_point() +
+        geom_smooth(method=lm, color="black") +
+        ggtitle("NHS_Rpb1") + 
+        geom_bin2d(bins = 500) + scale_fill_viridis_c(breaks = c(100, 250, 500, 1000))
+        #could remove density coloring, doesn't seem to be a ton of overplotting
+
+NHS_rpb1_plot <- ggscatter(df_gnbd_corrected_counts, x = "NHS_Rpb1_R6", y = "NHS_Rpb1_R8", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson")
+HS_rpb1_plot <- ggscatter(df_gnbd_corrected_counts, x = "HS_Rpb1_R6", y = "HS_Rpb1_R8", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson")
+
+#would like to add linear equations and R^2 values
+#also would like to plot in a grid like Tom did
+
+
+```
+
+```{r statistics}
+library(ggplot2)
+library(ggpubr)
+#pearson
+NHS_res <- cor.test(df_whole_gene_corrected_counts$NHS_Rpb1_R6, df_whole_gene_corrected_counts$NHS_Rpb1_R8, 
+                    method = "pearson")
+HS_res <- cor.test(df_whole_gene_corrected_counts$HS_Rpb1_R6, df_whole_gene_corrected_counts$HS_Rpb1_R8,
+                    method = "pearson")
+
+#set-up df
+reps_whole_gene_corrected_counts <- column_to_rownames(df_whole_gene_corrected_counts, var = "geneID")
+#remove pooled and input
+reps_whole_gene_corrected_counts <- reps_whole_gene_corrected_counts[,c("NHS_Rpb1_R6","NHS_Rpb1_R8","HS_Rpb1_R6","HS_Rpb1_R8","NHS_Ser2P_R6","NHS_Ser2P_R8","HS_Ser2P_R6","HS_Ser2P_R8")]
+pearson <- as.matrix(cor(reps_whole_gene_corrected_counts, method = c("pearson")))
+r2 <- pearson * pearson
+
+#spearman
+spearman <- as.matrix(cor(reps_whole_gene_corrected_counts, method = c("spearman")))
+r2_sp <- spearman * spearman
+
+
+```
+
+```{r setup samples for next block}
+#all_reps <- reps_whole_gene_corrected_counts
+#Rpb1_reps <- reps_whole_gene_corrected_counts[,c("NHS_Rpb1_R6","NHS_Rpb1_R8","HS_Rpb1_R6","HS_Rpb1_R8")]
+Ser2P_reps <-reps_whole_gene_corrected_counts[,c("NHS_Ser2P_R6","NHS_Ser2P_R8","HS_Ser2P_R6","HS_Ser2P_R8")]
+
+df <- Ser2P_reps
+```
+
+```{r, grid scatterplots and pearsons}
+#make grid for all samples, Rpb1 replicates and Ser2P replicates
+
+n <- dim(df)[2] #number of columns
+labels <- colnames(df) #makes a list of conditions
+sizeItem = 16
+sizeCor = 4
+#list of heatmap plots
+heatmaps <- list()
+for (i in 2:n) { #starting in 2nd row
+   for (j in 1:(i-1)) { #starting in 1st column, limited to number of row - 1/bottom half of diagonal
+      # Data frame  of correlation values
+      df.point <- na.omit(data.frame(cbind(x = df[ , j], y = df[ , i])))
+      x = df.point[, 1]
+      y = df.point[, 2]
+      correlation = cor.test(x, y)
+      cor <- data.frame(rsquared = correlation$estimate * correlation$estimate)
+      cor$cor = paste0("P  = ", sprintf("%.4f",correlation$estimate), "\n",
+                       "R^2 = ", sprintf("%.4f", cor$rsquared))
+      # Plot, color code based on direct comparisons between condition replicates
+      if((i == j+1) && (i%%2==0)){
+        p <- ggplot(cor, aes(x = 1, y = 1)) +
+          geom_tile(fill = "orangered1", width=1, height=1) +
+          geom_text(aes(x = 1, y = 1, label = cor), colour = "White", size = 2, family = "Helvetica", show.legend = FALSE) +
+          theme_bw()+ 
+          theme(panel.grid = element_blank()) 
+      }else{
+        p <- ggplot(cor, aes(x = 1, y = 1)) +
+          geom_tile(fill = "steelblue") +
+          geom_text(aes(x = 1, y = 1, label = cor), colour = "White", size = 2, family = "Helvetica", show.legend = FALSE) +
+          theme_bw() + 
+          theme(panel.grid = element_blank()) 
+      }
+      name <- paste0("Item", j, i)
+      heatmaps[[name]] <- p
+  }
+}
+
+#diagonals, diagonal line separating halves
+diagonals <- list()
+for(i in 1:n){
+  p <- ggplot()+
+    geom_abline(slope=-1, intercept = 1)+
+    theme_bw() + theme(panel.grid = element_blank())
+  name <- paste0("Item", i)
+  diagonals[[name]] <- p
+}
+
+## List of scatter plots
+scatters <- list()
+for (i in 1:(n-1)) {
+   for (j in (i+1):n) {
+    # Data frame 
+    df.point <- na.omit(data.frame(cbind(x = df[ , j], y = df[ , i])))
+    # Plot, color code based on comparisons between biological replicates
+    if((j == i+1) && (j%%2==0)){
+      p <- ggplot(df.point, aes(x, y)) +
+      geom_jitter(size = .7, position = position_jitter(width = .2, height= .2), aes(color = "orangered2")) +
+      stat_smooth(method="lm", colour="black") +
+      theme_bw() + theme(panel.grid = element_blank())
+    }else {
+      p <- ggplot(df.point, aes(x, y)) +
+      geom_jitter(size = .7, position = position_jitter(width = .2, height= .2)) +
+      stat_smooth(method="lm", colour="gray84") +
+      theme_bw() + theme(panel.grid = element_blank())
+    }
+    name <- paste0("Item", j, i)
+    scatters[[name]] <- p
+   } 
+}
+
+# Convert the ggplots to grobs, 
+# and select only the plot panels
+library(plyr)
+
+scatterGrob <- llply(scatters, ggplotGrob)
+scatterGrob <- llply(scatterGrob, gtable_filter, "panel")
+tileGrob <- llply(heatmaps, ggplotGrob)
+tileGrob <- llply(tileGrob, gtable_filter, "panel")
+diagonalGrob <- llply(diagonals, ggplotGrob)
+diagonalGrob <- llply(diagonalGrob, gtable_filter, "panel")
+## Set up the gtable layout
+gt <- gtable(unit(rep(1, n), "null"), unit(rep(1, n), "null"))
+
+## Add the plots to the layout
+#Diagonal plots along the diagonal
+for(i in 1:n) {
+  gt <- gtable_add_grob(gt, diagonalGrob[[i]], t=i, l=i)
+}
+# heatmaps in the lower half
+k <- 1
+for (i in 2:n) {
+   for (j in 1:(i-1)) {
+gt <- gtable_add_grob(gt, tileGrob[[k]], t=i, l=j)
+k <- k+1
+} }
+# scatters in the upper half
+k <- 1
+for (i in 1:(n-1)) {
+   for (j in (i+1):n) {
+gt <- gtable_add_grob(gt, scatterGrob[[k]], t=i, l=j)
+k <- k+1
+} }
+#Add item labels
+gt <- gtable_add_cols(gt, unit(1.5, "lines"), 0)
+gt <- gtable_add_rows(gt, unit(1.5, "lines"), 2*n)
+for(i in 1:n) {
+textGrob <- textGrob(labels[i], gp = gpar(fontfamily = "Helvetica", fontsize = 8))
+gt <- gtable_add_grob(gt, textGrob, t=n+1, l=i+1)
+}
+for(i in 1:n) {
+textGrob <- textGrob(labels[i], rot = 90, gp = gpar(fontfamily = "Helvetica", fontsize = 8))
+gt <- gtable_add_grob(gt, textGrob, t=i, l=1)
+}
+# Add small gap between the panels
+for(i in n:1) gt <- gtable_add_cols(gt, unit(0.2, "lines"), i)
+for(i in (n-1):1) gt <- gtable_add_rows(gt, unit(0.2, "lines"), i)
+# Add chart title
+# gt <- gtable_add_rows(gt, unit(1.5, "lines"), 0)
+# textGrob <- textGrob("Correlation Matrix", gp = gpar(fontfamily = "Helvetica", fontface = "bold", fontsize = 8)) 
+# gt <- gtable_add_grob(gt, textGrob, t=1, l=3, r=2*n+1)
+#Add margins to the whole plot
+for(i in c(2*n+1, 0)) {
+gt <- gtable_add_cols(gt, unit(.75, "lines"), i)
+gt <- gtable_add_rows(gt, unit(.75, "lines"), i)
+}
+```
+
+```{r plot}
+#plot in r plots tab
+grid.newpage()
+grid.draw(gt)
+```
+
+#Save when ready
+```{r}
+tiff("06_evaluating_replicates/correlation_plots/Ser2P_whole_gene_correlation_matrix.tiff", height=5, width=5, units="in", res = 300)
+grid.newpage()
+grid.draw(gt)
+while (!is.null(dev.list()))  dev.off()
+```

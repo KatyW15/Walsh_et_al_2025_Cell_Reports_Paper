@@ -1,0 +1,3276 @@
+---
+title: "RBBP6_OE_analysis"
+author: "Katy Walsh"
+date: "3/26/2025"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+RBBP6 OE analysis:
+  A. TTS hist (ctl NHS and HS, OE NHS and HS)
+  B. uncleaved reads (boxplot FC after HS ctl and OE, boxplot RT vs no RT using previous HS 4sU-seq RT cats)
+  C. count ds reads (boxplot HS FC ctl and OE)
+      FC heatmap 5kb and 20kb ds
+  D. RT length analysis (defined RT lengths in Rmd 04c)
+
+
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(grid)
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+library(ggfortify)
+library(gtable)
+library(ggpmisc)
+#install.packages("VennDiagram")
+library(VennDiagram)
+
+#wd: 
+setwd("~/Desktop/Katy/RBBP6_OE_4sUseq_20250304")
+
+#always need master df
+ChIP_genes_master_df <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/ChIP_analyzable_genes_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#will need comon genes
+common_genes_master_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/06_analysis/ChIP_common_TTS5kbds_genes_MASTER_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+```
+setup plot settings:
+```{r plotting setup}
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+library(ggpmisc)
+
+theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+    )
+
+
+plot_fun_sized_hist_function <- function(hist_df, plot_title, subt = ""){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs(subtitle = subt, x= "", y="Read Count") +
+    ggtitle(plot_title) +
+    scale_x_continuous(labels=c("test","TTS", "5 kb", "10 kb", "15 kb", "20 kb"))+
+    scale_y_continuous(labels = c(0,10,20,30,40,50))+ coord_cartesian(ylim=c(0,50))+
+    theme(axis.title.y = element_text(size = 13), axis.text = element_text(size = 13), #change axis label size
+          legend.position = c(0.8, 0.8), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 30, 10, 10),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold"),   #change size of title
+          plot.subtitle = element_text(size = 12)) +             #change size of subtitle
+    scale_color_manual(values=c("lightgray", "black", "red"))
+}
+
+```
+
+
+
+A. TTS hist
+------------
+  TTS bed file for iso exp genes (same as original 4sU-seq)
+      /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/TTS_all_genes_no_long_RT_expressed_genes.bed
+  tag directories for seq samples
+    /Volumes/Seq_data_4/20250304_RBBP6_OE/03_TDs/tag_directories
+
+    bash script 04a_TTS_hist.sh
+      
+
+```{r read in data}
+fl_all <- list.files("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/TTS_hist/homer_output", 
+                  full.names = TRUE)
+ls_all <- lapply(fl_all, read.table, header=TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ls_all) <- gsub("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/TTS_hist/homer_output/|_TTS_hist.tsv", "", fl_all)
+
+#rename obnoxiously long homer default col names
+i=1
+while(i<=length(ls_all)){
+  names(ls_all[[i]]) <- c("distance_from_TTS", "coverage", "sense_tags", "antisense_tags")
+  i=i+1
+}
+
+
+TTS_plotting_df <- data.frame(distance_from_TTS = ls_all$ctl_NHS_rep1$distance_from_TTS,
+                              ctl_NHS = (ls_all$ctl_NHS_rep1$coverage + ls_all$ctl_NHS_rep2$coverage )/2,
+                              ctl_HS = (ls_all$ctl_HS_rep1$coverage + ls_all$ctl_HS_rep2$coverage )/2,
+                              OE_NHS = (ls_all$OE_NHS_rep1$coverage + ls_all$OE_NHS_rep2$coverage )/2,
+                              OE_HS = (ls_all$OE_HS_rep1$coverage + ls_all$OE_HS_rep2$coverage )/2
+                                     )
+#trim off -20kb so window is -1kb to +20kb
+TTS_plotting_df <- filter(TTS_plotting_df, TTS_plotting_df$distance_from_TTS >= -1000)
+TTS_plotting_df <- filter(TTS_plotting_df, TTS_plotting_df$distance_from_TTS < 20000) #take off last bin since that can look like a sharp increase due to ds genes
+
+#save
+write_delim(TTS_plotting_df, "04_analysis/TTS_hist/OE_TTS_hist_df.tsv", delim = "\t", col_names = TRUE)
+
+#pivot longer so R can plot it
+OE_TTS_plotting_df <- pivot_longer(TTS_plotting_df[c(1,4,5)], cols =2:3)
+OE_TTS_plotting_df$name <- factor(OE_TTS_plotting_df$name, levels = c("OE_NHS", "OE_HS"))
+ctl_TTS_plotting_df <- pivot_longer(TTS_plotting_df[c(1:3)], cols =2:3)
+ctl_TTS_plotting_df$name <- factor(ctl_TTS_plotting_df$name, levels = c("ctl_NHS", "ctl_HS"))
+
+```
+
+
+```{r TTS plots}
+###defining plot histogram function###
+plot_fun_sized_hist_function_4sU <- function(hist_df, plot_title=NULL, subt = NULL, color_me=c("#94c5e0", "#2c79a3")){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs(subtitle = subt, x= "", y="Read Count") +
+    ggtitle(plot_title) +
+    scale_x_continuous(labels=c("3'end", "", "", "", "+20kb"))+
+    #scale_y_continuous(breaks = c(0,0.5,1))+ 
+    #coord_cartesian(ylim=c(0, 1.2))+
+    theme(axis.title.y = element_text(size = 13), axis.text = element_text(size = 13), #change axis label size
+          legend.position = c(0.8, 0.8), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 30, 10, 10),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold"),   #change size of title
+          plot.subtitle = element_text(size = 12)) +             #change size of subtitle
+    scale_color_manual(values=color_me) #colors match browser tracks now
+}
+
+
+
+
+## OE and ctl separate, not norm
+c <- plot_fun_sized_hist_function_4sU(ctl_TTS_plotting_df, plot_title = "Control", subt = "All Analyzable Genes") 
+c
+
+jpeg("04_analysis/TTS_hist/figures/ctl_TTS_hist.jpeg", width=2.75, height=2.5, units="in", res=300)
+print(c)
+dev.off()
+
+
+oe <- plot_fun_sized_hist_function_4sU(OE_TTS_plotting_df, plot_title = "RBBP6 OE", subt = "All Analyzable Genes") 
+oe
+
+jpeg("04_analysis/TTS_hist/figures/OE_TTS_hist.jpeg", width=2.75, height=2.5, units="in", res=300)
+print(oe)
+dev.off()
+
+```
+
+```{r norm to TTS}
+#norm first
+TTS_plotting_df_norm <- data.frame(distance_from_TTS = TTS_plotting_df$distance_from_TTS,
+                                   ctl_NHS = TTS_plotting_df$ctl_NHS / mean(TTS_plotting_df$ctl_NHS[c(1:5)]),
+                                   ctl_HS = TTS_plotting_df$ctl_HS / mean(TTS_plotting_df$ctl_HS[c(1:5)]),
+                                   OE_NHS = TTS_plotting_df$OE_NHS / mean(TTS_plotting_df$OE_NHS[c(1:5)]),
+                                   OE_HS = TTS_plotting_df$OE_HS / mean(TTS_plotting_df$OE_HS[c(1:5)])
+                                   )
+
+#pivot longer so R can plot it
+OE_TTS_plotting_df_norm <- pivot_longer(TTS_plotting_df_norm[c(1,4,5)], cols =2:3)
+OE_TTS_plotting_df_norm$name <- factor(OE_TTS_plotting_df_norm$name, levels = c("OE_NHS", "OE_HS"))
+ctl_TTS_plotting_df_norm <- pivot_longer(TTS_plotting_df_norm[c(1:3)], cols =2:3)
+ctl_TTS_plotting_df_norm$name <- factor(ctl_TTS_plotting_df_norm$name, levels = c("ctl_NHS", "ctl_HS"))
+
+## setup for norm data
+plot_fun_sized_hist_function_4sU <- function(hist_df, plot_title=NULL, subt = NULL, color_me=c("#94c5e0", "#2c79a3")){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs(subtitle = subt, x= "", y="Norm Read Count") +
+    ggtitle(plot_title) +
+    scale_x_continuous(labels=c("3'end", "", "", "", "+20kb"))+
+    scale_y_continuous(breaks = c(0,0.5,1))+ 
+    coord_cartesian(ylim=c(0, 1.1))+
+    theme(axis.title.y = element_text(size = 13), axis.text = element_text(size = 13), #change axis label size
+          legend.position = c(0.8, 0.8), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 30, 10, 10),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold"),   #change size of title
+          plot.subtitle = element_text(size = 12)) +             #change size of subtitle
+    scale_color_manual(values=color_me) #colors match browser tracks now
+}
+
+
+## OE and ctl separate, norm
+c <- plot_fun_sized_hist_function_4sU(ctl_TTS_plotting_df_norm, plot_title = "Control", subt = "All Analyzable Genes") 
+c
+
+jpeg("04_analysis/TTS_hist/figures/ctl_TTS_hist_norm.jpeg", width=2.75, height=2.5, units="in", res=300)
+print(c)
+dev.off()
+
+
+oe <- plot_fun_sized_hist_function_4sU(OE_TTS_plotting_df_norm, plot_title = "RBBP6 OE", subt = "All Analyzable Genes") 
+oe
+
+jpeg("04_analysis/TTS_hist/figures/OE_TTS_hist_norm.jpeg", width=2.75, height=2.5, units="in", res=300)
+print(oe)
+dev.off()
+```
+
+
+very small difference...
+can we make TTS plots with a more specific gene list...
+  RT genes?
+  "RBBP6 sensitive" genes? (find genes with improved cleavage after OE in HS conditions?)
+  subtract OE from ctl? (HS only)
+
+TTS hist: subtract norm OE HS from norm ctl HS, same for NHS 
+```{r subtraction TTS}
+TTS_plotting_df_norm <- data.frame(distance_from_TTS = TTS_plotting_df$distance_from_TTS,
+                                   ctl_NHS = TTS_plotting_df$ctl_NHS / mean(TTS_plotting_df$ctl_NHS[c(1:5)]),
+                                   ctl_HS = TTS_plotting_df$ctl_HS / mean(TTS_plotting_df$ctl_HS[c(1:5)]),
+                                   OE_NHS = TTS_plotting_df$OE_NHS / mean(TTS_plotting_df$OE_NHS[c(1:5)]),
+                                   OE_HS = TTS_plotting_df$OE_HS / mean(TTS_plotting_df$OE_HS[c(1:5)])
+                                   )
+
+TTS_plotting_df_subt <- data.frame(distance_from_TTS = TTS_plotting_df_norm$distance_from_TTS,
+                                   NHS = TTS_plotting_df_norm$OE_NHS - TTS_plotting_df_norm$ctl_NHS,
+                                   HS= TTS_plotting_df_norm$OE_HS - TTS_plotting_df_norm$ctl_HS
+                                   )
+
+TTS_plotting_df_subt <- pivot_longer(TTS_plotting_df_subt, cols =2:3)
+TTS_plotting_df_subt$name <- factor(TTS_plotting_df_subt$name, levels = c("NHS", "HS"))
+
+
+ggplot(data = TTS_plotting_df_subt, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs(subtitle = "subt", x= "", y="Subtracted Norm Read Count") +
+    ggtitle("plot_title") +
+    scale_x_continuous(labels=c("3'end", "", "", "", "+20kb"))+
+    #scale_y_continuous(breaks = c(0,0.5,1))+ 
+    #coord_cartesian(ylim=c(0, 1.1))+
+    theme(axis.title.y = element_text(size = 13), axis.text = element_text(size = 13), #change axis label size
+          legend.position = c(0.8, 0.8), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 30, 10, 10),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold"),   #change size of title
+          plot.subtitle = element_text(size = 12)) +             #change size of subtitle
+    scale_color_manual(values=c("#94c5e0", "#2c79a3")) 
+
+## that's really hard to read / conceptualize...
+
+
+```
+
+
+
+
+
+TTS hist: all uncleaved genes
+  threshold set to ctl FC > 2 (cleaved cat)
+  Question: do genes with cleavage defects have better cleavage after RBBP6 OE?
+  
+```{r make TTS bed for uncleaved gene list}
+TTS_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/TTS_all_genes_no_long_RT_expressed_genes.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+FC_df <- read.table("04_analysis/uncleaved_reads/FC_uncleaved_reads_gene_norm.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+#make TTS bed for uncleaved genes
+t <- filter(FC_df, FC_df$ctl_uncleaved_cat == "increased")
+uncleaved_TTS_bed <- filter(TTS_bed, TTS_bed$V4 %in% t$transcriptID)
+
+write_delim(uncleaved_TTS_bed, "04_analysis/TTS_hist/annotation_bed_files/Uncleaved_genes_TTS.bed", delim = "\t", col_names = TRUE)
+
+```
+
+
+homer hist
+
+    bash script 04c_uncleaved_genes_TTS_hist.sh
+
+
+
+```{r uncleaved: read in data}
+fl_uc <- list.files("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/TTS_hist/uncleaved_hist_output", 
+                  full.names = TRUE)
+ls_uc <- lapply(fl_uc, read.table, header=TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ls_uc) <- gsub("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/TTS_hist/uncleaved_hist_output/|_TTS_hist.tsv", "", fl_uc)
+
+#rename obnoxiously long homer default col names
+i=1
+while(i<=length(ls_uc)){
+  names(ls_uc[[i]]) <- c("distance_from_TTS", "coverage", "sense_tags", "antisense_tags")
+  i=i+1
+}
+
+
+uc_TTS_plotting_df <- data.frame(distance_from_TTS = ls_uc$ctl_NHS_rep1$distance_from_TTS,
+                              ctl_NHS = (ls_uc$ctl_NHS_rep1$coverage + ls_uc$ctl_NHS_rep2$coverage )/2,
+                              ctl_HS = (ls_uc$ctl_HS_rep1$coverage + ls_uc$ctl_HS_rep2$coverage )/2,
+                              OE_NHS = (ls_uc$OE_NHS_rep1$coverage + ls_uc$OE_NHS_rep2$coverage )/2,
+                              OE_HS = (ls_uc$OE_HS_rep1$coverage + ls_uc$OE_HS_rep2$coverage )/2
+                                     )
+#trim off -20kb so window is -1kb to +20kb
+uc_TTS_plotting_df <- filter(uc_TTS_plotting_df, uc_TTS_plotting_df$distance_from_TTS >= -1000)
+uc_TTS_plotting_df <- filter(uc_TTS_plotting_df, uc_TTS_plotting_df$distance_from_TTS < 20000) #take off last bin since that can look like a sharp increase due to ds genes
+
+#save
+write_delim(uc_TTS_plotting_df, "04_analysis/TTS_hist/uncleaved_OE_TTS_hist_df.tsv", delim = "\t", col_names = TRUE)
+
+#pivot longer so R can plot it
+OE_TTS_plotting_df <- pivot_longer(uc_TTS_plotting_df[c(1,4,5)], cols =2:3)
+OE_TTS_plotting_df$name <- factor(OE_TTS_plotting_df$name, levels = c("OE_NHS", "OE_HS"))
+ctl_TTS_plotting_df <- pivot_longer(uc_TTS_plotting_df[c(1:3)], cols =2:3)
+ctl_TTS_plotting_df$name <- factor(ctl_TTS_plotting_df$name, levels = c("ctl_NHS", "ctl_HS"))
+
+```
+  
+```{r uncleaved: TTS plots}
+###defining plot histogram function###
+plot_fun_sized_hist_function_4sU <- function(hist_df, plot_title=NULL, subt = NULL, color_me=c("#94c5e0", "#2c79a3")){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs(subtitle = subt, x= "", y="Read Count") +
+    ggtitle(plot_title) +
+    scale_x_continuous(labels=c("3'end", "", "", "", "+20kb"))+
+    #scale_y_continuous(breaks = c(0,0.5,1))+ 
+    #coord_cartesian(ylim=c(0, 1.2))+
+    theme(axis.title.y = element_text(size = 13), axis.text = element_text(size = 13), #change axis label size
+          legend.position = c(0.8, 0.8), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 30, 10, 10),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold"),   #change size of title
+          plot.subtitle = element_text(size = 12)) +             #change size of subtitle
+    scale_color_manual(values=color_me) #colors match browser tracks now
+}
+
+
+
+
+## OE and ctl separate, not norm
+c <- plot_fun_sized_hist_function_4sU(ctl_TTS_plotting_df, plot_title = "Control", subt = "Cleavage Defect Genes") 
+c
+
+jpeg("04_analysis/TTS_hist/figures/UC_ctl_TTS_hist.jpeg", width=2.75, height=2.5, units="in", res=300)
+print(c)
+dev.off()
+
+
+oe <- plot_fun_sized_hist_function_4sU(OE_TTS_plotting_df, plot_title = "RBBP6 OE", subt = "Cleavage Defect Genes") 
+oe
+
+jpeg("04_analysis/TTS_hist/figures/UC_OE_TTS_hist.jpeg", width=2.75, height=2.5, units="in", res=300)
+print(oe)
+dev.off()
+
+```  
+  
+```{r uncleaved: norm to TTS}
+#norm first
+TTS_plotting_df_norm <- data.frame(distance_from_TTS = uc_TTS_plotting_df$distance_from_TTS,
+                                   ctl_NHS = uc_TTS_plotting_df$ctl_NHS / mean(uc_TTS_plotting_df$ctl_NHS[c(1:5)]),
+                                   ctl_HS = uc_TTS_plotting_df$ctl_HS / mean(uc_TTS_plotting_df$ctl_HS[c(1:5)]),
+                                   OE_NHS = uc_TTS_plotting_df$OE_NHS / mean(uc_TTS_plotting_df$OE_NHS[c(1:5)]),
+                                   OE_HS = uc_TTS_plotting_df$OE_HS / mean(uc_TTS_plotting_df$OE_HS[c(1:5)])
+                                   )
+
+#pivot longer so R can plot it
+OE_TTS_plotting_df_norm <- pivot_longer(TTS_plotting_df_norm[c(1,4,5)], cols =2:3)
+OE_TTS_plotting_df_norm$name <- factor(OE_TTS_plotting_df_norm$name, levels = c("OE_NHS", "OE_HS"))
+ctl_TTS_plotting_df_norm <- pivot_longer(TTS_plotting_df_norm[c(1:3)], cols =2:3)
+ctl_TTS_plotting_df_norm$name <- factor(ctl_TTS_plotting_df_norm$name, levels = c("ctl_NHS", "ctl_HS"))
+
+## setup for norm data
+plot_fun_sized_hist_function_4sU <- function(hist_df, plot_title=NULL, subt = NULL, color_me=c("#94c5e0", "#2c79a3")){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs(subtitle = subt, x= "", y="Norm Read Count") +
+    ggtitle(plot_title) +
+    scale_x_continuous(labels=c("3'end", "", "", "", "+20kb"))+
+    scale_y_continuous(breaks = c(0,0.5,1))+ 
+    coord_cartesian(ylim=c(0, 1.1))+
+    theme(axis.title.y = element_text(size = 13), axis.text = element_text(size = 13), #change axis label size
+          legend.position = c(0.8, 0.8), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 30, 10, 10),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold"),   #change size of title
+          plot.subtitle = element_text(size = 12)) +             #change size of subtitle
+    scale_color_manual(values=color_me) #colors match browser tracks now
+}
+
+
+## OE and ctl separate, norm
+c <- plot_fun_sized_hist_function_4sU(ctl_TTS_plotting_df_norm, plot_title = "Control", subt = "Cleavage Defect Genes") 
+c
+
+jpeg("04_analysis/TTS_hist/figures/UC_ctl_TTS_hist_norm.jpeg", width=2.75, height=2.5, units="in", res=300)
+print(c)
+dev.off()
+
+
+oe <- plot_fun_sized_hist_function_4sU(OE_TTS_plotting_df_norm, plot_title = "RBBP6 OE", subt = "Cleavage Defect Genes") 
+oe
+
+jpeg("04_analysis/TTS_hist/figures/UC_OE_TTS_hist_norm.jpeg", width=2.75, height=2.5, units="in", res=300)
+print(oe)
+dev.off()
+```
+
+```{r uncleaved: plot both ctl and OE on same plot}
+
+p <- ggplot( )+
+    geom_line(data = ctl_TTS_plotting_df_norm, aes(x=distance_from_TTS, y=value, group=name, color=name), size=1.25, alpha=0.5) +
+    geom_line(data = OE_TTS_plotting_df_norm, aes(x=distance_from_TTS, y=value, group=name, color=name), size=1.25, alpha=0.6) +
+      #used two geom_line so I could change line type for just ctl or just OE but ended up using mostly the same settings anyway
+    labs(subtitle = "RBBP6 Sensitive Genes", x= "", y="Norm Read Count") +
+    #ggtitle("") +
+    scale_x_continuous(labels=c("3'end", "", "", "", "+20kb"))+
+    scale_y_continuous(breaks = c(0,0.5,1))+ 
+    coord_cartesian(ylim=c(0, 1.1))+
+    theme(axis.title.y = element_text(size = 13), axis.text = element_text(size = 13), #change axis label size
+          legend.position = c(0.75, 0.75), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 30, 10, 10),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold"),   #change size of title
+          plot.subtitle = element_text(size = 12)) +             #change size of subtitle
+    scale_color_manual(values=c("gray20", "gray50", "#1e5b7d", "#6799b5")) 
+
+jpeg("04_analysis/TTS_hist/figures/UC_combo_TTS_hist_norm.jpeg", width=2.75, height=2.5, units="in", res=300)
+print(p)
+dev.off()
+
+```  
+  
+  
+  
+TTS hist: uncleaved genes that are RBBP6 sensitive
+  (Do genes that have better cleavage after RBBP6 OE also have less RT?)
+```{r make TTS bed for UC sensitive gene list}
+TTS_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/TTS_all_genes_no_long_RT_expressed_genes.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+FC_df <- read.table("04_analysis/uncleaved_reads/FC_uncleaved_reads_gene_norm.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+#make TTS bed for uncleaved genes
+t <- filter(FC_df, FC_df$ctl_uncleaved_cat == "increased" & FC_df$RBBP6_sensitive == "sensitive") #512 genes (25% of uncleaved genes)
+sensitive_TTS_bed <- filter(TTS_bed, TTS_bed$V4 %in% t$transcriptID) #kept 495 genes
+
+write_delim(sensitive_TTS_bed, "04_analysis/TTS_hist/annotation_bed_files/Sensitive_Uncleaved_genes_TTS.bed", delim = "\t", col_names = TRUE)
+
+```
+
+homer hist
+
+    bash script 04c_sensitive_genes_TTS_hist.sh
+
+  
+```{r sensitive: read in data}
+fl_sn <- list.files("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/TTS_hist/sensitive_hist_output", 
+                  full.names = TRUE)
+ls_sn <- lapply(fl_sn, read.table, header=TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ls_sn) <- gsub("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/TTS_hist/sensitive_hist_output/|_TTS_hist.tsv", "", fl_sn)
+
+#rename obnoxiously long homer default col names
+i=1
+while(i<=length(ls_sn)){
+  names(ls_sn[[i]]) <- c("distance_from_TTS", "coverage", "sense_tags", "antisense_tags")
+  i=i+1
+}
+
+
+sn_TTS_plotting_df <- data.frame(distance_from_TTS = ls_sn$ctl_NHS_rep1$distance_from_TTS,
+                              ctl_NHS = (ls_sn$ctl_NHS_rep1$coverage + ls_sn$ctl_NHS_rep2$coverage )/2,
+                              ctl_HS = (ls_sn$ctl_HS_rep1$coverage + ls_sn$ctl_HS_rep2$coverage )/2,
+                              OE_NHS = (ls_sn$OE_NHS_rep1$coverage + ls_sn$OE_NHS_rep2$coverage )/2,
+                              OE_HS = (ls_sn$OE_HS_rep1$coverage + ls_sn$OE_HS_rep2$coverage )/2
+                                     )
+#trim off -20kb so window is -1kb to +20kb
+sn_TTS_plotting_df <- filter(sn_TTS_plotting_df, sn_TTS_plotting_df$distance_from_TTS >= -1000)
+sn_TTS_plotting_df <- filter(sn_TTS_plotting_df, sn_TTS_plotting_df$distance_from_TTS < 20000) #take off last bin since that can look like a sharp increase due to ds genes
+
+#save
+write_delim(sn_TTS_plotting_df, "04_analysis/TTS_hist/sensitive_uncleaved_OE_TTS_hist_df.tsv", delim = "\t", col_names = TRUE)
+
+#pivot longer so R can plot it
+OE_TTS_plotting_df <- pivot_longer(sn_TTS_plotting_df[c(1,4,5)], cols =2:3)
+OE_TTS_plotting_df$name <- factor(OE_TTS_plotting_df$name, levels = c("OE_NHS", "OE_HS"))
+ctl_TTS_plotting_df <- pivot_longer(sn_TTS_plotting_df[c(1:3)], cols =2:3)
+ctl_TTS_plotting_df$name <- factor(ctl_TTS_plotting_df$name, levels = c("ctl_NHS", "ctl_HS"))
+
+```
+
+```{r sensitive: TTS plots}
+###defining plot histogram function###
+plot_fun_sized_hist_function_4sU <- function(hist_df, plot_title=NULL, subt = NULL, color_me=c("#94c5e0", "#2c79a3")){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs(subtitle = subt, x= "", y="Read Count") +
+    ggtitle(plot_title) +
+    scale_x_continuous(labels=c("3'end", "", "", "", "+20kb"))+
+    #scale_y_continuous(breaks = c(0,0.5,1))+ 
+    #coord_cartesian(ylim=c(0, 1.2))+
+    theme(axis.title.y = element_text(size = 13), axis.text = element_text(size = 13), #change axis label size
+          legend.position = c(0.8, 0.8), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 30, 10, 10),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold"),   #change size of title
+          plot.subtitle = element_text(size = 12)) +             #change size of subtitle
+    scale_color_manual(values=color_me) #colors match browser tracks now
+}
+
+
+
+
+## OE and ctl separate, not norm
+c <- plot_fun_sized_hist_function_4sU(ctl_TTS_plotting_df, plot_title = "Control", subt = "RBBP6 Sensitive Genes") 
+c
+
+jpeg("04_analysis/TTS_hist/figures/sensitive_UC_ctl_TTS_hist.jpeg", width=2.75, height=2.5, units="in", res=300)
+print(c)
+dev.off()
+
+
+oe <- plot_fun_sized_hist_function_4sU(OE_TTS_plotting_df, plot_title = "RBBP6 OE", subt = "RBBP6 Sensitive Genes") 
+oe
+
+jpeg("04_analysis/TTS_hist/figures/sensitive_UC_OE_TTS_hist.jpeg", width=2.75, height=2.5, units="in", res=300)
+print(oe)
+dev.off()
+
+```  
+  
+```{r sensitive: norm to TTS}
+#norm first
+TTS_plotting_df_norm <- data.frame(distance_from_TTS = sn_TTS_plotting_df$distance_from_TTS,
+                                   ctl_NHS = sn_TTS_plotting_df$ctl_NHS / mean(sn_TTS_plotting_df$ctl_NHS[c(1:5)]),
+                                   ctl_HS = sn_TTS_plotting_df$ctl_HS / mean(sn_TTS_plotting_df$ctl_HS[c(1:5)]),
+                                   OE_NHS = sn_TTS_plotting_df$OE_NHS / mean(sn_TTS_plotting_df$OE_NHS[c(1:5)]),
+                                   OE_HS = sn_TTS_plotting_df$OE_HS / mean(sn_TTS_plotting_df$OE_HS[c(1:5)])
+                                   )
+colnames(TTS_plotting_df_norm) <- c("distance_from_TTS", "ctl NHS", "ctl HS", "OE NHS" ,"OE HS" )
+
+#pivot longer so R can plot it
+OE_TTS_plotting_df_norm <- pivot_longer(TTS_plotting_df_norm[c(1,4,5)], cols =2:3)
+OE_TTS_plotting_df_norm$name <- factor(OE_TTS_plotting_df_norm$name, levels = c("OE NHS", "OE HS"))
+ctl_TTS_plotting_df_norm <- pivot_longer(TTS_plotting_df_norm[c(1:3)], cols =2:3)
+ctl_TTS_plotting_df_norm$name <- factor(ctl_TTS_plotting_df_norm$name, levels = c("ctl NHS", "ctl HS"))
+
+## setup for norm data
+plot_fun_sized_hist_function_4sU <- function(hist_df, plot_title=NULL, subt = NULL, color_me=c("#94c5e0", "#2c79a3")){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs(subtitle = subt, x= "", y="Norm Read Count") +
+    ggtitle(plot_title) +
+    scale_x_continuous(labels=c("3'end", "", "", "", "+20kb"))+
+    scale_y_continuous(breaks = c(0,0.5,1))+ 
+    coord_cartesian(ylim=c(0, 1.1))+
+    theme(axis.title.y = element_text(size = 13), axis.text = element_text(size = 13), #change axis label size
+          legend.position = c(0.8, 0.8), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 30, 10, 10),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold"),   #change size of title
+          plot.subtitle = element_text(size = 12)) +             #change size of subtitle
+    scale_color_manual(values=color_me) #colors match browser tracks now
+}
+
+
+## OE and ctl separate, norm
+c <- plot_fun_sized_hist_function_4sU(ctl_TTS_plotting_df_norm, plot_title = "Control", subt = "RBBP6 Sensitive Genes") 
+c
+
+jpeg("04_analysis/TTS_hist/figures/UC_ctl_TTS_hist_norm.jpeg", width=2.75, height=2.5, units="in", res=300)
+print(c)
+dev.off()
+
+
+oe <- plot_fun_sized_hist_function_4sU(OE_TTS_plotting_df_norm, plot_title = "RBBP6 OE", subt = "RBBP6 Sensitive Genes") 
+oe
+
+jpeg("04_analysis/TTS_hist/figures/UC_OE_TTS_hist_norm.jpeg", width=2.75, height=2.5, units="in", res=300)
+print(oe)
+dev.off()
+```
+ 
+```{r sensitive: plot both ctl and OE on same plot}
+
+p <- ggplot( )+
+    geom_line(data = ctl_TTS_plotting_df_norm, aes(x=distance_from_TTS, y=value, group=name, color=name), size=1.25, alpha=0.5) +
+    geom_line(data = OE_TTS_plotting_df_norm, aes(x=distance_from_TTS, y=value, group=name, color=name), size=1.25, alpha=0.6) +
+      #used two geom_line so I could change line type for just ctl or just OE but ended up using mostly the same settings anyway
+    labs(subtitle = "RBBP6 Sensitive Genes", x= "", y="Norm Read Count") +
+    #ggtitle("") +
+    scale_x_continuous(labels=c("3'end", "", "", "", "+20kb"))+
+    scale_y_continuous(breaks = c(0,0.5,1))+ 
+    coord_cartesian(ylim=c(0, 1.1))+
+    theme(axis.title.y = element_text(size = 13), axis.text = element_text(size = 13), #change axis label size
+          legend.position = c(0.75, 0.75), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 30, 10, 10),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold"),   #change size of title
+          plot.subtitle = element_text(size = 12)) +             #change size of subtitle
+    scale_color_manual(values=c("gray20", "gray50", "#1e5b7d", "#6799b5")) 
+
+jpeg("04_analysis/TTS_hist/figures/sensitive_UC_combo_TTS_hist_norm.jpeg", width=2.75, height=2.5, units="in", res=300)
+print(p)
+dev.off()
+
+```
+  
+  
+  
+  
+
+B. Uncleaved reads
+--------------------
+  counted uncleaved reads in 04b RMD, plotting here
+```{r read in data}
+norm_FC_df <- read.table("04_analysis/uncleaved_reads/FC_uncleaved_reads_gene_norm.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+```
+
+```{r boxplot: uncleaved reads ctl and OE, all genes}
+UC_FC_plotting_df <- norm_FC_df[c(1:3)]
+colnames(UC_FC_plotting_df) <- c("transcriptID", "ctl", "OE")
+UC_FC_plotting_df <- pivot_longer(UC_FC_plotting_df, cols =2:3)
+UC_FC_plotting_df$name <- factor(UC_FC_plotting_df$name, levels = c("ctl", "OE"))
+
+
+p <- ggplot(UC_FC_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,6)) +
+  geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Uncleaved RNA\nFC after HS") +
+  labs(title = "All Analyzable Genes") +
+  theme(plot.title = element_text(size = 13, hjust=0.9), #hjust specific for saved file           #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 20),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#94c5e0", "#2c79a3")) + #box colors
+  annotate("text", x=1.5, y=6, label= "ns", colour = "gray40", size = 4) + #add * above boxplot
+    annotate("segment", x = 1, xend = 2, y = 5.8, yend = 5.8, colour = "gray40")
+
+
+jpeg("04_analysis/uncleaved_reads/figures/uncleaved_reads_all_genes_boxplot.jpeg", width=2, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+?wilcox.test
+#stats
+#ctl vs OE
+res <- wilcox.test(as.numeric(norm_FC_df$ctl_HS_FC), as.numeric(norm_FC_df$OE_HS_FC) )
+res$p.value #0.001911559 **
+##boxplot filters out non finite values, stats to match
+r <- filter(norm_FC_df, is.finite(norm_FC_df$ctl_HS_FC) & is.finite(norm_FC_df$OE_HS_FC))
+res <- wilcox.test(as.numeric(r$ctl_HS_FC), as.numeric(r$OE_HS_FC) )
+res$p.value #0.52545 ns
+
+```
+
+
+```{r boxplot: uncleaved reads ctl and OE, uncleaved genes}
+t <- filter(norm_FC_df, norm_FC_df$ctl_uncleaved_cat == "increased")
+UC_FC_plotting_df <- t[c(1:3)]
+colnames(UC_FC_plotting_df) <- c("transcriptID", "ctl", "OE")
+UC_FC_plotting_df <- pivot_longer(UC_FC_plotting_df, cols =2:3)
+UC_FC_plotting_df$name <- factor(UC_FC_plotting_df$name, levels = c("ctl", "OE"))
+
+
+p <- ggplot(UC_FC_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,8)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Uncleaved RNA\nFC after HS") +
+  labs(title = "Cleavage Defect Genes") +
+  theme(plot.title = element_text(size = 13, hjust=0.95), #hjust specific for saved file           #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#94c5e0", "#2c79a3")) + #box colors
+  annotate("text", x=1.5, y=8, label= "****", colour = "gray40", size = 6) + #add * above boxplot
+    annotate("segment", x = 1, xend = 2, y = 8, yend = 8, colour = "gray40")
+
+
+jpeg("04_analysis/uncleaved_reads/figures/uncleaved_reads_UC_genes_boxplot_no_dashed_line.jpeg", width=2.2, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+#stats
+#ctl vs OE
+res <- wilcox.test(as.numeric(t$ctl_HS_FC), as.numeric(t$OE_HS_FC) )
+res$p.value #5.754102e-181 ****
+##boxplot filters out non finite values, stats to match
+r <- filter(t, is.finite(t$ctl_HS_FC) & is.finite(t$OE_HS_FC))
+res <- wilcox.test(as.numeric(r$ctl_HS_FC), as.numeric(r$OE_HS_FC) )
+res$p.value #1.339812e-118 ****
+
+```
+```{r 1.5 FC boxplot: uncleaved reads ctl and OE, uncleaved genes}
+t <- filter(norm_FC_df, norm_FC_df$ctl_uncleaved_cat_1p5 == "increased")
+UC_FC_plotting_df <- t[c(1:3)]
+colnames(UC_FC_plotting_df) <- c("transcriptID", "ctl", "OE")
+UC_FC_plotting_df <- pivot_longer(UC_FC_plotting_df, cols =2:3)
+UC_FC_plotting_df$name <- factor(UC_FC_plotting_df$name, levels = c("ctl", "OE"))
+
+
+p <- ggplot(UC_FC_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,8)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Uncleaved RNA\nFC after HS") +
+  labs(title = "Cleavage Defect Genes") +
+  theme(plot.title = element_text(size = 13, hjust=0.95), #hjust specific for saved file           #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#94c5e0", "#2c79a3")) + #box colors
+  annotate("text", x=1.5, y=8, label= "****", colour = "gray40", size = 6) + #add * above boxplot
+    annotate("segment", x = 1, xend = 2, y = 8, yend = 8, colour = "gray40")
+
+
+jpeg("04_analysis/uncleaved_reads/figures/uncleaved_reads_UC_genes_boxplot_no_dashed_line_1p5FC.jpeg", width=2.2, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+#stats
+#ctl vs OE
+res <- wilcox.test(as.numeric(t$ctl_HS_FC), as.numeric(t$OE_HS_FC) )
+res$p.value #3.581207e-140 ****
+##boxplot filters out non finite values, stats to match
+r <- filter(t, is.finite(t$ctl_HS_FC) & is.finite(t$OE_HS_FC))
+res <- wilcox.test(as.numeric(r$ctl_HS_FC), as.numeric(r$OE_HS_FC) )
+res$p.value #8.75841e-85 ****
+
+```
+
+
+
+C. downstream reads
+--------------------
+  use bedtools to count reads 20kb ds (all genes, filter after)
+  
+    bash script 04d
+
+```{r read-in data}
+fl_ds <- list.files("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/ds_counts/bedtools_outputs/20kb_ds_counts", 
+                  full.names = TRUE)
+ls_ds <- lapply(fl_ds, read.table, header=FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ls_ds) <- gsub("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/ds_counts/bedtools_outputs/20kb_ds_counts/|_20kb_ds_counts.bed", "", fl_ds)
+
+#check gene IDs are all the same
+table( ls_ds$ctl_NHS_rep1$V4 == ls_ds$OE_NHS_rep2$V4) #all true, can just put data cols into same df
+
+norm_factors_df <- read.table("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/documentation/mapped_reads_for_norm.txt", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#mapped reads * factor = 50M reads
+norm_factors_df$factor <- 50000000 / norm_factors_df$aligned_concordantly_1_time
+ds_norm_counts_df <- data.frame(transcriptID = ls_ds$ctl_NHS_rep1$V4,
+                        ctl_NHS_R1 = ls_ds$ctl_NHS_rep1$V13 * norm_factors_df$factor[1],
+                        ctl_NHS_R2 = ls_ds$ctl_NHS_rep2$V13 * norm_factors_df$factor[2],
+                        ctl_HS_R1 = ls_ds$ctl_HS_rep1$V13 * norm_factors_df$factor[3],
+                        ctl_HS_R2 = ls_ds$ctl_HS_rep2$V13 * norm_factors_df$factor[4],
+                        OE_NHS_R1 = ls_ds$OE_NHS_rep1$V13 * norm_factors_df$factor[5],
+                        OE_NHS_R2 = ls_ds$OE_NHS_rep2$V13 * norm_factors_df$factor[6],
+                        OE_HS_R1 = ls_ds$OE_HS_rep1$V13 * norm_factors_df$factor[7],
+                        OE_HS_R2 = ls_ds$OE_HS_rep2$V13 * norm_factors_df$factor[8] 
+                        )
+
+ds_counts_df <- data.frame(transcriptID = ds_norm_counts_df$transcriptID,
+                           ctl_NHS = (ds_norm_counts_df$ctl_NHS_R1 + ds_norm_counts_df$ctl_NHS_R2) /2,
+                           ctl_HS = (ds_norm_counts_df$ctl_HS_R1 + ds_norm_counts_df$ctl_HS_R2) /2,
+                           OE_NHS = (ds_norm_counts_df$OE_NHS_R1 + ds_norm_counts_df$OE_NHS_R2) /2,
+                           OE_HS = (ds_norm_counts_df$OE_HS_R1 + ds_norm_counts_df$OE_HS_R2) /2
+                           )
+write_delim(ds_counts_df, "04_analysis/ds_counts/ds_20kb_counts.tsv", delim = "\t", col_names = TRUE)
+
+
+#gene
+fl_g <- list.files("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/ds_counts/bedtools_outputs/gene_counts", 
+                  full.names = TRUE)
+ls_g <- lapply(fl_g, read.table, header=FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ls_g) <- gsub("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/ds_counts/bedtools_outputs/gene_counts/|_gene_counts.bed", "", fl_g)
+#check gene IDs are all the same
+table( ls_g$ctl_NHS_rep1$V4 == ls_g$OE_NHS_rep2$V4) #all true, can just put data cols into same df
+gene_norm_counts_df <- data.frame(transcriptID = ls_g$ctl_NHS_rep1$V4,
+                        ctl_NHS_R1 = ls_g$ctl_NHS_rep1$V7 * norm_factors_df$factor[1],
+                        ctl_NHS_R2 = ls_g$ctl_NHS_rep2$V7 * norm_factors_df$factor[2],
+                        ctl_HS_R1 = ls_g$ctl_HS_rep1$V7 * norm_factors_df$factor[3],
+                        ctl_HS_R2 = ls_g$ctl_HS_rep2$V7 * norm_factors_df$factor[4],
+                        OE_NHS_R1 = ls_g$OE_NHS_rep1$V7 * norm_factors_df$factor[5],
+                        OE_NHS_R2 = ls_g$OE_NHS_rep2$V7 * norm_factors_df$factor[6],
+                        OE_HS_R1 = ls_g$OE_HS_rep1$V7 * norm_factors_df$factor[7],
+                        OE_HS_R2 = ls_g$OE_HS_rep2$V7 * norm_factors_df$factor[8] 
+                        )
+gene_counts_df <- data.frame(transcriptID = gene_norm_counts_df$transcriptID,
+                           ctl_NHS = (gene_norm_counts_df$ctl_NHS_R1 + gene_norm_counts_df$ctl_NHS_R2) /2,
+                           ctl_HS = (gene_norm_counts_df$ctl_HS_R1 + gene_norm_counts_df$ctl_HS_R2) /2,
+                           OE_NHS = (gene_norm_counts_df$OE_NHS_R1 + gene_norm_counts_df$OE_NHS_R2) /2,
+                           OE_HS = (gene_norm_counts_df$OE_HS_R1 + gene_norm_counts_df$OE_HS_R2) /2
+                           )
+write_delim(gene_counts_df, "04_analysis/ds_counts/whole_gene_counts.tsv", delim = "\t", col_names = TRUE)
+
+#gene RPK
+t <- left_join(gene_counts_df, master_df[c(1,19)], by = "transcriptID")
+gene_RPK_df <- data.frame(transcriptID = t$transcriptID,
+                           ctl_NHS = t$ctl_NHS / (t$gene_length / 1000),
+                           ctl_HS = t$ctl_HS / (t$gene_length / 1000),
+                           OE_NHS = t$OE_NHS / (t$gene_length / 1000),
+                           OE_HS = t$OE_HS / (t$gene_length / 1000)
+                          )
+write_delim(gene_RPK_df, "04_analysis/ds_counts/whole_gene_RPK.tsv", delim = "\t", col_names = TRUE)
+
+
+
+#norm 20kb ds counts to gnbd counts
+table(ds_counts_df$transcriptID == gene_RPK_df$transcriptID) #can add directly, don't need to use join
+ds_norm_counts <- data.frame(transcriptID = ds_counts_df$transcriptID,
+                             ctl_NHS = (ds_counts_df$ctl_NHS/20) / gene_RPK_df$ctl_NHS, #RPK / RPK
+                             ctl_HS = (ds_counts_df$ctl_HS/20) / gene_RPK_df$ctl_HS,
+                             OE_NHS = (ds_counts_df$OE_NHS/20) / gene_RPK_df$OE_NHS,
+                             OE_HS = (ds_counts_df$OE_HS/20) / gene_RPK_df$OE_HS
+                             )
+write_delim(ds_norm_counts, "04_analysis/ds_counts/ds_norm_to_gene_counts.tsv", delim = "\t", col_names = TRUE)
+
+#calc FC after HS
+FC_df <- data.frame(transcriptID = ds_counts_df$transcriptID,
+                             ctl = ds_norm_counts$ctl_HS / ds_norm_counts$ctl_NHS,
+                             OE = ds_norm_counts$OE_HS / ds_norm_counts$OE_NHS
+                             )
+write_delim(FC_df, "04_analysis/ds_counts/ds_norm_to_gene_FC.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+```{r boxplot: ds counts, all genes}
+ds_norm_counts <- read.table("04_analysis/ds_counts/ds_norm_to_gene_counts.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+colnames(ds_norm_counts) <- c("transcriptID", "ctl NHS", "ctl HS", "OE NHS", "OE HS")
+ds_norm_counts_plotting <- pivot_longer(ds_norm_counts, cols = 2:5)
+ds_norm_counts_plotting$name <- factor(ds_norm_counts_plotting$name, levels = c("ctl NHS", "ctl HS", "OE NHS", "OE HS"))
+
+
+p <- ggplot(ds_norm_counts_plotting, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,2)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream Reads\nNorm to Gene Counts") +
+  labs(title = "All Analyzable Genes") +
+  theme(plot.title = element_text(size = 13),            #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#94c5e0", "#2c79a3", "#94c5e0", "#2c79a3"))  #box colors
+
+# not super useful
+
+```
+
+```{r boxplot: ds FC, all genes}
+FC_df <- read.table("04_analysis/ds_counts/ds_norm_to_gene_FC.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+FC_plotting_df <- pivot_longer(FC_df, cols =2:3)
+FC_plotting_df$name <- factor(FC_plotting_df$name, levels = c("ctl", "OE"))
+
+
+p <- ggplot(FC_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,20)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream RPK\nFC after HS") +
+  labs(title = "All Analyzable Genes") +
+  theme(plot.title = element_text(size = 13, hjust=0.9),            #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#94c5e0", "#2c79a3")) + #box colors
+  annotate("text", x=1.5, y=20, label= "***", colour = "gray40", size = 6) + #add * above boxplot
+    annotate("segment", x = 1, xend = 2, y =20, yend = 20, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/ds_counts_norm_FC_boxplot.jpeg", width=2.2, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+#stats
+#ctl vs OE
+res <- wilcox.test(as.numeric(FC_df$ctl), as.numeric(FC_df$OE) )
+res$p.value #0.0009954162 ***
+##boxplot filters out non finite values, stats to match
+t <- filter(FC_df, is.finite(FC_df$ctl) & is.finite(FC_df$OE))
+res <- wilcox.test(as.numeric(t$ctl), as.numeric(t$OE) )
+res$p.value # 0.0008113825 ***
+
+```
+
+```{r boxplot: ds FC, cleavage defect genes}
+UC_FC_df <- read.table("04_analysis/uncleaved_reads/FC_uncleaved_reads_gene_norm.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+FC_df <- read.table("04_analysis/ds_counts/ds_norm_to_gene_FC.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+t <- filter(UC_FC_df, UC_FC_df$ctl_uncleaved_cat == "increased")
+t2 <- filter(FC_df, FC_df$transcriptID %in% t$transcriptID)
+FC_plotting_df <- pivot_longer(t2, cols =2:3)
+FC_plotting_df$name <- factor(FC_plotting_df$name, levels = c("ctl", "OE"))
+
+
+p <- ggplot(FC_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,25)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream RPK\nFC after HS") +
+  labs(title = "Cleavage Defect Genes") +
+  theme(plot.title = element_text(size = 13, hjust=0.9),            #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#94c5e0", "#2c79a3")) + #box colors
+  annotate("text", x=1.5, y=25, label= "***", colour = "gray40", size = 6) + #add * above boxplot
+    annotate("segment", x = 1, xend = 2, y = 25, yend = 25, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/cleavage_defect_20kbds_counts_norm_FC_boxplot.jpeg", width=2.2, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+#stats
+#ctl vs OE
+res <- wilcox.test(as.numeric(t2$ctl), as.numeric(t2$OE) )
+res$p.value #0.0006431198 ***
+##boxplot filters out non finite values, stats to match
+r <- filter(t2, is.finite(t2$ctl) & is.finite(t2$OE))
+res <- wilcox.test(as.numeric(r$ctl), as.numeric(r$OE) )
+res$p.value #0.0006368065 ***
+```
+```{r 1.5 FC cutoff boxplot: ds FC, cleavage defect genes}
+UC_FC_df <- read.table("04_analysis/uncleaved_reads/FC_uncleaved_reads_gene_norm.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+FC_df <- read.table("04_analysis/ds_counts/ds_norm_to_gene_FC.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+t <- filter(UC_FC_df, UC_FC_df$ctl_uncleaved_cat_1p5 == "increased")
+t2 <- filter(FC_df, FC_df$transcriptID %in% t$transcriptID)
+FC_plotting_df <- pivot_longer(t2, cols =2:3)
+FC_plotting_df$name <- factor(FC_plotting_df$name, levels = c("ctl", "OE"))
+
+
+p <- ggplot(FC_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,25)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream RPK\nFC after HS") +
+  labs(title = "Cleavage Defect Genes") +
+  theme(plot.title = element_text(size = 13, hjust=0.9),            #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#94c5e0", "#2c79a3")) + #box colors
+  annotate("text", x=1.5, y=25, label= "***", colour = "gray40", size = 6) + #add * above boxplot
+    annotate("segment", x = 1, xend = 2, y = 25, yend = 25, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/cleavage_defect_20kbds_counts_norm_FC_boxplot_1p5FC.jpeg", width=2.2, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+#stats
+#ctl vs OE
+res <- wilcox.test(as.numeric(t2$ctl), as.numeric(t2$OE) )
+res$p.value #0.0005825486 ***
+##boxplot filters out non finite values, stats to match
+r <- filter(t2, is.finite(t2$ctl) & is.finite(t2$OE))
+res <- wilcox.test(as.numeric(r$ctl), as.numeric(r$OE) )
+res$p.value #0.0005780915 ***
+
+
+```
+
+```{r boxplot: ds FC, sensitive genes}
+UC_FC_df <- read.table("04_analysis/uncleaved_reads/FC_uncleaved_reads_gene_norm.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+FC_df <- read.table("04_analysis/ds_counts/ds_norm_to_gene_FC.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+t <- filter(UC_FC_df, UC_FC_df$RBBP6_sensitive == "sensitive" & UC_FC_df$ctl_uncleaved_cat == "increased")
+t2 <- filter(FC_df, FC_df$transcriptID %in% t$transcriptID)
+FC_plotting_df <- pivot_longer(t2, cols =2:3)
+FC_plotting_df$name <- factor(FC_plotting_df$name, levels = c("ctl", "OE"))
+
+
+p <- ggplot(FC_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,25)) +
+  #scale_y_continuous(breaks = c(0, 5, 10, 15, 20, 25)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream Reads\nFC after HS") +
+  labs(title = "RBBP6 Sensitive Genes") +
+  theme(plot.title = element_text(size = 13, hjust=0.9),            #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#94c5e0", "#2c79a3")) + #box colors
+  annotate("text", x=1.5, y=25, label= "*", colour = "gray40", size = 6) + #add * above boxplot
+    annotate("segment", x = 1, xend = 2, y = 25, yend = 25, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/sensitive_20kbds_counts_norm_FC_boxplot.jpeg", width=2.2, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+#stats
+#ctl vs OE
+res <- wilcox.test(as.numeric(t2$ctl), as.numeric(t2$OE) )
+res$p.value #0.01783576 *
+##boxplot filters out non finite values, stats to match
+r <- filter(t2, is.finite(t2$ctl) & is.finite(t2$OE))
+res <- wilcox.test(as.numeric(r$ctl), as.numeric(r$OE) )
+res$p.value #0.01783576 *
+
+```
+```{r 1.5 FC cutoff boxplot: ds FC, sensitive genes}
+UC_FC_df <- read.table("04_analysis/uncleaved_reads/FC_uncleaved_reads_gene_norm.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+FC_df <- read.table("04_analysis/ds_counts/ds_norm_to_gene_FC.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+t <- filter(UC_FC_df, UC_FC_df$RBBP6_sensitive_1p5 == "sensitive" & UC_FC_df$ctl_uncleaved_cat_1p5 == "increased")
+t2 <- filter(FC_df, FC_df$transcriptID %in% t$transcriptID)
+FC_plotting_df <- pivot_longer(t2, cols =2:3)
+FC_plotting_df$name <- factor(FC_plotting_df$name, levels = c("ctl", "OE"))
+
+
+p <- ggplot(FC_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,25)) +
+  #scale_y_continuous(breaks = c(0, 5, 10, 15, 20, 25)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream Reads\nFC after HS") +
+  labs(title = "RBBP6 Sensitive Genes") +
+  theme(plot.title = element_text(size = 13, hjust=0.9),            #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#94c5e0", "#2c79a3")) + #box colors
+  annotate("text", x=1.5, y=25, label= "**", colour = "gray40", size = 6) + #add * above boxplot
+    annotate("segment", x = 1, xend = 2, y = 25, yend = 25, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/sensitive_20kbds_counts_norm_FC_boxplot_1p5FC.jpeg", width=2.2, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+#stats
+#ctl vs OE
+res <- wilcox.test(as.numeric(t2$ctl), as.numeric(t2$OE) )
+res$p.value #0.00653086 **
+##boxplot filters out non finite values, stats to match
+r <- filter(t2, is.finite(t2$ctl) & is.finite(t2$OE))
+res <- wilcox.test(as.numeric(r$ctl), as.numeric(r$OE) )
+res$p.value #0.00653086 **
+
+
+```
+
+
+count 5kb ds
+
+  5kb ds bed file: 07_analysis/07d_read_through_length_and_term_defects/bed_files/ds_5kb_window_stranded_iso_exp_clean_genes.bed
+
+    bash script 04d_5kb_ds_counts.sh
+    
+```{r read-in data}
+fl_ds <- list.files("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/ds_counts/bedtools_outputs/5kb_ds_counts", 
+                  full.names = TRUE)
+ls_ds <- lapply(fl_ds, read.table, header=FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ls_ds) <- gsub("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/ds_counts/bedtools_outputs/5kb_ds_counts/|_5kb_ds_counts.bed", "", fl_ds)
+#check gene IDs are all the same
+table( ls_ds$ctl_NHS_rep1$V4 == ls_ds$OE_NHS_rep2$V4) #all true, can just put data cols into same df
+ds_norm_counts_df <- data.frame(transcriptID = ls_ds$ctl_NHS_rep1$V4,
+                        ctl_NHS_R1 = ls_ds$ctl_NHS_rep1$V7 * norm_factors_df$factor[1],
+                        ctl_NHS_R2 = ls_ds$ctl_NHS_rep2$V7 * norm_factors_df$factor[2],
+                        ctl_HS_R1 = ls_ds$ctl_HS_rep1$V7 * norm_factors_df$factor[3],
+                        ctl_HS_R2 = ls_ds$ctl_HS_rep2$V7 * norm_factors_df$factor[4],
+                        OE_NHS_R1 = ls_ds$OE_NHS_rep1$V7 * norm_factors_df$factor[5],
+                        OE_NHS_R2 = ls_ds$OE_NHS_rep2$V7 * norm_factors_df$factor[6],
+                        OE_HS_R1 = ls_ds$OE_HS_rep1$V7 * norm_factors_df$factor[7],
+                        OE_HS_R2 = ls_ds$OE_HS_rep2$V7 * norm_factors_df$factor[8] 
+                        )
+
+ds_counts_df <- data.frame(transcriptID = ds_norm_counts_df$transcriptID,
+                           ctl_NHS = (ds_norm_counts_df$ctl_NHS_R1 + ds_norm_counts_df$ctl_NHS_R2) /2,
+                           ctl_HS = (ds_norm_counts_df$ctl_HS_R1 + ds_norm_counts_df$ctl_HS_R2) /2,
+                           OE_NHS = (ds_norm_counts_df$OE_NHS_R1 + ds_norm_counts_df$OE_NHS_R2) /2,
+                           OE_HS = (ds_norm_counts_df$OE_HS_R1 + ds_norm_counts_df$OE_HS_R2) /2
+                           )
+write_delim(ds_counts_df, "04_analysis/ds_counts/ds_5kb_counts.tsv", delim = "\t", col_names = TRUE)
+
+
+#gene
+gene_RPK_df <- read.table("04_analysis/ds_counts/whole_gene_RPK.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+
+#norm ds counts to gnbd counts
+table(ds_counts_df$transcriptID == gene_RPK_df$transcriptID) #genes in same order so can add directly, don't need to use join
+ds_norm_counts <- data.frame(transcriptID = ds_counts_df$transcriptID,
+                             ctl_NHS = (ds_counts_df$ctl_NHS/5) / gene_RPK_df$ctl_NHS, #RPK / RPK
+                             ctl_HS = (ds_counts_df$ctl_HS/5) / gene_RPK_df$ctl_HS,
+                             OE_NHS = (ds_counts_df$OE_NHS/5) / gene_RPK_df$OE_NHS,
+                             OE_HS = (ds_counts_df$OE_HS/5) / gene_RPK_df$OE_HS
+                             )
+write_delim(ds_norm_counts, "04_analysis/ds_counts/ds5kb_norm_to_gene_counts.tsv", delim = "\t", col_names = TRUE)
+
+#calc FC after HS
+FC_df <- data.frame(transcriptID = ds_counts_df$transcriptID,
+                             ctl = ds_norm_counts$ctl_HS / ds_norm_counts$ctl_NHS,
+                             OE = ds_norm_counts$OE_HS / ds_norm_counts$OE_NHS
+                             )
+write_delim(FC_df, "04_analysis/ds_counts/ds5kb_norm_to_gene_FC.tsv", delim = "\t", col_names = TRUE)
+
+#FC not norm to gene (should I be norm for seq depth then since now it's not canceling out?)
+FC_counts_df <- data.frame(transcriptID = ds_counts_df$transcriptID,
+                             ctl = ds_counts_df$ctl_HS / ds_counts_df$ctl_NHS,
+                             OE = ds_counts_df$OE_HS / ds_counts_df$OE_NHS
+                             )
+write_delim(FC_counts_df, "04_analysis/ds_counts/ds5kb_FC.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+```{r boxplot: 5kb ds FC, all genes}
+
+FC_plotting_df <- pivot_longer(FC_df, cols =2:3)
+FC_plotting_df$name <- factor(FC_plotting_df$name, levels = c("ctl", "OE"))
+
+
+p <- ggplot(FC_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,40)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream RPK\nFC after HS") +
+  labs(title = "All Analyzable Genes") +
+  theme(plot.title = element_text(size = 13, hjust=0.9),            #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#94c5e0", "#2c79a3")) + #box colors
+  annotate("text", x=1.5, y=40, label= "*", colour = "gray40", size = 6) + #add * above boxplot
+    annotate("segment", x = 1, xend = 2, y = 40, yend = 40, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/ds5kb_counts_norm_FC_boxplot.jpeg", width=2.2, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+#stats
+#ctl vs OE
+res <- wilcox.test(as.numeric(FC_df$ctl), as.numeric(FC_df$OE) )
+res$p.value #0.01797221 *
+##boxplot filters out non finite values, stats to match
+r <- filter(FC_df, is.finite(FC_df$ctl) & is.finite(FC_df$OE))
+res <- wilcox.test(as.numeric(r$ctl), as.numeric(r$OE) )
+res$p.value #0.05070224 *? ns? 
+
+```
+
+```{r boxplot: 5kb ds FC, all genes - not norm to gene}
+
+FC_plotting_df <- pivot_longer(FC_counts_df, cols =2:3)
+FC_plotting_df$name <- factor(FC_plotting_df$name, levels = c("ctl", "OE"))
+
+
+p <- ggplot(FC_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,35)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream Reads\nFC after HS") +
+  labs(title = "All Analyzable Genes") +
+  theme(plot.title = element_text(size = 13, hjust=0.9),            #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#94c5e0", "#2c79a3")) + #box colors
+  annotate("text", x=1.5, y=35, label= "**", colour = "gray40", size = 6) + #add * above boxplot
+    annotate("segment", x = 1, xend = 2, y = 35, yend = 35, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/ds5kb_counts_FC_boxplot.jpeg", width=2.2, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+#stats
+#ctl vs OE
+res <- wilcox.test(as.numeric(FC_counts_df$ctl), as.numeric(FC_counts_df$OE) )
+res$p.value #0.003840153 **
+##boxplot filters out non finite values, stats to match
+r <- filter(FC_counts_df, is.finite(FC_counts_df$ctl) & is.finite(FC_counts_df$OE))
+res <- wilcox.test(as.numeric(r$ctl), as.numeric(r$OE) )
+res$p.value #0.009861892 **
+
+```
+
+
+```{r boxplot: 5kb ds FC, sensitive genes}
+UC_FC_df <- read.table("04_analysis/uncleaved_reads/FC_uncleaved_reads_gene_norm.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+FC_df <- read.table("04_analysis/ds_counts/ds5kb_norm_to_gene_FC.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+t <- filter(UC_FC_df, UC_FC_df$RBBP6_sensitive == "sensitive" & UC_FC_df$ctl_uncleaved_cat == "increased")
+t2 <- filter(FC_df, FC_df$transcriptID %in% t$transcriptID)
+FC_plotting_df <- pivot_longer(t2, cols =2:3)
+FC_plotting_df$name <- factor(FC_plotting_df$name, levels = c("ctl", "OE"))
+
+
+p <- ggplot(FC_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,50)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream RPK\nFC after HS") +
+  labs(title = "RBBP6 Sensitive Genes") +
+  theme(plot.title = element_text(size = 13, hjust=0.9),            #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#94c5e0", "#2c79a3")) + #box colors
+  annotate("text", x=1.5, y=50, label= "ns", colour = "gray40", size = 4) + #add * above boxplot
+    annotate("segment", x = 1, xend = 2, y = 48, yend = 48, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/sensitive_ds5kb_counts_norm_FC_boxplot.jpeg", width=2.2, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+#stats
+#ctl vs OE
+res <- wilcox.test(as.numeric(t2$ctl), as.numeric(t2$OE) )
+res$p.value #0.1943374 ns
+##boxplot filters out non finite values, stats to match
+r <- filter(t2, is.finite(t2$ctl) & is.finite(t2$OE))
+res <- wilcox.test(as.numeric(r$ctl), as.numeric(r$OE) )
+res$p.value #0.4794711 ns
+
+```
+
+```{r boxplot: 5kb ds FC, sensitive genes - not norm to gene}
+UC_FC_df <- read.table("04_analysis/uncleaved_reads/FC_uncleaved_reads.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+FC_counts_df <- read.table("04_analysis/ds_counts/ds5kb_FC.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+t <- filter(UC_FC_df, UC_FC_df$RBBP6_sensitive == "sensitive" & UC_FC_df$ctl_uncleaved_cat == "increased")
+t2 <- filter(FC_counts_df, FC_counts_df$transcriptID %in% t$transcriptID)
+FC_plotting_df <- pivot_longer(t2, cols =2:3)
+FC_plotting_df$name <- factor(FC_plotting_df$name, levels = c("ctl", "OE"))
+
+
+p <- ggplot(FC_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,40)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream Reads\nFC after HS") +
+  labs(title = "RBBP6 Sensitive Genes") +
+  theme(plot.title = element_text(size = 13, hjust=0.9),            #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#94c5e0", "#2c79a3")) + #box colors
+  annotate("text", x=1.5, y=40, label= "ns", colour = "gray40", size = 4) + #add * above boxplot
+    annotate("segment", x = 1, xend = 2, y = 38, yend = 38, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/sensitive_ds5kb_counts_FC_boxplot.jpeg", width=2.2, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+#stats
+#ctl vs OE
+res <- wilcox.test(as.numeric(t2$ctl), as.numeric(t2$OE) )
+res$p.value #0.3147048 ns
+##boxplot filters out non finite values, stats to match
+r <- filter(t2, is.finite(t2$ctl) & is.finite(t2$OE))
+res <- wilcox.test(as.numeric(r$ctl), as.numeric(r$OE) )
+res$p.value #0.5923224 ns
+
+```
+
+
+
+
+
+
+
+
+20kb ds FC heatmap
+```{r 5kb and 20kb ds heatmap RBBP6 sensitive genes}
+library(pheatmap)
+library(RColorBrewer)
+library(gplots)
+
+UC_FC_df <- read.table("04_analysis/uncleaved_reads/FC_uncleaved_reads_gene_norm.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+FC_5kbds_df <- read.table("04_analysis/ds_counts/ds5kb_norm_to_gene_FC.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+FC_20kbds_df <- read.table("04_analysis/ds_counts/ds_norm_to_gene_FC.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+#want df with cols for ctl HS FC 5kb, OE 5kb, ctl 20kb, OE 20kb
+ds_heatmap_df <- inner_join(FC_5kbds_df, FC_20kbds_df, by = "transcriptID")
+colnames(ds_heatmap_df) <- c("transcriptID", "ctl_5kbds", "OE_5kbds", "ctl_20kbds", "OE_20kbds")
+  ## FC after HS ctl and OE (neither = 1)
+summary(UC_FC_df$ctl_HS_FC)
+
+#sensitive genes list 
+t <- filter(UC_FC_df, UC_FC_df$RBBP6_sensitive == "sensitive" & UC_FC_df$ctl_uncleaved_cat == "increased")
+sensitive_ds_heatmap_df <- filter(ds_heatmap_df, ds_heatmap_df$transcriptID %in% t$transcriptID) #606 genes
+#OR 1.5 FC cutoff sensitive genes list
+t <- filter(UC_FC_df, UC_FC_df$RBBP6_sensitive_1p5 == "sensitive" & UC_FC_df$ctl_uncleaved_cat_1p5 == "increased")
+sensitive_ds_heatmap_df <- filter(ds_heatmap_df, ds_heatmap_df$transcriptID %in% t$transcriptID) #1362 genes
+
+
+#log2 for even scaling
+t <- sensitive_ds_heatmap_df[c(2:5)] #remove transcriptID col so can do math on whole df (can't do log2 when they're row names)
+t <- log2(t) #do math
+sensitive_ds_heatmap_df <- cbind(sensitive_ds_heatmap_df[1], t) #put transcriptID col back
+#filter out inf/NA
+sensitive_ds_heatmap_df <- filter(sensitive_ds_heatmap_df, is.finite(sensitive_ds_heatmap_df$ctl_20kbds) & is.finite(sensitive_ds_heatmap_df$OE_20kbds)) #605 genes OR 1335 genes
+
+
+#cluster
+#fviz_nbclust(sensitive_ds_heatmap_df[c(2:5)], kmeans) #says 2 clusters, not sure this is helpful, dip at 7, maybe use 6?
+set.seed(123)
+k6_20kbds <- kmeans(sensitive_ds_heatmap_df[c(4,5)], 6, nstart = 25)
+sensitive_ds_heatmap_df$k6_cluster <- k6_20kbds$cluster
+
+k5_20kbds <- kmeans(sensitive_ds_heatmap_df[c(4,5)], 5, nstart = 25)
+sensitive_ds_heatmap_df$k5_cluster <- k5_20kbds$cluster
+
+k4_20kbds <- kmeans(sensitive_ds_heatmap_df[c(4,5)], 4, nstart = 25)
+sensitive_ds_heatmap_df$k4_cluster <- k4_20kbds$cluster
+
+write_delim(sensitive_ds_heatmap_df, "04_analysis/heatmaps/ds_heatmap_RBBP6_sensitive_genes_1p5FC_cutoff_log2_df.tsv", delim = "\t", col_names = TRUE)
+
+
+##order by cluster
+#re-randomize
+sensitive_ds_heatmap_df <- sensitive_ds_heatmap_df %>% arrange(sensitive_ds_heatmap_df$transcriptID)
+### 6 clusters ###
+sensitive_ds_heatmap_df <- sensitive_ds_heatmap_df %>% arrange(sensitive_ds_heatmap_df$k6_cluster)
+### 5 clusters ###
+sensitive_ds_heatmap_df <- sensitive_ds_heatmap_df %>% arrange(sensitive_ds_heatmap_df$k5_cluster)
+### 4 clusters ###
+sensitive_ds_heatmap_df <- sensitive_ds_heatmap_df %>% arrange(sensitive_ds_heatmap_df$k4_cluster)
+
+
+
+
+
+## plot
+col_pal <- colorpanel(200, "#f2110a", "black", "#0cde04") #works best for divergent reactions
+#col_pal <- colorpanel(200, "white", "#6db8e3", "#011f57") #blue gradient
+
+p <- pheatmap(sensitive_ds_heatmap_df[c(4:5)], scale = "none", cluster_rows=F, cluster_cols=F, col=col_pal, show_rowname=F, border_color=NA, fontsize_col=15, main="RBBP6 sensitve genes", legend_breaks=c(-3,0,3), breaks = seq(-3,3, length.out=(200))) #
+#not super helpful, need to make FC of FC one (norm OE FC to ctl FC)
+jpeg("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/heatmaps/figures/ds_FC_heatmap_5kb_20kb_ctl_and_OE.jpeg", width=2, height=4, units="in", res=300)
+print(p)
+dev.off()
+
+```
+FC OE norm to ctl
+```{r}
+#heatmap plotting df
+#sensitive genes list 
+t <- filter(UC_FC_df, UC_FC_df$RBBP6_sensitive == "sensitive" & UC_FC_df$ctl_uncleaved_cat == "increased")
+sensitive_ds_heatmap_df <- filter(ds_heatmap_df, ds_heatmap_df$transcriptID %in% t$transcriptID) #606 genes
+## OR 1.5 FC cutoff
+t <- filter(UC_FC_df, UC_FC_df$RBBP6_sensitive_1p5 == "sensitive" & UC_FC_df$ctl_uncleaved_cat_1p5 == "increased")
+sensitive_ds_heatmap_df <- filter(ds_heatmap_df, ds_heatmap_df$transcriptID %in% t$transcriptID) #1362 genes
+
+
+#calc FC OE / ctl
+sensitive_ds_heatmap_df$FC_5kbds <- sensitive_ds_heatmap_df$OE_5kbds / sensitive_ds_heatmap_df$ctl_5kbds
+sensitive_ds_heatmap_df$FC_20kbds <- sensitive_ds_heatmap_df$OE_20kbds / sensitive_ds_heatmap_df$ctl_20kbds
+#add ctl all=1 col
+sensitive_ds_heatmap_df$FC_ctl <- 1
+
+
+#log2 for even scaling
+t <- sensitive_ds_heatmap_df[c(8,6,7)] #remove transcriptID col so can do math on whole df (can't do log2 when they're row names)
+t <- log2(t) #do math
+FC_sensitive_ds_heatmap_df <- cbind(sensitive_ds_heatmap_df[1], t) #put transcriptID col back
+#filter out inf/NA
+FC_sensitive_ds_heatmap_df <- filter(FC_sensitive_ds_heatmap_df, is.finite(FC_sensitive_ds_heatmap_df$FC_5kbds) & is.finite(FC_sensitive_ds_heatmap_df$FC_20kbds) ) #605 genes
+
+
+
+#cluster
+## 5kbds
+set.seed(123)
+#fviz_nbclust(FC_sensitive_ds_heatmap_df[c(2,3)], kmeans) #says 3 clusters, not sure this is helpful, dip at 5
+k5_5kb_cluster <- kmeans(FC_sensitive_ds_heatmap_df[c(2,3)], 5, nstart = 25)
+## 20kbds
+set.seed(123)
+#fviz_nbclust(FC_sensitive_ds_heatmap_df[c(2,4)], kmeans) #says 8 clusters, not sure this is helpful, dip at 5
+k5_20kb_cluster <- kmeans(FC_sensitive_ds_heatmap_df[c(2,4)], 5, nstart = 25)
+k4_20kb_cluster <- kmeans(FC_sensitive_ds_heatmap_df[c(2,4)], 4, nstart = 25)
+
+
+##order by cluster
+## 5kbds
+FC_5kb_sensitive_ds_heatmap_df <- FC_sensitive_ds_heatmap_df
+FC_5kb_sensitive_ds_heatmap_df$k5_5kb_cluster <- k5_5kb_cluster$cluster
+FC_5kb_sensitive_ds_heatmap_df <- FC_5kb_sensitive_ds_heatmap_df %>% arrange(FC_5kb_sensitive_ds_heatmap_df$k5_5kb_cluster)
+## 20kbds
+FC_20kb_sensitive_ds_heatmap_df <- FC_sensitive_ds_heatmap_df
+FC_20kb_sensitive_ds_heatmap_df$k5_20kb_cluster <- k5_20kb_cluster$cluster
+FC_20kb_sensitive_ds_heatmap_df <- FC_20kb_sensitive_ds_heatmap_df %>% arrange(FC_20kb_sensitive_ds_heatmap_df$k5_20kb_cluster)
+#4 clusters
+FC_20kb_sensitive_ds_heatmap_df <- FC_sensitive_ds_heatmap_df
+FC_20kb_sensitive_ds_heatmap_df$k4_20kb_cluster <- k4_20kb_cluster$cluster
+FC_20kb_sensitive_ds_heatmap_df <- FC_20kb_sensitive_ds_heatmap_df %>% arrange(FC_20kb_sensitive_ds_heatmap_df$k4_20kb_cluster)
+
+#put both cluster cols in one df for saving
+t <- FC_sensitive_ds_heatmap_df
+t$k5_5kb_cluster <- k5_5kb_cluster$cluster
+t$k5_20kb_cluster <- k5_20kb_cluster$cluster
+write_delim(t, "04_analysis/heatmaps/FC_OE_d_Ctl_ds_heatmap_RBBP6_sensitive_genes_log2_df.tsv", delim = "\t", col_names = TRUE)
+t <- read.table("04_analysis/heatmaps/FC_OE_d_Ctl_ds_heatmap_RBBP6_sensitive_genes_log2_df.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+table(FC_20kb_sensitive_ds_heatmap_df$k5_20kb_cluster) #1.5 FC classifications
+# clusters:  1      2       3       5       4 
+#num genes: 55      303     454     364     107     
+#FC cutoff: -0.768  -0.318  -0.005  0.352   1.74
+(55) / nrow(t) #32% have inc ds counts (FC cuttoff )
+2^(0.352)
+
+
+## plot
+col_pal <- colorpanel(200, "#f2110a", "black", "#0cde04") #works best for divergent reactions
+col_pal <- colorpanel(200, "#0cde04", "black", "#f2110a") #flip so that green is decreased RT w/OE
+
+#col_pal <- colorpanel(200, "white", "#6db8e3", "#011f57") #blue gradient
+col_pal_clusters <- colorpanel(200, "gray20", "gray90")  #for annotating clusters
+
+
+## 5kb ds
+p <- pheatmap(FC_5kb_sensitive_ds_heatmap_df[c(2,3)], scale = "none", cluster_rows=F, cluster_cols=F, col=col_pal, show_rowname=F, border_color=NA, fontsize_col=15, main="5kb ds", legend_breaks=c(-3,0,3), breaks = seq(-3, 3, length.out=(200)), labels_col=c("ctl", "OE")) #
+#not super helpful, need to make FC of FC one (norm OE FC to ctl FC)
+jpeg("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/heatmaps/figures/ds_OEdCtl_FC_heatmap_5kb.jpeg", width=1.5, height=4, units="in", res=300)
+print(p)
+dev.off()
+#annotations for clusters
+c <- pheatmap(FC_5kb_sensitive_ds_heatmap_df[c(5)], scale = "none", cluster_rows=F, cluster_cols=F, col=col_pal_clusters, show_rowname=F, border_color=NA, fontsize_col=15, main="5kb ds", labels_col=c("clusters")) 
+jpeg("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/heatmaps/figures/ds_OEdCtl_FC_heatmap_5kb_clusters.jpeg", width=0.75, height=4.1, units="in", res=300)
+print(c)
+dev.off()
+
+## 20kb ds
+FC_20kb_sensitive_ds_heatmap_df <- t %>% arrange(t$k5_20kb_cluster)
+
+p <- pheatmap(FC_20kb_sensitive_ds_heatmap_df[c(2,4)], scale = "none", cluster_rows=F, cluster_cols=F, col=col_pal, show_rowname=F, border_color=NA, fontsize_col=15, main="20kb ds", legend_breaks=c(-1.7,0,1.7), breaks = seq(-1.7, 1.7, length.out=(200)), labels_col=c("ctl", "OE")) #
+
+jpeg("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/heatmaps/figures/ds_OEdCtl_FC_heatmap_20kb_flipped_colors_1p5FC_cutoff_2.jpeg", width=1.5, height=4, units="in", res=500)
+print(p)
+dev.off()
+#annotations for clusters
+c <- pheatmap(FC_20kb_sensitive_ds_heatmap_df[c(5)], scale = "none", cluster_rows=F, cluster_cols=F, col=col_pal_clusters, show_rowname=F, border_color=NA, fontsize_col=15, main="20kb ds", labels_col=c("clusters")) 
+jpeg("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/heatmaps/figures/ds_OEdCtl_FC_heatmap_20kb_clusters.jpeg", width=0.75, height=4.1, units="in", res=300)
+print(c)
+dev.off()
+```
+
+smooth heatmaps
+  sort by log2 FC (ctl and OE, FC after HS)
+  is there a shift in the midpoint or amount of black comparing ctl and OE?
+  *can't tell a difference*
+```{r smooth heatmaps}
+## make df with FC for OE and ctl (5kb and 20kb ds windows) ##
+
+UC_FC_df <- read.table("04_analysis/uncleaved_reads/FC_uncleaved_reads_gene_norm.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+FC_5kbds_df <- read.table("04_analysis/ds_counts/ds5kb_norm_to_gene_FC.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+FC_20kbds_df <- read.table("04_analysis/ds_counts/ds_norm_to_gene_FC.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+#want df with cols for ctl HS FC 5kb, OE 5kb, ctl 20kb, OE 20kb
+ds_heatmap_df <- inner_join(FC_5kbds_df, FC_20kbds_df, by = "transcriptID")
+colnames(ds_heatmap_df) <- c("transcriptID", "ctl_5kbds", "OE_5kbds", "ctl_20kbds", "OE_20kbds")
+  ## FC after HS ctl and OE (neither = 1)
+
+#sensitive genes list 
+t <- filter(UC_FC_df, UC_FC_df$RBBP6_sensitive == "sensitive" & UC_FC_df$ctl_uncleaved_cat == "increased")
+sensitive_ds_heatmap_df <- filter(ds_heatmap_df, ds_heatmap_df$transcriptID %in% t$transcriptID) #606 genes
+
+#log2 for even scaling
+t <- sensitive_ds_heatmap_df[c(2:5)] #remove transcriptID col so can do math on whole df (can't do log2 when they're row names)
+t <- log2(t) #do math
+sensitive_ds_heatmap_df <- cbind(sensitive_ds_heatmap_df[1], t) #put transcriptID col back
+#filter out inf/NA
+sensitive_ds_heatmap_df <- filter(sensitive_ds_heatmap_df, is.finite(sensitive_ds_heatmap_df$ctl_5kbds) & is.finite(sensitive_ds_heatmap_df$OE_5kbds) & is.finite(sensitive_ds_heatmap_df$ctl_20kbds) & is.finite(sensitive_ds_heatmap_df$OE_20kbds)) #605 genes
+
+
+
+## order in ascending order of log2 FC ##
+smooth_5kbds_ctl <- sensitive_ds_heatmap_df %>% arrange(sensitive_ds_heatmap_df$ctl_5kbds)
+smooth_5kbds_OE <- sensitive_ds_heatmap_df %>% arrange(sensitive_ds_heatmap_df$OE_5kbds)
+double_smooth_5kbds <- data.frame(ctl = smooth_5kbds_ctl$ctl_5kbds,
+                                  OE = smooth_5kbds_OE$OE_5kbds)
+
+
+#plot
+## 5kb ds
+pheatmap(double_smooth_5kbds, scale = "none", cluster_rows=F, cluster_cols=F, col=col_pal, show_rowname=F, border_color=NA, fontsize_col=15, main="RBBP6 sensitve genes", legend_breaks=c(-10,0,10), breaks = seq(-10, 10, length.out=(200))) #
+
+
+### Nevermind, I think you'd only be able to see a difference if there's a dramatic difference between ctl and OE ###
+
+```
+
+
+
+
+
+
+###
+ds counts, 0-5kb, 5-10kb, 10-15kb, 15-20kb
+###
+Is there less RT further out? (i.e. shorter RT) or less RT overall (all bins decrease equally, indicating generally less RT)
+
+first make bed files for each window
+```{r make window bed files}
+#read in 20kb ds window bed
+ds20kb_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gene_annotation_bed_files/strandediso_exp_clean_genes_MANE_v095_20kb_ds.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+#has extra bed cols so let's get rid of those
+ds20kb_bed <- ds20kb_bed[,c(1:6)]
+colnames(ds20kb_bed) <- c("chr", "start", "end", "id", "score", "strand")
+
+
+##
+# make 0-5kb bed
+##
+TTS_bed <- ds20kb_bed
+i=1
+while(i <= nrow(TTS_bed)){
+  #if on + strand, start = TTS and end = 20kb ds
+  if(TTS_bed$strand[i]=="+"){
+    TTS_bed$end[i] = (TTS_bed$start[i] + 5000) #end = TTS + 5kb
+  } 
+  #if on - strand, end = TTS and start = 20kb ds
+  else if(TTS_bed$strand[i]=="-"){
+    TTS_bed$start[i] = (TTS_bed$end[i] - 5000) #start = TTS - 5kb
+    }
+  else{
+    print("no strand annotation!!")
+  }
+  i = i+1
+}
+ds5kb_bed <- TTS_bed
+write_delim(ds5kb_bed, "04_analysis/ds_counts/annotation_bed_files/ds_0_to_5kb.bed", delim = "\t", col_names = FALSE)
+
+##
+# make 5-10kb bed
+##
+TTS_bed <- ds20kb_bed
+i=1
+while(i <= nrow(TTS_bed)){
+  #if on + strand, start = TTS and end = 20kb ds
+  if(TTS_bed$strand[i]=="+"){
+    TTS <- TTS_bed$start[i] #pull out TTS coordinates so don't accidentally override (shouldn't given the order of commands but being safe)
+    TTS_bed$end[i] = (TTS + 10000) #end = TTS + 10kb
+    TTS_bed$start[i] = (TTS + 5000) #start = TTS + 5kb
+  } 
+  #if on - strand, end = TTS and start = 20kb ds
+  else if(TTS_bed$strand[i]=="-"){
+    TTS <- TTS_bed$end[i] #pull out TTS coordinates so don't accidentally override
+    TTS_bed$start[i] = (TTS - 10000) #start = TTS - 10kb
+    TTS_bed$end[i] = (TTS - 5000) #start = TTS - 5kb
+    }
+  else{
+    print("no strand annotation!!")
+  }
+  i = i+1
+}
+ds10kb_bed <- TTS_bed
+write_delim(ds10kb_bed, "04_analysis/ds_counts/annotation_bed_files/ds_5_to_10kb.bed", delim = "\t", col_names = FALSE)
+
+
+##
+# make 10-15kb bed
+##
+TTS_bed <- ds20kb_bed
+i=1
+while(i <= nrow(TTS_bed)){
+  #if on + strand, start = TTS and end = 20kb ds
+  if(TTS_bed$strand[i]=="+"){
+    TTS <- TTS_bed$start[i] #pull out TTS coordinates so don't accidentally override (shouldn't given the order of commands but being safe)
+    TTS_bed$end[i] = (TTS + 15000) #end = TTS + 15kb
+    TTS_bed$start[i] = (TTS + 10000) #start = TTS + 10kb
+  } 
+  #if on - strand, end = TTS and start = 20kb ds
+  else if(TTS_bed$strand[i]=="-"){
+    TTS <- TTS_bed$end[i] #pull out TTS coordinates so don't accidentally override
+    TTS_bed$start[i] = (TTS - 15000) #start = TTS - 15kb
+    TTS_bed$end[i] = (TTS - 10000) #start = TTS - 10kb
+    }
+  else{
+    print("no strand annotation!!")
+  }
+  i = i+1
+}
+ds15kb_bed <- TTS_bed
+write_delim(ds15kb_bed, "04_analysis/ds_counts/annotation_bed_files/ds_10_to_15kb.bed", delim = "\t", col_names = FALSE)
+
+
+##
+# make 15-20kb bed
+##
+TTS_bed <- ds20kb_bed
+i=1
+while(i <= nrow(TTS_bed)){
+  #if on + strand, start = TTS and end = 20kb ds
+  if(TTS_bed$strand[i]=="+"){
+    TTS <- TTS_bed$start[i] #pull out TTS coordinates so don't accidentally override (shouldn't given the order of commands but being safe)
+    TTS_bed$end[i] = (TTS + 15000) #end = TTS + 15kb
+    #TTS_bed$start[i] = (TTS + 20000) #start = TTS + 20kb already
+  } 
+  #if on - strand, end = TTS and start = 20kb ds
+  else if(TTS_bed$strand[i]=="-"){
+    TTS <- TTS_bed$end[i] #pull out TTS coordinates so don't accidentally override
+    #TTS_bed$start[i] = (TTS - 20000) #start = TTS - 20kb already
+    TTS_bed$end[i] = (TTS - 15000) #start = TTS - 15kb
+    }
+  else{
+    print("no strand annotation!!")
+  }
+  i = i+1
+}
+ds15to20kb_bed <- TTS_bed
+
+write_delim(ds15to20kb_bed, "04_analysis/ds_counts/annotation_bed_files/ds_15_to_20kb.bed", delim = "\t", col_names = FALSE)
+
+```
+
+
+count each ds window (all with pooled reads)
+
+#bedtools coverage
+
+    bash script 04d_5kb_ds_counts.sh
+
+
+```{r read in and normalize}
+# read in each window
+fl_5kb_ds <- list.files("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/ds_counts/bedtools_outputs/0to5kb_ds_counts_redundant", 
+                  full.names = TRUE)
+ls_5kb_ds <- lapply(fl_5kb_ds, read.table, header=FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ls_5kb_ds) <- gsub("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/ds_counts/bedtools_outputs/0to5kb_ds_counts_redundant/|_pooled_ds_counts.bed", "", fl_5kb_ds)
+
+fl_10kb_ds <- list.files("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/ds_counts/bedtools_outputs/5to10kb_ds_counts", 
+                  full.names = TRUE)
+ls_10kb_ds <- lapply(fl_10kb_ds, read.table, header=FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ls_10kb_ds) <- gsub("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/ds_counts/bedtools_outputs/5to10kb_ds_counts/|_pooled_ds_counts.bed", "", fl_10kb_ds)
+
+fl_15kb_ds <- list.files("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/ds_counts/bedtools_outputs/10to15kb_ds_counts", 
+                  full.names = TRUE)
+ls_15kb_ds <- lapply(fl_15kb_ds, read.table, header=FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ls_15kb_ds) <- gsub("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/ds_counts/bedtools_outputs/10to15kb_ds_counts/|_pooled_ds_counts.bed", "", fl_15kb_ds)
+
+fl_20kb_ds <- list.files("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/ds_counts/bedtools_outputs/15to20kb_ds_counts", 
+                  full.names = TRUE)
+ls_20kb_ds <- lapply(fl_20kb_ds, read.table, header=FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ls_20kb_ds) <- gsub("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/ds_counts/bedtools_outputs/15to20kb_ds_counts/|_pooled_ds_counts.bed", "", fl_20kb_ds)
+
+
+
+#put into df
+ds_windows_counts_df <- data.frame(transcriptID = ls_5kb_ds$ctl_NHS$V4,
+                        ds0to5kb_ctl_NHS = ls_5kb_ds$ctl_NHS$V7,
+                        ds0to5kb_ctl_HS = ls_5kb_ds$ctl_HS$V7 ,
+                        ds0to5kb_OE_NHS = ls_5kb_ds$OE_NHS$V7 ,
+                        ds0to5kb_OE_HS = ls_5kb_ds$OE_HS$V7,
+                        
+                        ds5to10kb_ctl_NHS = ls_10kb_ds$ctl_NHS$V7,
+                        ds5to10kb_ctl_HS = ls_10kb_ds$ctl_HS$V7 ,
+                        ds5to10kb_OE_NHS = ls_10kb_ds$OE_NHS$V7 ,
+                        ds5to10kb_OE_HS = ls_10kb_ds$OE_HS$V7,
+                        
+                        ds10to15kb_ctl_NHS = ls_15kb_ds$ctl_NHS$V7,
+                        ds10to15kb_ctl_HS = ls_15kb_ds$ctl_HS$V7 ,
+                        ds10to15kb_OE_NHS = ls_15kb_ds$OE_NHS$V7 ,
+                        ds10to15kb_OE_HS = ls_15kb_ds$OE_HS$V7,
+                        
+                        ds15to20kb_ctl_NHS = ls_20kb_ds$ctl_NHS$V7,
+                        ds15to20kb_ctl_HS = ls_20kb_ds$ctl_HS$V7 ,
+                        ds15to20kb_OE_NHS = ls_20kb_ds$OE_NHS$V7 ,
+                        ds15to20kb_OE_HS = ls_20kb_ds$OE_HS$V7
+                        )
+
+
+
+## normalize for seq depth
+norm_factors_df <- read.table("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/documentation/mapped_reads_for_norm.txt", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+pooled_norm_factors_df <- data.frame(sample = c("ctl_NHS_pooled", "ctl_HS_pooled", "OE_NHS_pooled", "OE_HS_pooled"),
+                aligned_reads = c((norm_factors_df$aligned_concordantly_1_time[1] + norm_factors_df$aligned_concordantly_1_time[2]),
+                                  (norm_factors_df$aligned_concordantly_1_time[3] + norm_factors_df$aligned_concordantly_1_time[4]),
+                                  (norm_factors_df$aligned_concordantly_1_time[5] + norm_factors_df$aligned_concordantly_1_time[6]),
+                                  (norm_factors_df$aligned_concordantly_1_time[7] + norm_factors_df$aligned_concordantly_1_time[8])
+                                  )
+                )
+#mapped reads * factor = 50M reads
+pooled_norm_factors_df$factor <- 50000000 / pooled_norm_factors_df$aligned_reads
+
+
+#norm counts df
+ds_windows_counts_norm_df <- data.frame(transcriptID = ls_5kb_ds$ctl_NHS$V4,
+                        ds0to5kb_ctl_NHS = ls_5kb_ds$ctl_NHS$V7 * pooled_norm_factors_df$factor[1],
+                        ds0to5kb_ctl_HS = ls_5kb_ds$ctl_HS$V7  * pooled_norm_factors_df$factor[2],
+                        ds0to5kb_OE_NHS = ls_5kb_ds$OE_NHS$V7  * pooled_norm_factors_df$factor[3],
+                        ds0to5kb_OE_HS = ls_5kb_ds$OE_HS$V7  * pooled_norm_factors_df$factor[4],
+                        
+                        ds5to10kb_ctl_NHS = ls_10kb_ds$ctl_NHS$V7  * pooled_norm_factors_df$factor[1],
+                        ds5to10kb_ctl_HS = ls_10kb_ds$ctl_HS$V7  * pooled_norm_factors_df$factor[2],
+                        ds5to10kb_OE_NHS = ls_10kb_ds$OE_NHS$V7  * pooled_norm_factors_df$factor[3],
+                        ds5to10kb_OE_HS = ls_10kb_ds$OE_HS$V7  * pooled_norm_factors_df$factor[4],
+                        
+                        ds10to15kb_ctl_NHS = ls_15kb_ds$ctl_NHS$V7  * pooled_norm_factors_df$factor[1],
+                        ds10to15kb_ctl_HS = ls_15kb_ds$ctl_HS$V7  * pooled_norm_factors_df$factor[2],
+                        ds10to15kb_OE_NHS = ls_15kb_ds$OE_NHS$V7  * pooled_norm_factors_df$factor[3],
+                        ds10to15kb_OE_HS = ls_15kb_ds$OE_HS$V7 * pooled_norm_factors_df$factor[4],
+                        
+                        ds15to20kb_ctl_NHS = ls_20kb_ds$ctl_NHS$V7 * pooled_norm_factors_df$factor[1],
+                        ds15to20kb_ctl_HS = ls_20kb_ds$ctl_HS$V7  * pooled_norm_factors_df$factor[2],
+                        ds15to20kb_OE_NHS = ls_20kb_ds$OE_NHS$V7  * pooled_norm_factors_df$factor[3],
+                        ds15to20kb_OE_HS = ls_20kb_ds$OE_HS$V7 * pooled_norm_factors_df$factor[4]
+                        )
+
+
+#norm to gnbd RPK
+gene_RPK_df <- read.table("04_analysis/ds_counts/whole_gene_RPK.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+t <- inner_join(ds_windows_counts_norm_df, gene_RPK_df, by = "transcriptID")
+ds_windows_rpk_gene_norm_df <- data.frame(transcriptID = t$transcriptID,
+                        ds0to5kb_ctl_NHS = t$ds0to5kb_ctl_NHS /5000 * t$ctl_NHS,
+                        ds0to5kb_ctl_HS = t$ds0to5kb_ctl_HS /5000 * t$ctl_HS,
+                        ds0to5kb_OE_NHS = t$ds0to5kb_OE_NHS /5000 * t$OE_NHS,
+                        ds0to5kb_OE_HS = t$ds0to5kb_OE_HS /5000 * t$OE_HS,
+                        
+                        ds5to10kb_ctl_NHS = t$ds5to10kb_ctl_NHS /5000 * t$ctl_NHS,
+                        ds5to10kb_ctl_HS = t$ds5to10kb_ctl_HS /5000 * t$ctl_HS,
+                        ds5to10kb_OE_NHS = t$ds5to10kb_OE_NHS /5000 * t$OE_NHS,
+                        ds5to10kb_OE_HS = t$ds5to10kb_OE_HS /5000 * t$OE_HS,
+                        
+                        ds10to15kb_ctl_NHS = t$ds10to15kb_ctl_NHS /5000 * t$OE_HS,
+                        ds10to15kb_ctl_HS = t$ds10to15kb_ctl_HS /5000 * t$OE_HS,
+                        ds10to15kb_OE_NHS = t$ds10to15kb_OE_NHS /5000 * t$OE_HS,
+                        ds10to15kb_OE_HS = t$ds10to15kb_OE_HS /5000 * t$OE_HS,
+                        
+                        ds15to20kb_ctl_NHS = t$ds15to20kb_ctl_NHS /5000 * t$OE_HS,
+                        ds15to20kb_ctl_HS = t$ds15to20kb_ctl_HS /5000 * t$OE_HS,
+                        ds15to20kb_OE_NHS = t$ds15to20kb_OE_NHS /5000 * t$OE_HS,
+                        ds15to20kb_OE_HS = t$ds15to20kb_OE_HS /5000 * t$OE_HS
+                        )
+
+## calc FC
+ds_windows_FC_df <- data.frame( transcriptID = ds_windows_rpk_gene_norm_df$transcriptID,
+                        ds0to5kb_ctl = ds_windows_rpk_gene_norm_df$ds0to5kb_ctl_HS / ds_windows_rpk_gene_norm_df$ds0to5kb_ctl_NHS,
+                        ds0to5kb_OE = ds_windows_rpk_gene_norm_df$ds0to5kb_OE_HS / ds_windows_rpk_gene_norm_df$ds0to5kb_OE_NHS,
+                        ds5to10kb_ctl = ds_windows_rpk_gene_norm_df$ds5to10kb_ctl_HS / ds_windows_rpk_gene_norm_df$ds5to10kb_ctl_NHS,
+                        ds5to10kb_OE = ds_windows_rpk_gene_norm_df$ds5to10kb_OE_HS / ds_windows_rpk_gene_norm_df$ds5to10kb_OE_NHS,
+                    ds10to15kb_ctl = ds_windows_rpk_gene_norm_df$ds10to15kb_ctl_HS / ds_windows_rpk_gene_norm_df$ds10to15kb_ctl_NHS,
+                    ds10to15kb_OE = ds_windows_rpk_gene_norm_df$ds10to15kb_OE_HS / ds_windows_rpk_gene_norm_df$ds10to15kb_OE_NHS,
+                    ds15to20kb_ctl = ds_windows_rpk_gene_norm_df$ds15to20kb_ctl_HS / ds_windows_rpk_gene_norm_df$ds15to20kb_ctl_NHS,
+                    ds15to20kb_OE = ds_windows_rpk_gene_norm_df$ds15to20kb_OE_HS / ds_windows_rpk_gene_norm_df$ds15to20kb_OE_NHS
+                          )
+
+
+#save
+write_delim(ds_windows_FC_df, "04_analysis/ds_counts/ds_windows_FC_df.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+filter for RBBP6 sensitive genes
+```{r ds count windows: RBBP6 sensitive genes}
+UC_FC_df <- read.table("04_analysis/uncleaved_reads/FC_uncleaved_reads_gene_norm.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+t <- filter(UC_FC_df, UC_FC_df$RBBP6_sensitive == "sensitive" & UC_FC_df$ctl_uncleaved_cat == "increased")
+sensitive_ds_windows_FC_df <- filter(ds_windows_FC_df, ds_windows_FC_df$transcriptID %in% t$transcriptID)
+
+write_delim(sensitive_ds_windows_FC_df, "04_analysis/ds_counts/ds_windows_FC_df_RBBP6_sensitive_genes.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+boxplot
+  0-5kb ctl and OE, 5-10kb...
+  (did in excel since it's faster)
+```{r RBBP6 SENSITIVE ds count windows: boxplots}
+
+### RBBP6 sensitive genes ###
+windows_plotting_df <- pivot_longer(sensitive_ds_windows_FC_df, cols =2:9)
+windows_plotting_df$name <- factor(windows_plotting_df$name, levels = c(colnames(sensitive_ds_windows_FC_df[,2:9])))
+
+
+p <- ggplot(windows_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1) + 
+  coord_cartesian(ylim = c(0,50)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream Reads\nFC after HS") +
+  labs(title = "RBBP6 Sensitive Genes") +
+  scale_x_discrete(labels=c("ctl\n0-5kb", "OE\n0-5kb", "ctl\n5-10kb", "OE\n5-10kb", "ctl\n10-15kb", "OE\n10-15kb", "ctl\n15-20kb", "OE\n15-20kb")) +
+  theme(plot.title = element_text(size = 13, hjust=0.5),            #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 10), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  #scale_colour_manual(values=c("#94c5e0", "#2c79a3")) + #box colors
+  annotate("text", x=7.5, y=30, label= "*", colour = "gray40", size = 6) + #add * above boxplot
+    annotate("segment", x = 7, xend = 8, y = 30, yend = 30, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/sensitive_ds_windows_counts_FC_boxplot.jpeg", width=5, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+
+
+
+
+## all on separate axis
+  # 0-5kb
+windows_plotting_df <- pivot_longer(sensitive_ds_windows_FC_df, cols =2:3)
+windows_plotting_df$name <- factor(windows_plotting_df$name, levels = c(colnames(sensitive_ds_windows_FC_df[,2:3])))
+
+p <- ggplot(windows_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1) + 
+  coord_cartesian(ylim = c(0,8)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream Reads\nFC after HS") +
+  labs(title = "RBBP6 Sensitive Genes", subtitle = "0-5kb ds") +
+  scale_x_discrete(labels=c("-Dox", "+Dox")) +
+  scale_y_continuous(breaks = seq(0, 10, by = 1)) +
+  theme(plot.title = element_text(size = 13, hjust=0.5), plot.subtitle = element_text(size = 13, hjust=0.5),   #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#89C2D9", "#61A5C2")) #+ #box colors
+  #annotate("text", x=7.5, y=25, label= "*", colour = "gray40", size = 6) + #add * above boxplot
+  #  annotate("segment", x = 7, xend = 8, y = 25, yend = 25, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/sensitive_0-5kb_ds_window_counts_FC_boxplot.jpeg", width=2.2, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+  # 5-10kb
+windows_plotting_df <- pivot_longer(sensitive_ds_windows_FC_df, cols =4:5)
+windows_plotting_df$name <- factor(windows_plotting_df$name, levels = c(colnames(sensitive_ds_windows_FC_df[,4:5])))
+
+p <- ggplot(windows_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1) + 
+  coord_cartesian(ylim = c(0,30)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream Reads\nFC after HS") +
+  labs(title = "RBBP6 Sensitive Genes", subtitle = "5-10kb ds") +
+  scale_x_discrete(labels=c("-Dox", "+Dox")) +
+  #scale_y_continuous(breaks = seq(0, 7, by = 1)) +
+  theme(plot.title = element_text(size = 13, hjust=0.5), plot.subtitle = element_text(size = 13, hjust=0.5),   #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#468FAF", "#2C7DA0")) #+ #box colors
+  #annotate("text", x=7.5, y=25, label= "*", colour = "gray40", size = 6) + #add * above boxplot
+  #  annotate("segment", x = 7, xend = 8, y = 25, yend = 25, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/sensitive_5-10kb_ds_window_counts_FC_boxplot.jpeg", width=2.2, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+  # 10-15kb
+windows_plotting_df <- pivot_longer(sensitive_ds_windows_FC_df, cols =6:7)
+windows_plotting_df$name <- factor(windows_plotting_df$name, levels = c(colnames(sensitive_ds_windows_FC_df[,6:7])))
+
+p <- ggplot(windows_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1) + 
+  coord_cartesian(ylim = c(0,50)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream Reads\nFC after HS") +
+  labs(title = "RBBP6 Sensitive Genes", subtitle = "10-15kb ds") +
+  scale_x_discrete(labels=c("-Dox", "+Dox")) +
+  scale_y_continuous(breaks = seq(0, 50, by = 10)) +
+  theme(plot.title = element_text(size = 13, hjust=0.5), plot.subtitle = element_text(size = 13, hjust=0.5),   #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#2A6F97", "#014F86")) #+ #box colors
+  #annotate("text", x=7.5, y=25, label= "*", colour = "gray40", size = 6) + #add * above boxplot
+  #  annotate("segment", x = 7, xend = 8, y = 25, yend = 25, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/sensitive_10-15kb_ds_window_counts_FC_boxplot.jpeg", width=2.2, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+  # 15-20kb
+windows_plotting_df <- pivot_longer(sensitive_ds_windows_FC_df, cols =8:9)
+windows_plotting_df$name <- factor(windows_plotting_df$name, levels = c(colnames(sensitive_ds_windows_FC_df[,8:9])))
+
+p <- ggplot(windows_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1) + 
+  coord_cartesian(ylim = c(0,30)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream Reads\nFC after HS") +
+  labs(title = "RBBP6 Sensitive Genes", subtitle = "15-20kb ds") +
+  scale_x_discrete(labels=c("-Dox", "+Dox")) +
+  scale_y_continuous(breaks = seq(0, 30, by = 5)) +
+  theme(plot.title = element_text(size = 13, hjust=0.5), plot.subtitle = element_text(size = 13, hjust=0.5),   #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#013A63", "#011626")) #+ #box colors
+  #annotate("text", x=7.5, y=25, label= "*", colour = "gray40", size = 6) + #add * above boxplot
+  #  annotate("segment", x = 7, xend = 8, y = 25, yend = 25, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/sensitive_15-20kb_ds_window_counts_FC_boxplot.jpeg", width=2.2, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+
+#stats
+#p<0.0001 = ****
+#p<0.001  = ***
+#p<0.01   = **
+#p<0.05   = *
+
+#0-5kb ds
+res <- wilcox.test(as.numeric(sensitive_ds_windows_FC_df$ds0to5kb_ctl), as.numeric(sensitive_ds_windows_FC_df$ds0to5kb_OE) )
+res$p.value #0.531051 ns
+##boxplot filters out non finite values, stats to match
+r <- filter(sensitive_ds_windows_FC_df, is.finite(sensitive_ds_windows_FC_df$ds0to5kb_ctl) & is.finite(sensitive_ds_windows_FC_df$ds0to5kb_OE))
+res <- wilcox.test(as.numeric(r$ds0to5kb_ctl), as.numeric(r$ds0to5kb_OE) )
+res$p.value #0.5693886 ns
+
+#5-10kb ds
+res <- wilcox.test(as.numeric(sensitive_ds_windows_FC_df$ds5to10kb_ctl), as.numeric(sensitive_ds_windows_FC_df$ds5to10kb_OE) )
+res$p.value #0.4414493 ns
+##boxplot filters out non finite values, stats to match
+r <- filter(sensitive_ds_windows_FC_df, is.finite(sensitive_ds_windows_FC_df$ds5to10kb_ctl) & is.finite(sensitive_ds_windows_FC_df$ds5to10kb_OE))
+res <- wilcox.test(as.numeric(r$ds5to10kb_ctl), as.numeric(r$ds5to10kb_OE) )
+res$p.value #0.78004 ns
+
+#10-15kb ds
+res <- wilcox.test(as.numeric(sensitive_ds_windows_FC_df$ds10to15kb_ctl), as.numeric(sensitive_ds_windows_FC_df$ds10to15kb_OE) )
+res$p.value #0.2163495 ns
+##boxplot filters out non finite values, stats to match
+r <- filter(sensitive_ds_windows_FC_df, is.finite(sensitive_ds_windows_FC_df$ds10to15kb_ctl) & is.finite(sensitive_ds_windows_FC_df$ds10to15kb_OE))
+res <- wilcox.test(as.numeric(r$ds10to15kb_ctl), as.numeric(r$ds10to15kb_OE) )
+res$p.value #0.3304302 ns
+
+#15-20kb ds
+res <- wilcox.test(as.numeric(sensitive_ds_windows_FC_df$ds15to20kb_ctl), as.numeric(sensitive_ds_windows_FC_df$ds15to20kb_OE) )
+res$p.value #0.08981175 *
+##boxplot filters out non finite values, stats to match
+r <- filter(sensitive_ds_windows_FC_df, is.finite(sensitive_ds_windows_FC_df$ds15to20kb_ctl) & is.finite(sensitive_ds_windows_FC_df$ds15to20kb_OE))
+res <- wilcox.test(as.numeric(r$ds15to20kb_ctl), as.numeric(r$ds15to20kb_OE) )
+res$p.value #0.2314395 ns
+
+```
+
+```{r CLEAVAGE DEFECT ds count windows: boxplots}
+#filter for genes with cleavage defects in Ctl condition
+#UC_FC_df <- read.table("04_analysis/uncleaved_reads/FC_uncleaved_reads_gene_norm.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+t <- filter(UC_FC_df, UC_FC_df$ctl_uncleaved_cat == "increased")
+cleav_def_ds_windows_FC_df <- filter(ds_windows_FC_df, ds_windows_FC_df$transcriptID %in% t$transcriptID)
+
+### RBBP6 sensitive genes ###
+windows_plotting_df <- pivot_longer(cleav_def_ds_windows_FC_df, cols =2:9)
+windows_plotting_df$name <- factor(windows_plotting_df$name, levels = c(colnames(cleav_def_ds_windows_FC_df[,2:9])))
+
+
+p <- ggplot(windows_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1) + 
+  coord_cartesian(ylim = c(0,65)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream Reads\nFC after HS") +
+  labs(title = "Cleavage Defect Genes") +
+  scale_x_discrete(labels=c("ctl\n0-5kb", "OE\n0-5kb", "ctl\n5-10kb", "OE\n5-10kb", "ctl\n10-15kb", "OE\n10-15kb", "ctl\n15-20kb", "OE\n15-20kb")) +
+  theme(plot.title = element_text(size = 13, hjust=0.5),            #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 10), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  #scale_colour_manual(values=c("#94c5e0", "#2c79a3")) + #box colors
+  annotate("text", x=5.5, y=65, label= "**", colour = "gray40", size = 6) + #add * above boxplot
+    annotate("segment", x = 5, xend = 6, y = 65, yend = 65, colour = "gray40") +
+  annotate("text", x=7.5, y=40, label= "**", colour = "gray40", size = 6) + #add * above boxplot
+    annotate("segment", x = 7, xend = 8, y = 40, yend = 40, colour = "gray40")
+
+jpeg("04_analysis/ds_counts/figures/cleavage_def_ds_windows_counts_FC_boxplot.jpeg", width=5, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+
+## all on separate axis
+  # 0-5kb
+windows_plotting_df <- pivot_longer(cleav_def_ds_windows_FC_df, cols =2:3)
+windows_plotting_df$name <- factor(windows_plotting_df$name, levels = c(colnames(cleav_def_ds_windows_FC_df[,2:3])))
+
+p <- ggplot(windows_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1) + 
+  coord_cartesian(ylim = c(0,14)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream Reads\nFC after HS") +
+  labs(title = "Cleavage Defect Genes", subtitle = "0-5kb ds") +
+  scale_x_discrete(labels=c("-Dox", "+Dox")) +
+  scale_y_continuous(breaks = seq(0, 14, by = 2)) +
+  theme(plot.title = element_text(size = 13, hjust=0.5), plot.subtitle = element_text(size = 13, hjust=0.5),   #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#89C2D9", "#61A5C2")) #+ #box colors
+  #annotate("text", x=7.5, y=25, label= "*", colour = "gray40", size = 6) + #add * above boxplot
+  #  annotate("segment", x = 7, xend = 8, y = 25, yend = 25, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/cleav_def_0-5kb_ds_window_counts_FC_boxplot.jpeg", width=2.2, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+  # 5-10kb
+windows_plotting_df <- pivot_longer(cleav_def_ds_windows_FC_df, cols =4:5)
+windows_plotting_df$name <- factor(windows_plotting_df$name, levels = c(colnames(cleav_def_ds_windows_FC_df[,4:5])))
+
+p <- ggplot(windows_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1) + 
+  coord_cartesian(ylim = c(0,45)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream Reads\nFC after HS") +
+  labs(title = "Cleavage Defect Genes", subtitle = "5-10kb ds") +
+  scale_x_discrete(labels=c("-Dox", "+Dox")) +
+  scale_y_continuous(breaks = seq(0, 45, by = 5)) +
+  theme(plot.title = element_text(size = 13, hjust=0.5), plot.subtitle = element_text(size = 13, hjust=0.5),   #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#468FAF", "#2C7DA0")) #+ #box colors
+  #annotate("text", x=7.5, y=25, label= "*", colour = "gray40", size = 6) + #add * above boxplot
+  #  annotate("segment", x = 7, xend = 8, y = 25, yend = 25, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/cleav_def_5-10kb_ds_window_counts_FC_boxplot.jpeg", width=2.2, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+  # 10-15kb
+windows_plotting_df <- pivot_longer(cleav_def_ds_windows_FC_df, cols =6:7)
+windows_plotting_df$name <- factor(windows_plotting_df$name, levels = c(colnames(cleav_def_ds_windows_FC_df[,6:7])))
+
+p <- ggplot(windows_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1) + 
+  coord_cartesian(ylim = c(0,70)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream Reads\nFC after HS") +
+  labs(title = "Cleavage Defect Genes", subtitle = "10-15kb ds") +
+  scale_x_discrete(labels=c("-Dox", "+Dox")) +
+  scale_y_continuous(breaks = seq(0, 70, by = 10)) +
+  theme(plot.title = element_text(size = 13, hjust=0.5), plot.subtitle = element_text(size = 13, hjust=0.5),   #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#2A6F97", "#014F86")) + #box colors
+  annotate("text", x=1.5, y=70, label= "*", colour = "gray40", size = 6) + #add * above boxplot
+    annotate("segment", x = 1, xend = 2, y = 70, yend = 70, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/cleav_def_10-15kb_ds_window_counts_FC_boxplot.jpeg", width=2.2, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+  # 15-20kb
+windows_plotting_df <- pivot_longer(cleav_def_ds_windows_FC_df, cols =8:9)
+windows_plotting_df$name <- factor(windows_plotting_df$name, levels = c(colnames(cleav_def_ds_windows_FC_df[,8:9])))
+
+p <- ggplot(windows_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1) + 
+  coord_cartesian(ylim = c(0,40)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream Reads\nFC after HS") +
+  labs(title = "Cleavage Defect Genes", subtitle = "15-20kb ds") +
+  scale_x_discrete(labels=c("-Dox", "+Dox")) +
+  #scale_y_continuous(breaks = seq(0, 25, by = 5)) +
+  theme(plot.title = element_text(size = 13, hjust=0.5), plot.subtitle = element_text(size = 13, hjust=0.5),   #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#013A63", "#011626")) + #box colors
+  annotate("text", x=1.5, y=40, label= "**", colour = "gray40", size = 6) + #add * above boxplot
+    annotate("segment", x = 1, xend = 2, y = 40, yend = 40, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/cleav_def_15-20kb_ds_window_counts_FC_boxplot.jpeg", width=2.2, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+
+
+#stats
+#0-5kb ds
+res <- wilcox.test(as.numeric(cleav_def_ds_windows_FC_df$ds0to5kb_ctl), as.numeric(cleav_def_ds_windows_FC_df$ds0to5kb_OE) )
+res$p.value #0.2991407 ns
+##boxplot filters out non finite values, stats to match
+r <- filter(cleav_def_ds_windows_FC_df, is.finite(cleav_def_ds_windows_FC_df$ds0to5kb_ctl) & is.finite(cleav_def_ds_windows_FC_df$ds0to5kb_OE))
+res <- wilcox.test(as.numeric(r$ds0to5kb_ctl), as.numeric(r$ds0to5kb_OE) )
+res$p.value #0.3086768 ns
+
+#5-10kb ds
+res <- wilcox.test(as.numeric(cleav_def_ds_windows_FC_df$ds5to10kb_ctl), as.numeric(cleav_def_ds_windows_FC_df$ds5to10kb_OE) )
+res$p.value #0.09146305 ns
+##boxplot filters out non finite values, stats to match
+r <- filter(cleav_def_ds_windows_FC_df, is.finite(cleav_def_ds_windows_FC_df$ds5to10kb_ctl) & is.finite(cleav_def_ds_windows_FC_df$ds5to10kb_OE))
+res <- wilcox.test(as.numeric(r$ds5to10kb_ctl), as.numeric(r$ds5to10kb_OE) )
+res$p.value #0.1384905 ns
+
+#10-15kb ds
+res <- wilcox.test(as.numeric(cleav_def_ds_windows_FC_df$ds10to15kb_ctl), as.numeric(cleav_def_ds_windows_FC_df$ds10to15kb_OE) )
+res$p.value #0.004917966 **
+##boxplot filters out non finite values, stats to match
+r <- filter(cleav_def_ds_windows_FC_df, is.finite(cleav_def_ds_windows_FC_df$ds10to15kb_ctl) & is.finite(cleav_def_ds_windows_FC_df$ds10to15kb_OE))
+res <- wilcox.test(as.numeric(r$ds10to15kb_ctl), as.numeric(r$ds10to15kb_OE) )
+res$p.value #0.02676693 *
+
+#15-20kb ds
+res <- wilcox.test(as.numeric(cleav_def_ds_windows_FC_df$ds15to20kb_ctl), as.numeric(cleav_def_ds_windows_FC_df$ds15to20kb_OE) )
+res$p.value #0.002380959 **
+##boxplot filters out non finite values, stats to match
+r <- filter(cleav_def_ds_windows_FC_df, is.finite(cleav_def_ds_windows_FC_df$ds15to20kb_ctl) & is.finite(cleav_def_ds_windows_FC_df$ds15to20kb_OE))
+res <- wilcox.test(as.numeric(r$ds15to20kb_ctl), as.numeric(r$ds15to20kb_OE) )
+res$p.value #0.008593599 **
+
+
+```
+
+```{r ALL GENES ds count windows: boxplots}
+
+### all analyzable genes ###
+windows_plotting_df <- pivot_longer(ds_windows_FC_df, cols =2:9)
+windows_plotting_df$name <- factor(windows_plotting_df$name, levels = c(colnames(ds_windows_FC_df[,2:9])))
+
+
+p <- ggplot(windows_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1) + 
+  coord_cartesian(ylim = c(0,50)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream Reads\nFC after HS") +
+  labs(title = "All Analyzable Genes") +
+  scale_x_discrete(labels=c("ctl\n0-5kb", "OE\n0-5kb", "ctl\n5-10kb", "OE\n5-10kb", "ctl\n10-15kb", "OE\n10-15kb", "ctl\n15-20kb", "OE\n15-20kb")) +
+  theme(plot.title = element_text(size = 13, hjust=0.5),            #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 10), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  #scale_colour_manual(values=c("#94c5e0", "#2c79a3")) + #box colors
+  annotate("text", x=3.5, y=30, label= "*", colour = "gray40", size = 6) + #add * above boxplot
+    annotate("segment", x = 3, xend = 4, y = 30, yend = 30, colour = "gray40") +
+  annotate("text", x=5.5, y=50, label= "***", colour = "gray40", size = 6) + #add * above boxplot
+    annotate("segment", x = 5, xend = 6, y = 50, yend = 50, colour = "gray40") +
+  annotate("text", x=7.5, y=30, label= "****", colour = "gray40", size = 6) + #add * above boxplot
+    annotate("segment", x = 7, xend = 8, y = 30, yend = 30, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/all_genes_ds_windows_counts_FC_boxplot.jpeg", width=5, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+
+
+## all on separate axis
+  # 0-5kb
+windows_plotting_df <- pivot_longer(ds_windows_FC_df, cols =2:3)
+windows_plotting_df$name <- factor(windows_plotting_df$name, levels = c(colnames(ds_windows_FC_df[,2:3])))
+
+p <- ggplot(windows_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1) + 
+  coord_cartesian(ylim = c(0,8)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream Reads\nFC after HS") +
+  labs(title = "All Analyzable Genes", subtitle = "0-5kb ds") +
+  scale_x_discrete(labels=c("-Dox", "+Dox")) +
+  scale_y_continuous(breaks = seq(0, 14, by = 2)) +
+  theme(plot.title = element_text(size = 13, hjust=0.5), plot.subtitle = element_text(size = 13, hjust=0.5),   #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#89C2D9", "#61A5C2")) #+ #box colors
+  #annotate("text", x=7.5, y=25, label= "*", colour = "gray40", size = 6) + #add * above boxplot
+  #  annotate("segment", x = 7, xend = 8, y = 25, yend = 25, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/all_genes_0-5kb_ds_window_counts_FC_boxplot.jpeg", width=2.2, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+  # 5-10kb
+windows_plotting_df <- pivot_longer(ds_windows_FC_df, cols =4:5)
+windows_plotting_df$name <- factor(windows_plotting_df$name, levels = c(colnames(ds_windows_FC_df[,4:5])))
+
+p <- ggplot(windows_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1) + 
+  coord_cartesian(ylim = c(0,30)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream Reads\nFC after HS") +
+  labs(title = "All Analyzable Genes", subtitle = "5-10kb ds") +
+  scale_x_discrete(labels=c("-Dox", "+Dox")) +
+  scale_y_continuous(breaks = seq(0, 30, by = 5)) +
+  theme(plot.title = element_text(size = 13, hjust=0.5), plot.subtitle = element_text(size = 13, hjust=0.5),   #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#468FAF", "#2C7DA0")) + #box colors
+  annotate("text", x=1.5, y=29, label= "*", colour = "gray40", size = 6) + #add * above boxplot
+    annotate("segment", x = 1, xend = 2, y = 29, yend = 29, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/all_genes_5-10kb_ds_window_counts_FC_boxplot.jpeg", width=2.2, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+  # 10-15kb
+windows_plotting_df <- pivot_longer(ds_windows_FC_df, cols =6:7)
+windows_plotting_df$name <- factor(windows_plotting_df$name, levels = c(colnames(ds_windows_FC_df[,6:7])))
+
+p <- ggplot(windows_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1) + 
+  coord_cartesian(ylim = c(0,50)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream Reads\nFC after HS") +
+  labs(title = "All Analyzable Genes", subtitle = "10-15kb ds") +
+  scale_x_discrete(labels=c("-Dox", "+Dox")) +
+  scale_y_continuous(breaks = seq(0, 50, by = 10)) +
+  theme(plot.title = element_text(size = 13, hjust=0.5), plot.subtitle = element_text(size = 13, hjust=0.5),   #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#2A6F97", "#014F86")) + #box colors
+  annotate("text", x=1.5, y=50, label= "**", colour = "gray40", size = 6) + #add * above boxplot
+    annotate("segment", x = 1, xend = 2, y = 50, yend = 50, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/all_genes_10-15kb_ds_window_counts_FC_boxplot.jpeg", width=2.2, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+  # 15-20kb
+windows_plotting_df <- pivot_longer(ds_windows_FC_df, cols =8:9)
+windows_plotting_df$name <- factor(windows_plotting_df$name, levels = c(colnames(ds_windows_FC_df[,8:9])))
+
+p <- ggplot(windows_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1) + 
+  coord_cartesian(ylim = c(0,30)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream Reads\nFC after HS") +
+  labs(title = "All Analyzable Genes", subtitle = "15-20kb ds") +
+  scale_x_discrete(labels=c("-Dox", "+Dox")) +
+  #scale_y_continuous(breaks = seq(0, 25, by = 5)) +
+  theme(plot.title = element_text(size = 13, hjust=0.5), plot.subtitle = element_text(size = 13, hjust=0.5),   #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#013A63", "#011626")) + #box colors
+  annotate("text", x=1.5, y=30, label= "**", colour = "gray40", size = 6) + #add * above boxplot
+    annotate("segment", x = 1, xend = 2, y = 30, yend = 30, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/all_genes_15-20kb_ds_window_counts_FC_boxplot.jpeg", width=2.2, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+
+
+
+
+
+#stats
+#0-5kb ds
+res <- wilcox.test(as.numeric(ds_windows_FC_df$ds0to5kb_ctl), as.numeric(ds_windows_FC_df$ds0to5kb_OE) )
+res$p.value #0.4676307 ns
+##boxplot filters out non finite values, stats to match
+r <- filter(ds_windows_FC_df, is.finite(ds_windows_FC_df$ds0to5kb_ctl) & is.finite(ds_windows_FC_df$ds0to5kb_OE))
+res <- wilcox.test(as.numeric(r$ds0to5kb_ctl), as.numeric(r$ds0to5kb_OE) )
+res$p.value #0.4179678 ns
+
+#5-10kb ds
+res <- wilcox.test(as.numeric(ds_windows_FC_df$ds5to10kb_ctl), as.numeric(ds_windows_FC_df$ds5to10kb_OE) )
+res$p.value #0.01204763 *
+##boxplot filters out non finite values, stats to match
+r <- filter(ds_windows_FC_df, is.finite(ds_windows_FC_df$ds5to10kb_ctl) & is.finite(ds_windows_FC_df$ds5to10kb_OE))
+res <- wilcox.test(as.numeric(r$ds5to10kb_ctl), as.numeric(r$ds5to10kb_OE) )
+res$p.value #0.02840602 *
+
+#10-15kb ds
+res <- wilcox.test(as.numeric(ds_windows_FC_df$ds10to15kb_ctl), as.numeric(ds_windows_FC_df$ds10to15kb_OE) )
+res$p.value #0.0003068867 ***
+##boxplot filters out non finite values, stats to match
+r <- filter(ds_windows_FC_df, is.finite(ds_windows_FC_df$ds10to15kb_ctl) & is.finite(ds_windows_FC_df$ds10to15kb_OE))
+res <- wilcox.test(as.numeric(r$ds10to15kb_ctl), as.numeric(r$ds10to15kb_OE) )
+res$p.value #0.003763842 **
+
+#15-20kb ds
+res <- wilcox.test(as.numeric(ds_windows_FC_df$ds15to20kb_ctl), as.numeric(ds_windows_FC_df$ds15to20kb_OE) )
+res$p.value #9.405932e-05 ****
+##boxplot filters out non finite values, stats to match
+r <- filter(ds_windows_FC_df, is.finite(ds_windows_FC_df$ds15to20kb_ctl) & is.finite(ds_windows_FC_df$ds15to20kb_OE))
+res <- wilcox.test(as.numeric(r$ds15to20kb_ctl), as.numeric(r$ds15to20kb_OE) )
+res$p.value #0.001961461 **
+
+```
+
+
+
+
+FC over ctl (-Dox)
+  boxplots
+  heatmap
+```{r calc FC over ctl}
+#all genes
+  #df: ds_windows_FC_df
+all_genes_dox_FC_ds_windows_df <- data.frame(transcriptID = ds_windows_FC_df$transcriptID,
+                                             ds_0to5kb_FC = ds_windows_FC_df$ds0to5kb_OE / ds_windows_FC_df$ds0to5kb_ctl,
+                                             ds_5to10kb_FC = ds_windows_FC_df$ds5to10kb_OE / ds_windows_FC_df$ds5to10kb_ctl,
+                                             ds_10to15kb_FC = ds_windows_FC_df$ds10to15kb_OE / ds_windows_FC_df$ds10to15kb_ctl,
+                                             ds_15to20kb_FC = ds_windows_FC_df$ds15to20kb_OE / ds_windows_FC_df$ds15to20kb_ctl
+                                             )
+
+#cleavage defect genes
+  #df: cleav_def_ds_windows_FC_df
+cleav_def_dox_FC_ds_windows_df <- data.frame(transcriptID = cleav_def_ds_windows_FC_df$transcriptID,
+                              ds_0to5kb_FC = cleav_def_ds_windows_FC_df$ds0to5kb_OE / cleav_def_ds_windows_FC_df$ds0to5kb_ctl,
+                              ds_5to10kb_FC = cleav_def_ds_windows_FC_df$ds5to10kb_OE / cleav_def_ds_windows_FC_df$ds5to10kb_ctl,
+                              ds_10to15kb_FC = cleav_def_ds_windows_FC_df$ds10to15kb_OE / cleav_def_ds_windows_FC_df$ds10to15kb_ctl,
+                              ds_15to20kb_FC = cleav_def_ds_windows_FC_df$ds15to20kb_OE / cleav_def_ds_windows_FC_df$ds15to20kb_ctl
+                                             )
+
+#RBBP6 sensitive genes
+  #df: sensitive_ds_windows_FC_df
+sensitive_dox_FC_ds_windows_df <- data.frame(transcriptID = sensitive_ds_windows_FC_df$transcriptID,
+                              ds_0to5kb_FC = sensitive_ds_windows_FC_df$ds0to5kb_OE / sensitive_ds_windows_FC_df$ds0to5kb_ctl,
+                              ds_5to10kb_FC = sensitive_ds_windows_FC_df$ds5to10kb_OE / sensitive_ds_windows_FC_df$ds5to10kb_ctl,
+                              ds_10to15kb_FC = sensitive_ds_windows_FC_df$ds10to15kb_OE / sensitive_ds_windows_FC_df$ds10to15kb_ctl,
+                              ds_15to20kb_FC = sensitive_ds_windows_FC_df$ds15to20kb_OE / sensitive_ds_windows_FC_df$ds15to20kb_ctl
+                                             )
+
+```
+
+boxplots
+```{r RBBP6 SENSITIVE GENES ds window dox FC boxplots}
+
+windows_plotting_df <- pivot_longer(sensitive_dox_FC_ds_windows_df, cols =2:5)
+windows_plotting_df$name <- factor(windows_plotting_df$name, levels = c(colnames(sensitive_dox_FC_ds_windows_df[,2:5])))
+
+
+p <- ggplot(windows_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1) + 
+  coord_cartesian(ylim = c(0,2.5)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream Reads\nFC after Dox after HS") +
+  labs(title = "RBBP6 Sensitive Genes") +
+  scale_x_discrete(labels=c("0-5kb", "5-10kb", "10-15kb", "15-20kb")) +
+  theme(plot.title = element_text(size = 13, hjust=0.5),            #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 10), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#94c5e0", "#5499bf", "#1e678f", "#054061")) #+ #box colors
+  #annotate("text", x=7.5, y=25, label= "*", colour = "gray40", size = 6) + #add * above boxplot
+   # annotate("segment", x = 7, xend = 8, y = 25, yend = 25, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/ds_windows/sensitive_ds_windows_dox_FC_boxplot_no_line.jpeg", width=3, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+#stats
+  #need to do t.test vs FC 1?
+
+
+```
+```{r CLEAVAGE DEFECT GENES ds window dox FC boxplots}
+
+windows_plotting_df <- pivot_longer(cleav_def_dox_FC_ds_windows_df, cols =2:5)
+windows_plotting_df$name <- factor(windows_plotting_df$name, levels = c(colnames(cleav_def_dox_FC_ds_windows_df[,2:5])))
+
+
+p <- ggplot(windows_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1) + 
+  coord_cartesian(ylim = c(0,2.5)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream Reads\nFC after Dox after HS") +
+  labs(title = "Cleavage Defect Genes") +
+  scale_x_discrete(labels=c("0-5kb", "5-10kb", "10-15kb", "15-20kb")) +
+  theme(plot.title = element_text(size = 13, hjust=0.5),            #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 10), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#94c5e0", "#5499bf", "#1e678f", "#054061")) #+ #box colors
+  #annotate("text", x=7.5, y=25, label= "*", colour = "gray40", size = 6) + #add * above boxplot
+   # annotate("segment", x = 7, xend = 8, y = 25, yend = 25, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/ds_windows/cleav_def_ds_windows_dox_FC_boxplot_no_line.jpeg", width=3, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+#stats
+  #need to do t.test vs FC 1?
+
+
+```
+```{r ALL ANALYZABLE GENES ds window dox FC boxplots}
+
+windows_plotting_df <- pivot_longer(all_genes_dox_FC_ds_windows_df, cols =2:5)
+windows_plotting_df$name <- factor(windows_plotting_df$name, levels = c(colnames(all_genes_dox_FC_ds_windows_df[,2:5])))
+
+
+p <- ggplot(windows_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1) + 
+  coord_cartesian(ylim = c(0,2.5)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("Downstream Reads\nFC after Dox after HS") +
+  labs(title = "All Analyzable Genes") +
+  scale_x_discrete(labels=c("0-5kb", "5-10kb", "10-15kb", "15-20kb")) +
+  theme(plot.title = element_text(size = 13, hjust=0.5),            #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 10), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#94c5e0", "#5499bf", "#1e678f", "#054061")) #+ #box colors
+  #annotate("text", x=7.5, y=25, label= "*", colour = "gray40", size = 6) + #add * above boxplot
+   # annotate("segment", x = 7, xend = 8, y = 25, yend = 25, colour = "gray40")
+
+
+jpeg("04_analysis/ds_counts/figures/ds_windows/all_genes_ds_windows_dox_FC_boxplot_no_line.jpeg", width=3, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+#stats
+  #need to do t.test vs FC 1?
+
+```
+
+heatmaps
+**these actually aren't that helpful. Don't really care which genes increase RT 0-5kb but decrease 10-15kb, etc.**
+```{r RBBP6 SENSITIVE GENES ds window dox FC heatmaps}
+library(pheatmap)
+library(RColorBrewer)
+library(gplots)
+
+# df with cols for FC over ctl (-Dox) for each ds window
+all_genes_dox_FC_ds_windows_df
+cleav_def_dox_FC_ds_windows_df
+sensitive_dox_FC_ds_windows_df
+
+#log2
+log2_all_genes_dox_FC_ds_windows_df <- cbind(all_genes_dox_FC_ds_windows_df[1], log2(all_genes_dox_FC_ds_windows_df[2:5]))
+log2_cleav_def_dox_FC_ds_windows_df <- cbind(cleav_def_dox_FC_ds_windows_df[1], log2(cleav_def_dox_FC_ds_windows_df[2:5]))
+log2_sensitive_dox_FC_ds_windows_df <- cbind(sensitive_dox_FC_ds_windows_df[1], log2(sensitive_dox_FC_ds_windows_df[2:5]))
+
+
+#filter for only finite values
+log2_all_genes_dox_FC_ds_windows_df <- filter(log2_all_genes_dox_FC_ds_windows_df, 
+                                           is.finite(log2_all_genes_dox_FC_ds_windows_df[,2]) &
+                                           is.finite(log2_all_genes_dox_FC_ds_windows_df[,3]) &
+                                           is.finite(log2_all_genes_dox_FC_ds_windows_df[,4]) &
+                                           is.finite(log2_all_genes_dox_FC_ds_windows_df[,5]) )
+
+log2_cleav_def_dox_FC_ds_windows_df <- filter(log2_cleav_def_dox_FC_ds_windows_df, 
+                                           is.finite(log2_cleav_def_dox_FC_ds_windows_df[,2]) &
+                                           is.finite(log2_cleav_def_dox_FC_ds_windows_df[,3]) &
+                                           is.finite(log2_cleav_def_dox_FC_ds_windows_df[,4]) &
+                                           is.finite(log2_cleav_def_dox_FC_ds_windows_df[,5]) )
+
+log2_sensitive_dox_FC_ds_windows_df <- filter(log2_sensitive_dox_FC_ds_windows_df, 
+                                           is.finite(log2_sensitive_dox_FC_ds_windows_df[,2]) &
+                                           is.finite(log2_sensitive_dox_FC_ds_windows_df[,3]) &
+                                           is.finite(log2_sensitive_dox_FC_ds_windows_df[,4]) &
+                                           is.finite(log2_sensitive_dox_FC_ds_windows_df[,5]) )
+
+
+### 
+# CLUSTER
+###
+set.seed(123)
+
+## all genes ##
+k5_cluster <- kmeans(log2_all_genes_dox_FC_ds_windows_df[c(2:5)], 5, nstart = 25) #cluster
+log2_all_genes_dox_FC_ds_windows_df$k5_cluster <- k5_cluster$cluster #add cluster col
+log2_all_genes_dox_FC_ds_windows_df <- log2_all_genes_dox_FC_ds_windows_df %>% arrange(log2_all_genes_dox_FC_ds_windows_df$k5_cluster) #order by cluster
+
+## cleavage def genes ##
+k5_cluster <- kmeans(log2_cleav_def_dox_FC_ds_windows_df[c(2:5)], 5, nstart = 25) #cluster
+log2_cleav_def_dox_FC_ds_windows_df$k5_cluster <- k5_cluster$cluster #add cluster col
+log2_cleav_def_dox_FC_ds_windows_df <- log2_cleav_def_dox_FC_ds_windows_df %>% arrange(log2_cleav_def_dox_FC_ds_windows_df$k5_cluster) #order by cluster
+
+## RBBP6 sensitive genes ##
+k5_cluster <- kmeans(log2_sensitive_dox_FC_ds_windows_df[c(2:5)], 5, nstart = 25) #cluster
+log2_sensitive_dox_FC_ds_windows_df$k5_cluster <- k5_cluster$cluster #add cluster col
+log2_sensitive_dox_FC_ds_windows_df <- log2_sensitive_dox_FC_ds_windows_df %>% arrange(log2_sensitive_dox_FC_ds_windows_df$k5_cluster) #order by cluster
+
+
+
+###
+# plot heatmaps
+###
+col_pal <- colorpanel(200, "#0cde04", "black", "#f2110a") #works best for divergent reactions
+#col_pal <- colorpanel(200, "white", "#6db8e3", "#011f57") #blue gradient
+
+
+## all genes ##
+p <- pheatmap(log2_all_genes_dox_FC_ds_windows_df[c(2:5)], scale = "none", cluster_rows=F, cluster_cols=F, col=col_pal, show_rowname=F, border_color=NA, fontsize=10, main="All Analyzable Genes", legend_breaks=c(-4,0,4), breaks = seq(-4,4, length.out=(200)) ) #
+
+jpeg("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/ds_counts/figures/ds_windows/all_genes_ds_windows_heatmap.jpeg", width=2, height=6, units="in", res=300)
+print(p)
+dev.off()
+
+
+## cleavage def genes ##
+p <- pheatmap(log2_cleav_def_dox_FC_ds_windows_df[c(2:5)], scale = "none", cluster_rows=F, cluster_cols=F, col=col_pal, show_rowname=F, border_color=NA, fontsize=10, main="Cleavage Def Genes", legend_breaks=c(-4,0,4), breaks = seq(-4,4, length.out=(200)) ) #
+
+jpeg("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/ds_counts/figures/ds_windows/cleav_def_ds_windows_heatmap.jpeg", width=2, height=6, units="in", res=300)
+print(p)
+dev.off()
+
+
+## RBBP6 sensitive genes ##
+p <- pheatmap(log2_sensitive_dox_FC_ds_windows_df[c(2:5)], scale = "none", cluster_rows=F, cluster_cols=F, col=col_pal, show_rowname=F, border_color=NA, fontsize=10, main="RBBP6 Sensitive Genes", legend_breaks=c(-4,0,4), breaks = seq(-4,4, length.out=(200)) ) #
+
+jpeg("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/ds_counts/figures/ds_windows/sensitive_ds_windows_heatmap.jpeg", width=2, height=6, units="in", res=300)
+print(p)
+dev.off()
+
+```
+
+
+
+
+
+
+
+
+D. RT length analysis
+-----------------------
+```{r RT length analysis}
+RT_final_df <- read.table( "/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/OE_final_RT_length_df_expressed.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+## does OE of RBBP6 during HS decrease RT lengths?
+  ### all genes ###
+
+#plot
+#(bar plot of #genes vs RT length, overlay ctl and OE) *copy from NHS analysis of housekeeping genes
+  ## does shift left with OE
+a <- ggplot(RT_final_df)+
+  geom_histogram(aes(x=ctl_final_defect_length),  
+                 binwidth = 1000, fill = "gray70", color = "black") +
+  geom_histogram(aes(x=OE_final_defect_length), 
+                 binwidth = 1000, fill= "#94c5e0", color = "#2c79a3", alpha = 0.5) + #"#94c5e0", "#2c79a3"
+  #scale_fill_manual(values=c("gray60", "#c0e8b7")) +
+  xlab("RT Length") + ylab("Number of Genes") +
+  ggtitle("RT Lengths of All Genes") +
+  scale_x_continuous(labels=c("0", "5kb", "10kb", "15kb", "20kb+")) +
+  #scale_y_continuous(labels = scales::percent) +
+  theme(axis.title = element_text(size = 13, color = "black"), 
+        axis.text = element_text(size = 12),  #change axis label size
+        #legend.position=c(0.8,0.8),
+        plot.margin = margin(10, 10, 10, 10),
+        plot.title = element_text(size = 13, face = "bold", hjust = 0.5, vjust=0),  #change size of title, 
+        plot.title.position = "plot", 
+        plot.subtitle = element_text(size=1))  #subtitle is blank but changing size allows for margin between plot and title
+
+jpeg("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/figures/RT_length_v_num_genes_OE_v_ctl.jpeg", width=3.25, height=2.75, units = "in", res = 500)
+print(a)
+dev.off()
+
+
+
+# boxplot
+RT_plotting_df <- final_RT_df[c(1,4,8)]
+colnames(RT_plotting_df) <- c("transcriptID", "-Dox", "+Dox")
+RT_plotting_df <- pivot_longer(RT_plotting_df, cols = 2:3)
+
+b <- ggplot(RT_plotting_df, aes(y=value/1000, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = 16, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,22)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("RT length (kb)") +
+  labs(title = "All Genes") +
+  theme(plot.title = element_text(size = 13, hjust=0.5),            #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#94c5e0", "#2c79a3")) + #box colors
+  annotate("text", x=1.5, y=22, label= "****", colour = "gray40", size = 6) + #add * above boxplot
+    annotate("segment", x = 1, xend = 2, y = 22, yend = 22, colour = "gray40")
+
+
+#stats
+#ctl vs OE
+res <- wilcox.test(as.numeric(final_RT_df[,4]), as.numeric(final_RT_df[,8]) )
+res$p.value #2.332551e-37 ****
+
+
+jpeg("04_analysis/RT_length/figures/all_genes_RT_length_boxplot_OE_v_ctl.jpeg", width=2.2, height=2.8, units="in", res=300)
+print(b)
+dev.off()
+
+
+### RBBP6 cleavage sensitive genes
+#filter RT df for just RBBP6 cleavage sensitive genes
+UC_FC_df <- read.table("04_analysis/uncleaved_reads/FC_uncleaved_reads_gene_norm.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+t <- filter(UC_FC_df, UC_FC_df$RBBP6_sensitive == "sensitive")
+sensitive_final_RT_df <- filter(final_RT_df, final_RT_df$transcriptID %in% t$transcriptID)
+
+
+# boxplot
+RT_plotting_df <- sensitive_final_RT_df[c(1,4,8)]
+colnames(RT_plotting_df) <- c("transcriptID", "-Dox", "+Dox")
+RT_plotting_df <- pivot_longer(RT_plotting_df, cols = 2:3)
+
+b <- ggplot(RT_plotting_df, aes(y=value/1000, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = 16, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,22)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("RT length (kb) \n") +
+  labs(title = "RBBP6 Sensitive Genes") +
+  theme(plot.title = element_text(size = 13, hjust=0.9),            #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#94c5e0", "#2c79a3")) + #box colors
+  annotate("text", x=1.5, y=22, label= "****", colour = "gray40", size = 6) + #add * above boxplot
+    annotate("segment", x = 1, xend = 2, y = 22, yend = 22, colour = "gray40")
+
+
+#stats
+#ctl vs OE
+res <- wilcox.test(as.numeric(sensitive_final_RT_df[,4]), as.numeric(sensitive_final_RT_df[,8]) )
+res$p.value #5.216951e-10 ****
+
+#change boxplot dimensions to match
+jpeg("04_analysis/RT_length/figures/RBBP6_sensitive_genes_RT_length_boxplot_OE_v_ctl.jpeg", width=2.2, height=3, units="in", res=300)
+print(b)
+dev.off()
+
+```
+
+heatmap - RT length change
+```{r}
+library(pheatmap)
+library(RColorBrewer)
+library(gplots)
+
+#make df with RBBP6 sensitive genes
+UC_FC_df <- read.table("04_analysis/uncleaved_reads/FC_uncleaved_reads_gene_norm.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+t <- filter(UC_FC_df, UC_FC_df$RBBP6_sensitive == "sensitive") #RBBP6 sensitive genes
+sensitive_final_RT_df <- filter(final_RT_df, final_RT_df$transcriptID %in% t$transcriptID)
+
+#want df with cols for ctl HS FC 5kb, OE 5kb, ctl 20kb, OE 20kb
+RT_length_heatmap_df <- sensitive_final_RT_df[c(1,4,8)]
+RT_length_heatmap_df$ctl <- 0
+RT_length_heatmap_df$OE <- RT_length_heatmap_df$OE_final_defect_length - RT_length_heatmap_df$ctl_final_defect_length #calc change in RT length after OE
+summary(RT_length_heatmap_df$OE)
+
+
+#cluster
+set.seed(123)
+k5_cluster <- kmeans(RT_length_heatmap_df[c(4:5)], 5, nstart = 25)
+
+
+##order by cluster
+RT_length_heatmap_df$k5_cluster <- k5_cluster$cluster
+RT_length_heatmap_df <- RT_length_heatmap_df %>% arrange(RT_length_heatmap_df$k5_cluster)
+table(RT_length_heatmap_df$k5_cluster)
+#  1   2   3   4   5 
+#519 210  92  65  95 
+# group 1 = no change (519 genes)
+#groups 2-4 = decreased RT with OE (367 genes)
+#group 5 = increased RT with OE (95 genes)
+#checking individual genes, I can't really find any that clearly decrease RT length or magnetude by eye...
+
+write_delim(RT_length_heatmap_df, "04_analysis/heatmaps/RT_length_heatmap_RBBP6_sensitive_genes_df.tsv", delim = "\t", col_names = TRUE)
+
+
+
+## plot
+col_pal <- colorpanel(200, "#0cde04", "black", "#f2110a") #works best for divergent reactions
+col_pal <- colorpanel(200, "white", "#6db8e3", "#011f57") #blue gradient
+
+p <- pheatmap(RT_length_heatmap_df[c(4:5)], scale = "none", cluster_rows=F, cluster_cols=F, col=col_pal, show_rowname=F, border_color=NA, fontsize_col=15, main="RBBP6 sensitve genes", legend_breaks=c(-20000,0,20000), breaks = seq(-20000,20000, length.out=(200))) #
+
+
+jpeg("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/figures/RT_length_heatmap_ctl_and_OE.jpeg", width=2, height=4, units="in", res=300)
+print(p)
+dev.off()
+
+```
+
+
+heatmap - both RT length and RT magnatude (20kb ds counts)
+```{r}
+library(pheatmap)
+library(RColorBrewer)
+library(gplots)
+
+#read in both dfs
+FC_sensitive_ds_heatmap_df <- read.table("04_analysis/heatmaps/FC_OE_d_Ctl_ds_heatmap_RBBP6_sensitive_genes_log2_df.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+RT_length_heatmap_df <- read.table("04_analysis/heatmaps/RT_length_heatmap_RBBP6_sensitive_genes_df.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+
+
+#combine
+combo_heatmap_df <- inner_join(FC_sensitive_ds_heatmap_df[c(1,2,4,6)], RT_length_heatmap_df[c(1,4,5,6)], by = "transcriptID")
+colnames(combo_heatmap_df) <- c("transcriptID", "ctl_20kbds", "OE_20kbds", "20kb_ds_k5_cluster", "ctl_RT_length", "OE_RT_length", "RT_length_k5_cluster")
+
+
+
+#cluster together
+set.seed(123)
+k5_cluster <- kmeans(combo_heatmap_df[c(2,3,5,6)], 5, nstart = 25)
+
+#if need to re-randomize
+combo_heatmap_df <- combo_heatmap_df %>% arrange(combo_heatmap_df$transcriptID)
+##order by cluster
+combo_heatmap_df$combo_k5_cluster <- k5_cluster$cluster
+combo_heatmap_df <- combo_heatmap_df %>% arrange(combo_heatmap_df$combo_k5_cluster)
+
+#ds cluster order
+combo_heatmap_df <- combo_heatmap_df %>% arrange(combo_heatmap_df$`20kb_ds_k5_cluster`)
+#RT length cluster order
+combo_heatmap_df <- combo_heatmap_df %>% arrange(combo_heatmap_df$RT_length_k5_cluster)
+#order by RT length straight out
+combo_heatmap_df <- combo_heatmap_df %>% arrange(combo_heatmap_df$OE_RT_length)
+
+
+
+
+## plot separately (different scales)
+col_pal <- colorpanel(200, "#0cde04", "black", "#f2110a") #works best for divergent reactions
+col_pal <- colorpanel(200, "white", "#6db8e3", "#011f57") #blue gradient
+
+  ## ds counts FC
+p <- pheatmap(combo_heatmap_df[c(2:3)], scale = "none", cluster_rows=F, cluster_cols=F, col=col_pal, show_rowname=F, border_color=NA, fontsize_col=15, main="RBBP6 sensitve genes", legend_breaks=c(-1.5,0,1.5), breaks = seq(-1.5,1.5, length.out=(200))) #
+
+jpeg("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/figures/RT_length_heatmap_ctl_and_OE.jpeg", width=2, height=4, units="in", res=300)
+print(p)
+dev.off()
+
+
+  ## RT length
+p <- pheatmap(combo_heatmap_df[c(5:6)], scale = "none", cluster_rows=F, cluster_cols=F, col=col_pal, show_rowname=F, border_color=NA, fontsize_col=15, main="RBBP6 sensitve genes", legend_breaks=c(-20000,0,20000), breaks = seq(-20000,20000, length.out=(200))) #
+
+jpeg("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/figures/RT_length_heatmap_ctl_and_OE.jpeg", width=2, height=4, units="in", res=300)
+print(p)
+dev.off()
+
+```
+
+
+
+
+
+
+
+
+
+
+D.2. RT length analysis - RT length >25% of gene signal method
+```{r RT length analysis}
+RT_final_df_2 <- read.table( "/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/percent_of_gene_txn_method/RT_end_points.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+## does OE of RBBP6 during HS decrease RT lengths?
+  ### all genes ###
+
+#plot
+#(bar plot of #genes vs RT length, overlay ctl and OE) *copy from NHS analysis of housekeeping genes
+  ## does shift left with OE
+a <- ggplot(RT_final_df_2)+
+  geom_histogram(aes(x=ctl_RT_length),  
+                 binwidth = 1000, fill = "gray70", color = "black") +
+  geom_histogram(aes(x=OE_RT_length), 
+                 binwidth = 1000, fill= "#94c5e0", color = "#2c79a3", alpha = 0.5) + #"#94c5e0", "#2c79a3"
+  #scale_fill_manual(values=c("gray60", "#c0e8b7")) +
+  xlab("RT Length") + ylab("Number of Genes") +
+  ggtitle("RT Lengths of All Genes") +
+  scale_x_continuous(labels=c("0", "5kb", "10kb", "15kb", "20kb+")) +
+  #scale_y_continuous(labels = scales::percent) +
+  theme(axis.title = element_text(size = 13, color = "black"), 
+        axis.text = element_text(size = 12),  #change axis label size
+        #legend.position=c(0.8,0.8),
+        plot.margin = margin(10, 10, 10, 10),
+        plot.title = element_text(size = 13, face = "bold", hjust = 0.5, vjust=0),  #change size of title, 
+        plot.title.position = "plot", 
+        plot.subtitle = element_text(size=1))  #subtitle is blank but changing size allows for margin between plot and title
+
+jpeg("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/percent_of_gene_txn_method/figures/hist_RT_length_v_num_genes_OE_v_ctl.jpeg", width=3.25, height=2.75, units = "in", res = 500)
+print(a)
+dev.off()
+
+
+
+# boxplot
+RT_plotting_df <- RT_final_df_2[c(1,6,7)]
+colnames(RT_plotting_df) <- c("transcriptID", "-Dox", "+Dox")
+RT_plotting_df <- pivot_longer(RT_plotting_df, cols = 2:3)
+
+b <- ggplot(RT_plotting_df, aes(y=value/1000, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = 16, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,22)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("RT length (kb)") +
+  labs(title = "All Genes") +
+  theme(plot.title = element_text(size = 13, hjust=0.5),            #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#94c5e0", "#2c79a3")) + #box colors
+  annotate("text", x=1.5, y=22, label= "****", colour = "gray40", size = 6) + #add * above boxplot
+    annotate("segment", x = 1, xend = 2, y = 22, yend = 22, colour = "gray40")
+
+
+#stats
+#ctl vs OE
+res <- wilcox.test(as.numeric(RT_final_df_2[,6]), as.numeric(RT_final_df_2[,7]) )
+res$p.value #9.687416e-07 ****
+
+
+jpeg("04_analysis/RT_length/percent_of_gene_txn_method/figures/all_genes_RT_length_boxplot_OE_v_ctl.jpeg", width=2.2, height=2.8, units="in", res=300)
+print(b)
+dev.off()
+
+
+### RBBP6 cleavage sensitive genes
+#filter RT df for just RBBP6 cleavage sensitive genes
+UC_FC_df <- read.table("04_analysis/uncleaved_reads/FC_uncleaved_reads_gene_norm.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+t <- filter(UC_FC_df, UC_FC_df$RBBP6_sensitive == "sensitive")
+sensitive_final_RT_df <- filter(RT_final_df_2, RT_final_df_2$transcriptID %in% t$transcriptID)
+
+
+# boxplot
+RT_plotting_df <- sensitive_final_RT_df[c(1,6,7)]
+RT_plotting_df <- sensitive_final_RT_df[c(1,6,7)] #for HS only comparison
+colnames(RT_plotting_df) <- c("transcriptID", "-Dox", "+Dox")
+RT_plotting_df <- pivot_longer(RT_plotting_df, cols = 2:3)
+
+b <- ggplot(RT_plotting_df, aes(y=value/1000, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = 16, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,22)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  ylab("RT length (kb) \n") +
+  labs(title = "RBBP6 Sensitive Genes") +
+  theme(plot.title = element_text(size = 13, hjust=0.9),            #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("#94c5e0", "#2c79a3")) + #box colors
+  annotate("text", x=1.5, y=22, label= "*", colour = "gray40", size = 6) + #add * above boxplot
+    annotate("segment", x = 1, xend = 2, y = 22, yend = 22, colour = "gray40")
+
+
+#stats
+#ctl vs OE
+res <- wilcox.test(as.numeric(sensitive_final_RT_df[,6]), as.numeric(sensitive_final_RT_df[,7]) )
+res$p.value #0.04857857 *
+
+#change boxplot dimensions to match
+jpeg("04_analysis/RT_length/percent_of_gene_txn_method/figures/RBBP6_sensitive_genes_RT_length_boxplot_OE_v_ctl.jpeg", width=2.2, height=3, units="in", res=300)
+print(b)
+dev.off()
+
+```
+
+
+
+
+heatmap - RT length change
+```{r set up df}
+library(pheatmap)
+library(RColorBrewer)
+library(gplots)
+
+#make df with RBBP6 sensitive genes
+UC_FC_df <- read.table("04_analysis/uncleaved_reads/FC_uncleaved_reads_gene_norm.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+t <- filter(UC_FC_df, UC_FC_df$RBBP6_sensitive == "sensitive")
+sensitive_final_RT_df <- filter(RT_final_df_2, RT_final_df_2$transcriptID %in% t$transcriptID)
+
+#want df with cols for ctl HS FC 5kb, OE 5kb, ctl 20kb, OE 20kb
+RT_length_heatmap_df <- sensitive_final_RT_df[c(1,6:9)]
+RT_length_heatmap_df$ctl <- 0
+summary(RT_length_heatmap_df$OE)
+```
+
+
+```{r original RT length OE vs RT length ctl}
+#cluster
+set.seed(123)
+k5_cluster <- kmeans(RT_length_heatmap_df[c(4,6)], 5, nstart = 25)
+
+##order by cluster
+RT_length_heatmap_df$k5_cluster <- k5_cluster$cluster
+RT_length_heatmap_df <- RT_length_heatmap_df %>% arrange(RT_length_heatmap_df$transcriptID) #randomize before clustering
+RT_length_heatmap_df <- RT_length_heatmap_df %>% arrange(RT_length_heatmap_df$k5_cluster)
+table(RT_length_heatmap_df$k5_cluster)
+#  1   2   3   4   5 
+# 32 102 110  35 454 
+# group 3-4 = decrease in RT with OE ~145 genes
+#groups 5 = little to no change in RT length (-2kb to +1kb) 454 genes
+#group 1-2 = increased RT with OE (~135 genes)
+#checking individual genes, I can't really find any that clearly decrease RT length or magnetude by eye...
+k6_cluster <- kmeans(RT_length_heatmap_df[c(4,6)], 6, nstart = 25)
+RT_length_heatmap_df$k6_cluster <- k6_cluster$cluster
+RT_length_heatmap_df <- RT_length_heatmap_df %>% arrange(RT_length_heatmap_df$transcriptID) #randomize before clustering
+RT_length_heatmap_df <- RT_length_heatmap_df %>% arrange(RT_length_heatmap_df$k6_cluster)
+#pheatmap(RT_length_heatmap_df[c(4,6)], scale = "none", cluster_rows=F, cluster_cols=F, col=col_pal, show_rowname=F, border_color=NA, fontsize_col=15, main="RBBP6 sensitve genes", legend_breaks=c(-20000,0,20000), breaks = seq(-20000,20000, length.out=(200))) 
+
+
+#order by HS RT length method
+  #cluster
+HS_k4_cluster <- kmeans(RT_length_heatmap_df[c(5,6)], 4, nstart = 25)
+RT_length_heatmap_df$HS_k4_cluster <- HS_k4_cluster$cluster
+  #order
+RT_length_heatmap_df <- RT_length_heatmap_df %>% arrange(RT_length_heatmap_df$transcriptID) #randomize before clustering
+RT_length_heatmap_df <- RT_length_heatmap_df %>% arrange(desc(RT_length_heatmap_df$HS_k4_cluster))
+  # 5 clusters
+HS_k5_cluster <- kmeans(RT_length_heatmap_df[c(5,6)], 5, nstart = 25)
+RT_length_heatmap_df$HS_k5_cluster <- HS_k5_cluster$cluster
+  #order
+RT_length_heatmap_df <- RT_length_heatmap_df %>% arrange(RT_length_heatmap_df$transcriptID) #randomize before clustering
+RT_length_heatmap_df <- RT_length_heatmap_df %>% arrange(RT_length_heatmap_df$HS_k5_cluster)
+  # 6 clusters
+HS_k6_cluster <- kmeans(RT_length_heatmap_df[c(5,6)], 6, nstart = 25)
+RT_length_heatmap_df$HS_k6_cluster <- HS_k6_cluster$cluster
+  #order
+RT_length_heatmap_df <- RT_length_heatmap_df %>% arrange(RT_length_heatmap_df$transcriptID) #randomize before clustering
+RT_length_heatmap_df <- RT_length_heatmap_df %>% arrange(RT_length_heatmap_df$HS_k6_cluster)
+pheatmap(RT_length_heatmap_df[c(5,6)], scale = "none", cluster_rows=F, cluster_cols=F, col=col_pal, show_rowname=F, border_color=NA, fontsize_col=15, main="RBBP6 sensitve genes", legend_breaks=c(-20000,0,20000), breaks = seq(-20000,20000, length.out=(200))) 
+
+
+write_delim(RT_length_heatmap_df, "04_analysis/RT_length/percent_of_gene_txn_method/RT_length_heatmap_RBBP6_sensitive_genes_df.tsv", delim = "\t", col_names = TRUE)
+RT_length_heatmap_df <- read.table("04_analysis/RT_length/percent_of_gene_txn_method/RT_length_heatmap_RBBP6_sensitive_genes_df.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+
+
+
+## plot ##
+col_pal <- colorpanel(200, "#0cde04", "black", "#f2110a") #works best for divergent reactions
+#col_pal <- colorpanel(200, "white", "#6db8e3", "#011f57") #blue gradient
+
+p <- pheatmap(RT_length_heatmap_df[c(6,5)], scale = "none", cluster_rows=F, cluster_cols=F, col=col_pal, show_rowname=F, border_color=NA, fontsize_col=15, main="RBBP6 sensitve genes", labels_col=c("ctl", "OE (HS)"), legend_breaks=c(-20000,0,20000), breaks = seq(-20000,20000, length.out=(200))) #
+
+
+jpeg("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/percent_of_gene_txn_method/figures/RT_length_heatmap_HS_length_method_6_clusters.jpeg", width=2, height=4, units="in", res=500)
+print(p)
+dev.off()
+
+```
+
+
+ENST00000273963.10    KLHL8     likely decreases but not by 17kb
+ENST00000312561.9     RESF1     maybe shorter, maybe slightly fewer ds counts... hard to tell but not a 20kb decease
+ENST00000322623.10    RUVBL1    RT extends far past 20kb for both OE and ctl
+ENST00000314970.11    PRIMPOL   maybe less RT but again extends more than 20kb ds for both OE and ctl and looks similar for NHSs
+ENST00000318950.11    SWAP70    long NHS and HS RT, all should be over 20kb
+ENST00000305560.11    AFG2B     long RT but with a gap close to the end of the gene in OE HS so I see how that read as no RT
+ENST00000380034.8     TRIM5     long RT but agoin with a low spot in OE HS
+ENST00000273075.9     DNPEP     maybe slightly shorter RT but more than 20kb ds, doesn't look like -15kb
+
+
+ENST00000306200.7     STX18     good shortening example
+
+
+
+
+
+check correlation between RT length and ds counts change in OE
+```{r BAD, no correlation}
+#read in both dfs
+FC_sensitive_ds_heatmap_df <- read.table("04_analysis/heatmaps/FC_OE_d_Ctl_ds_heatmap_RBBP6_sensitive_genes_log2_df.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+RT_length_heatmap_df <- read.table("04_analysis/RT_length/percent_of_gene_txn_method/RT_length_heatmap_RBBP6_sensitive_genes_df.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+
+
+#combine
+combo_heatmap_df <- inner_join(FC_sensitive_ds_heatmap_df[c(1,2,4,6)], RT_length_heatmap_df[c(1,6,4,5,7,8)], by = "transcriptID")
+colnames(combo_heatmap_df) <- c("transcriptID", "ctl_20kbds", "OE_20kbds", "20kb_ds_k5_cluster", "ctl_RT_length", "OE_RT_length", "RT_length_k5_cluster")
+
+
+#what if I make RT length in kb - closer to same scale as FC
+combo_heatmap_df$change_RT_length_w_OE <- combo_heatmap_df$change_RT_length_w_OE / 1000
+combo_heatmap_df$change_HS_RT_length_w_OE <- combo_heatmap_df$change_HS_RT_length_w_OE / 1000
+  # RT length -20 to 20
+  # FC is -1.5 to 1 -> multiply by 15 (-22 to 15, keep in extra col)
+combo_heatmap_df$manip_FC <- combo_heatmap_df$FC_20kbds * 15
+
+
+
+#cluster together
+set.seed(123)
+combo_k5_cluster <- kmeans(combo_heatmap_df[c(5,6,10)], 5, nstart = 25)
+
+#re-randomize
+combo_heatmap_df <- combo_heatmap_df %>% arrange(combo_heatmap_df$transcriptID)
+##order by cluster
+combo_heatmap_df$combo_k5_cluster <- combo_k5_cluster$cluster
+combo_heatmap_df <- combo_heatmap_df %>% arrange(combo_heatmap_df$combo_k5_cluster)
+
+
+
+
+## plot separately (different scales)
+col_pal <- colorpanel(200, "#0cde04", "black", "#f2110a") #works best for divergent reactions
+
+  ## ds counts FC
+p <- pheatmap(combo_heatmap_df[c(2:3)], scale = "none", cluster_rows=F, cluster_cols=F, col=col_pal, show_rowname=F, border_color=NA, fontsize_col=15, main="RBBP6 sensitve genes", legend_breaks=c(-1.5,0,1.5), breaks = seq(-1.5,1.5, length.out=(200))) #
+
+jpeg("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/percent_of_gene_txn_method/figures/ds20kb_counts_heatmap_combo_cluster.jpeg", width=2, height=7, units="in", res=500)
+print(p)
+dev.off()
+
+
+  ## RT length
+p <- pheatmap(combo_heatmap_df[c(5:6)], scale = "none", cluster_rows=F, cluster_cols=F, col=col_pal, show_rowname=F, border_color=NA, fontsize_col=15, main="RBBP6 sensitve genes", legend_breaks=c(-20,0,20), breaks = seq(-20,20, length.out=(200))) #
+
+jpeg("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/percent_of_gene_txn_method/figures/RT_length_heatmap_RT_length_method_combo_cluster.jpeg", width=2, height=10, units="in", res=500)
+print(p)
+dev.off()
+
+
+
+#### ok what if instead of clustering together, I order by FC or RT length and plot the other, then does it roughly follow the same trend?
+####
+
+#re-randomize
+combo_heatmap_df <- combo_heatmap_df %>% arrange(combo_heatmap_df$transcriptID)
+##order by FC
+combo_heatmap_df <- combo_heatmap_df %>% arrange(combo_heatmap_df$FC_20kbds)
+
+#plot FC to confirm in order
+p <- pheatmap(combo_heatmap_df[c(2:3)], scale = "none", cluster_rows=F, cluster_cols=F, col=col_pal, show_rowname=F, border_color=NA, fontsize_col=15, main="RBBP6 sensitve genes", legend_breaks=c(-1.5,0,1.5), breaks = seq(-1.5,1.5, length.out=(200))) #
+jpeg("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/percent_of_gene_txn_method/figures/ds20kb_counts_heatmap_order_by_FC.jpeg", width=2, height=7, units="in", res=500)
+print(p)
+dev.off()
+#plot RT length - trending in same order?
+p <- pheatmap(combo_heatmap_df[c(5:6)], scale = "none", cluster_rows=F, cluster_cols=F, col=col_pal, show_rowname=F, border_color=NA, fontsize_col=15, main="RBBP6 sensitve genes", legend_breaks=c(-20,0,20), breaks = seq(-20,20, length.out=(200))) #
+  ## NO, looks random
+jpeg("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/percent_of_gene_txn_method/figures/RT_length_heatmap_RT_length_method_order_by_FC.jpeg", width=2, height=10, units="in", res=500)
+print(p)
+dev.off()
+
+
+
+
+#re-randomize
+combo_heatmap_df <- combo_heatmap_df %>% arrange(combo_heatmap_df$transcriptID)
+##order by RT length
+combo_heatmap_df <- combo_heatmap_df %>% arrange(combo_heatmap_df$change_RT_length_w_OE)
+
+#plot RT length to confirm in order
+p <- pheatmap(combo_heatmap_df[c(5:6)], scale = "none", cluster_rows=F, cluster_cols=F, col=col_pal, show_rowname=F, border_color=NA, fontsize_col=15, main="RBBP6 sensitve genes", legend_breaks=c(-20,0,20), breaks = seq(-20,20, length.out=(200))) #
+jpeg("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/percent_of_gene_txn_method/figures/RT_length_heatmap_RT_length_method_order_by_RT_length.jpeg", width=2, height=10, units="in", res=500)
+print(p)
+dev.off()
+
+#plot FC - trending in same order?
+p <- pheatmap(combo_heatmap_df[c(2:3)], scale = "none", cluster_rows=F, cluster_cols=F, col=col_pal, show_rowname=F, border_color=NA, fontsize_col=15, main="RBBP6 sensitve genes", legend_breaks=c(-1.5,0,1.5), breaks = seq(-1.5,1.5, length.out=(200))) #
+jpeg("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/RT_length/percent_of_gene_txn_method/figures/ds20kb_counts_heatmap_order_by_RT_length.jpeg", width=2, height=7, units="in", res=500)
+print(p)
+dev.off()
+
+```
+
+
+
+

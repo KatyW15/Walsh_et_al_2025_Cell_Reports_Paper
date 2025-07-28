@@ -1,0 +1,442 @@
+---
+title: "06a_making_gene_lists"
+author: "Katy Walsh"
+date: "12/13/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+Start with MANE genes list v0.95 (~18k genes)
+
+1. filter for expressed genes
+*11,240 expressed genes in either NHS or HS (using avg of reps > 50 rpk)*
+
+2. filter for isolated genes (20kb ds window)
+*5,576 isolated expressed genes (unstranded)*
+*8,447 isolated expressed genes (stranded)*
+
+3. filter for genes without read-in
+used HS avg >3 and 2kb window
+***FINAL: 6000 isolated (stranded), expressed, clean genes***
+***FINAL: 4000 isolated (UNstranded), expressed, clean genes***
+
+
+
+
+```{r setup}
+library(tidyverse)
+library(grid)
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+library(ggfortify)
+library(gtable)
+
+setwd("~/Desktop/Katy/HS_4sU-Seq_2021")
+
+```
+
+
+make list of expressed genes (based on 4sU-seq data)
+#ran exon gene counts using Homer analyzeRepeats.pl and -count exons command, normalized to 1e8 total mapped reads 
+#    (see bash script 06a)
+```{r read in exon counts and set up df's}
+#read-in bed read count files
+  #whole gene, MANE mRNA genes
+fl_counts <- list.files("06_defining_gene_lists/exon_gene_counts/norm_total_mapped", 
+                  pattern = "*_hg38.txt",
+                  full.names = TRUE)
+exon_counts_ls <- lapply(fl_counts, read_tsv)
+names(exon_counts_ls) <- gsub("06_defining_gene_lists/exon_gene_counts/norm_total_mapped/|_hg38.txt", "", fl_counts)
+
+
+#pull out geneIDs, length and counts for each sample
+rep1_NHS_counts <- data.frame(genes = exon_counts_ls$rep1_NHS[c(1,6,9)]) #geneID, total exon length, and total read counts
+names(rep1_NHS_counts) <- c('geneID', 'length', 'rep1_NHS_counts') #set col names
+rep1_HS_counts <- data.frame(genes = exon_counts_ls$rep1_HS[c(1,6,9)]) #geneID, total exon length, and total read counts
+names(rep1_HS_counts) <- c('geneID', 'length', 'rep1_HS_counts') #set col names
+rep2_NHS_counts <- data.frame(genes = exon_counts_ls$rep2_NHS[c(1,6,9)]) #geneID, total exon length, and total read counts
+names(rep2_NHS_counts) <- c('geneID', 'length', 'rep2_NHS_counts') #set col names
+rep2_HS_counts <- data.frame(genes = exon_counts_ls$rep2_HS[c(1,6,9)]) #geneID, total exon length, and total read counts
+names(rep2_HS_counts) <- c('geneID', 'length', 'rep2_HS_counts') #set col names
+rep3_NHS_counts <- data.frame(genes = exon_counts_ls$rep3_NHS[c(1,6,9)]) #geneID, total exon length, and total read counts
+names(rep3_NHS_counts) <- c('geneID', 'length', 'rep3_NHS_counts') #set col names
+rep3_HS_counts <- data.frame(genes = exon_counts_ls$rep3_HS[c(1,6,9)]) #geneID, total exon length, and total read counts
+names(rep3_HS_counts) <- c('geneID', 'length', 'rep3_HS_counts') #set col names
+
+#make df with all counts
+merge_rep1 <- merge(rep1_NHS_counts, rep1_HS_counts, by = "geneID")
+merge_rep2 <- merge(rep2_NHS_counts, rep2_HS_counts, by = "geneID")
+merge_rep3 <- merge(rep3_NHS_counts, rep3_HS_counts, by = "geneID")
+merge_1_2 <- merge(merge_rep1, merge_rep2, by = "geneID")
+all_merge <- merge(merge_1_2, merge_rep3, by = "geneID")
+  #is length the same? (YES)
+  #identical(all_merge$length.x, all_merge$length.y) #yes, lengths are identical for all samples (tested multiple pairs, all TRUE)
+#keep one length and all counts
+df_exon_counts <- data.frame(MANE_ID = all_merge$geneID, total_exon_length = all_merge$length.x, all_merge[c(3,7,11,5,9,13)])
+#add NCBI gene IDs
+MANE_genes <- read_tsv("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v095_gene_annotation_info.txt", col_names = TRUE)
+ncbID_df <- data.frame(MANE_ID = MANE_genes$name, NCBI_ID = MANE_genes$ncbiId)
+geneIDconversion_df <- MANE_genes[c(19,1:3,6,17,18,4,21:24)]
+colnames(geneIDconversion_df) <- c("geneName","chrom","chromStart","chromEnd","strand","type","ENSEMBL_gene_ID", "ENSEMBL_transcript_ID","ENSEMBL_protein_ID", "ncbiId","ncbiGene","ncbiProtAcc" ) #clean up col names
+geneIDconversion_df <- geneIDconversion_df[c(1,6:12,2:5)] #actually move chr position to end of df
+write_delim(geneIDconversion_df, "documentation/geneID_conversion_table.tsv", delim = "\t", col_names = TRUE)
+
+df_exon_counts <- merge(df_exon_counts, ncbID_df, by = "MANE_ID")
+df_exon_counts <- df_exon_counts[c(1,9,2:8)]
+
+
+#calculate rpk for each and add to df
+exon_rpk_df <- df_exon_counts[1:2] 
+exon_rpk_df$rep1_NHS_exon_rpk <- round(df_exon_counts$rep1_NHS_counts / (df_exon_counts$total_exon_length / 1000), digits = 4)
+exon_rpk_df$rep2_NHS_exon_rpk <- round(df_exon_counts$rep2_NHS_counts / (df_exon_counts$total_exon_length / 1000), digits = 4)
+exon_rpk_df$rep3_NHS_exon_rpk <- round(df_exon_counts$rep3_NHS_counts / (df_exon_counts$total_exon_length / 1000), digits = 4)
+exon_rpk_df$rep1_HS_exon_rpk <- round(df_exon_counts$rep1_HS_counts / (df_exon_counts$total_exon_length / 1000), digits = 4)
+exon_rpk_df$rep2_HS_exon_rpk <- round(df_exon_counts$rep2_HS_counts / (df_exon_counts$total_exon_length / 1000), digits = 4)
+exon_rpk_df$rep3_HS_exon_rpk <- round(df_exon_counts$rep3_HS_counts / (df_exon_counts$total_exon_length / 1000), digits = 4)
+#cols in the same table so don't need to merge to keep rows aligned
+
+
+
+#write out df's
+write_delim(df_exon_counts, "06_defining_gene_lists/exon_gene_counts/norm_total_mapped/MANE_exon_counts_norm.tsv", delim = "\t", col_names = TRUE)
+write_delim(exon_rpk_df, "06_defining_gene_lists/exon_gene_counts/norm_total_mapped/MANE_exon_rpk_norm.tsv", delim = "\t", col_names = TRUE)
+
+```
+now have rpk across exons for each sample (saved to 06_defining_gene_lists/exon_gene_counts/norm_total_mapped/MANE_exon_rpk_norm.tsv)
+
+```{r expressed genes threshold using rpk accross exons}
+#read in counts accross exons (already norm to seq depth)
+norm_exon_rpk_df <- read_tsv("06_defining_gene_lists/exon_gene_counts/norm_total_mapped/MANE_exon_rpk_norm.tsv", col_names = TRUE)
+
+
+#set threshold for expressed in NHS AND HS
+  #(avg reps then set threshold or set threshold that needs to be expressed in all replicates?)
+  #I think using just the avg is fine
+#average replicates
+avg_exon_rpk_df <- data.frame(MANE_ID = norm_exon_rpk_df$MANE_ID, NCBI_ID = norm_exon_rpk_df$NCBI_ID, NHS_exon_rpk = round((norm_exon_rpk_df$rep1_NHS_exon_rpk + norm_exon_rpk_df$rep2_NHS_exon_rpk + norm_exon_rpk_df$rep3_NHS_exon_rpk)/3, 3) , HS_exon_rpk = round((norm_exon_rpk_df$rep1_HS_exon_rpk + norm_exon_rpk_df$rep2_HS_exon_rpk + norm_exon_rpk_df$rep3_HS_exon_rpk)/3, 3))
+#add avg col and re-save norm_exon_RPK_df
+norm_exon_rpk_df<- left_join(norm_exon_rpk_df, avg_exon_rpk_df[c(1,3,4)], by = "MANE_ID")
+colnames(norm_exon_rpk_df) <- c( colnames(norm_exon_rpk_df[c(1:8)]), "avg_NHS_exon_RPK", "avg_HS_exon_RPK" )
+write_delim(norm_exon_rpk_df, "06_defining_gene_lists/exon_gene_counts/norm_total_mapped/MANE_exon_rpk_norm.tsv", delim = "\t", col_names = TRUE)
+
+#set threshold around rpk >= 50 (same as RPKM >= 0.5, conservative threshold)
+#starting with 18,640 genes
+AND_expressed_genes_rpk <- filter(avg_exon_rpk_df, NHS_exon_rpk >= 50 & HS_exon_rpk >= 50)
+OR_expressed_genes_rpk <- filter(avg_exon_rpk_df, NHS_exon_rpk >= 50 | HS_exon_rpk >= 50)
+#NHS & HS >50: left with 9,901 genes (about half)
+#NHS | HS >50: 11240 genes (only 1,300 more genes excluded when using &)
+AND_excluded_genes <- filter(OR_expressed_genes_rpk, !(OR_expressed_genes_rpk$NCBI_ID %in% AND_expressed_genes_rpk$NCBI_ID))
+nrow(OR_expressed_genes_rpk) - nrow(AND_expressed_genes_rpk) #same number of rows so looks like correctly pulled out genes only in the OR list
+
+## using expressed in HS OR NHS ##
+
+#list of just gene IDs
+expressed_gene_IDs <- OR_expressed_genes_rpk[1:2] 
+
+#write out expressed genes list
+write_delim(OR_expressed_genes_rpk, "06_defining_gene_lists/defining_expressed_genes/MANE_expressed_genes_with_exon_rpk.tsv", delim = "\t", col_names = TRUE)
+write_delim(expressed_gene_IDs, "06_defining_gene_lists/defining_expressed_genes/MANE_expressed_genes.tsv", delim = "\t", col_names = TRUE)
+#other method gene list
+write_delim(AND_expressed_genes_rpk, "06_defining_gene_lists/defining_expressed_genes/AND_method_expressed_genes_test.tsv", delim = "\t", col_names = TRUE)
+#and write out avg exon rpk
+write_delim(avg_exon_rpk_df, "06_defining_gene_lists/defining_expressed_genes/ALL_MANE_avg_exon_rpk_norm.tsv", delim = "\t", col_names = TRUE)
+
+```
+*11,240 expressed genes in either NHS or HS (using avg of reps > 50 rpk)*
+
+
+of expressed genes, make list of isolated expressed (only remove if there's another expressed gene ds)
+```{r isolated expressed genes}
+#make minimally expressed genes list (rpk >= 10)
+min_expressed_genes_df <- filter(avg_exon_rpk_df, NHS_exon_rpk >= 10 & HS_exon_rpk >= 10) #leaving as "&" to reduce genes in HS that have signal due to read-in but aren't actually expressed
+write_delim(min_expressed_genes_df, "06_defining_gene_lists/defining_expressed_genes/MANE_minimally_expressed_genes.tsv", delim = "\t", col_names = TRUE)
+
+#read in MANE bed file (used to check if other genes are nearby)
+MANE_genes_bed <- read_tsv("documentation/MANE_annotation_files/MANE_v095_whole_gene.bed", col_names = FALSE)
+MANE_genes_bed <- MANE_genes_bed[1:6]
+colnames(MANE_genes_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+MANE_20kb_ds_bed <- read_tsv("documentation/MANE_annotation_files/MANE_v095_20kb_ds.bed", col_names = FALSE)
+MANE_20kb_ds_bed <- MANE_20kb_ds_bed[1:6]
+colnames(MANE_20kb_ds_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+#filter whole gene bed file for only minimally expressed genes
+min_expressed_MANE_genes_bed <- filter(MANE_genes_bed, MANE_genes_bed$id %in% min_expressed_genes_df$MANE_ID)
+
+#filter 20kb ds bed file for expressed genes
+  #first need to fix id col so just has gene IDs and not extra describing the 20kb window
+library(stringi)
+id <- stri_split_fixed(MANE_20kb_ds_bed$id, "_", simplify = TRUE) #will be in same order as original
+MANE_20kb_ds_bed$id <- id[,1]
+
+expressed_MANE_20kb_ds_bed <- filter(MANE_20kb_ds_bed, MANE_20kb_ds_bed$id %in% expressed_gene_IDs$MANE_ID)
+
+write_delim(min_expressed_MANE_genes_bed, "06_defining_gene_lists/defining_isolated_genes/b_MANE_minimally_expressed_genes.bed", delim = "\t", col_names = TRUE)
+write_delim(expressed_MANE_20kb_ds_bed, "06_defining_gene_lists/defining_isolated_genes/a_MANE_20kb_ds_of_expressed_genes.bed", delim = "\t", col_names = TRUE)
+
+```
+keep only isolated genes that don't have another expressed gene 20kb ds (bedtools intersect command)
+  filter out if ds gene on either strand (for ChIP-seq and 4sU-seq when comparing w/ ChIP-seq)
+# cd /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/06_defining_gene_lists/defining_isolated_genes
+# conda activate Bed_Tools
+# <Bed_Tools> bedtools intersect -v -f 1E-2 -a a_MANE_20kb_ds_of_expressed_genes.bed -b b_MANE_minimally_expressed_genes.bed > intersect_output_20kb_ds.bed
+  -f sets the minimum overlap required as a fraction of A (since file a is our 20kb windows setting it to 1E-2 will always allow for 200bp overlap before filtering out a gene)
+*5,576 isolated expressed genes (unstranded)*
+
+  filter out if ds gene on the same strand
+# <Bed_Tools> bedtools intersect -v -f 1E-2 -s -a a_MANE_20kb_ds_of_expressed_genes.bed -b b_MANE_minimally_expressed_genes.bed > intersect_stranded_output_20kb_ds.bed
+*8,447 isolated expressed genes (stranded)*
+
+now we have the ds windows but we should remake the bed file that has the actual gene annotations for those genes
+```{r make isolated genes bed file}
+MANE_genes_bed <- read_tsv("documentation/MANE_annotation_files/MANE_v095_whole_gene.bed", col_names = FALSE)
+MANE_genes_bed <- MANE_genes_bed[1:6]
+colnames(MANE_genes_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+isolated_unstranded_ds_of_genes_bed <- read.table("06_defining_gene_lists/defining_isolated_genes/intersect_output_20kb_ds.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+colnames(isolated_unstranded_ds_of_genes_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+isolated_stranded_ds_of_genes_bed <- read.table("06_defining_gene_lists/defining_isolated_genes/intersect_stranded_output_20kb_ds.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+colnames(isolated_stranded_ds_of_genes_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+
+isolated_unstranded_genes_bed <- filter(MANE_genes_bed, MANE_genes_bed$id %in% isolated_unstranded_ds_of_genes_bed$id)
+isolated_stranded_genes_bed <- filter(MANE_genes_bed, MANE_genes_bed$id %in% isolated_stranded_ds_of_genes_bed$id)
+
+
+write_delim(isolated_unstranded_genes_bed, "06_defining_gene_lists/defining_isolated_genes/isolated_unstranded_genes.bed", delim = "\t", col_names = FALSE)
+write_delim(isolated_stranded_genes_bed, "06_defining_gene_lists/defining_isolated_genes/isolated_stranded_genes.bed", delim = "\t", col_names = FALSE)
+```
+
+
+
+Clean genes list: filter for read-in
+
+using Homer analyzeRepeats and GTF file of MANE genes
+  first, make smaller GTF files for isolated expressed genes
+```{r make GTF file for iso exp genes}
+#read-in file
+MANE_GTF <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v095_from_table_browser.gtf", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+#pull out gene IDs
+library(stringi)
+s <- stri_split_fixed(MANE_GTF$V9, '"', simplify = TRUE) 
+#identical(s[,2], s[,4]) #gene ID is the same as transcript id (col 2 and 4 in s)
+MANE_GTF$IDs <- s[,2] #could use either col 2 or 4 here since identical
+
+#save if need later
+write_delim(MANE_GTF, "06_defining_gene_lists/custom_MANE_GTF_files/MANE_GTF_with_ID_names_col.gtf", delim = "\t", col_names = TRUE)
+#load if needed
+#MANE_GTF <- read.table("06_defining_gene_lists/custom_MANE_GTF_files/MANE_GTF_with_ID_names_col.gtf", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+#filter (read in files to filer)
+isolated_unstranded_genes_bed <- read.table("06_defining_gene_lists/defining_isolated_genes/isolated_unstranded_genes.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+colnames(isolated_unstranded_genes_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+isolated_stranded_genes_bed <- read.table("06_defining_gene_lists/defining_isolated_genes/isolated_stranded_genes.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+colnames(isolated_stranded_genes_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+unstranded_MANE_GTF <- filter(MANE_GTF, MANE_GTF$IDs %in% isolated_unstranded_genes_bed$id)
+stranded_MANE_GTF <- filter(MANE_GTF, MANE_GTF$IDs %in% isolated_stranded_genes_bed$id)
+#length(unique(unstranded_MANE_GTF$IDs)) #good this is the same number of iso. exp. stranded genes
+#length(unique(stranded_MANE_GTF$IDs)) #also good, same as num of iso. exp. unstranded genes
+
+
+#keep only GTF file columns
+unstranded_MANE_GTF <- unstranded_MANE_GTF[1:9]
+stranded_MANE_GTF <- stranded_MANE_GTF[1:9]
+
+
+#write-out
+write_delim(unstranded_MANE_GTF, "06_defining_gene_lists/custom_MANE_GTF_files/iso_exp_unstrand_MANE_v095_from_table_browser.gtf", delim = "\t", col_names = FALSE)
+write_delim(stranded_MANE_GTF, "06_defining_gene_lists/custom_MANE_GTF_files/iso_exp_strand_MANE_v095_from_table_browser.gtf", delim = "\t", col_names = FALSE)
+```
+
+  now, count genes and filter for 1-fold enrichment vs upstream 2kb (all using Homer)
+#<homer> analyzeRepeats.pl MANE_v095_iso_exp_genes.gtf hg38 -count genes -strand + -norm 1e8 -upstream -2000 -L 1 -d <TD> > output
+see 06b bash script for all full commands
+
+Don't make the same mistake:
+what if I fed it the whole MANE GTF file then filtered for iso exp genes?
+  still only getting 174 out of 18,000 genes with 5 fold expression gnbd vs upstream (HS)...why?
+  NHS -> 209 genes
+  HS unstranded -> 336 (why more genes? there should be more antisence txn this way which makes the upstream higher)
+  **I had a typo and was defining "upstream" as the first 2kb of the gene instead of 2kb upstream of the TSS, ugh**
+  *need to use -upstream -# to actually count upstream of TSS just # counts ds of TSS (yes, eventhough -upstream is specified)*
+  now reporting 3,299 clean isolated expressed genes for rep 1 HS (eliminated 1500 genes), will run other reps
+
+
+
+read in files and see what genes overlap as clean and which aren't clean in all replicates
+```{r check clean genes}
+fl <- list.files("06_defining_gene_lists/defining_read_in/stranded_iso_exp_genes_starting_gtf/stranded_upstream_2kb_1fold", 
+                  pattern = "*_hg38.txt",
+                  full.names = TRUE)
+ls <- lapply(fl, read_tsv)
+names(ls) <- gsub("06_defining_gene_lists/defining_read_in/stranded_iso_exp_genes_starting_gtf/stranded_upstream_2kb_1fold/|_hg38.txt", "", fl)
+
+#pull out geneIDs, length and counts for each sample
+rep1_NHS_counts <- data.frame(genes = ls$rep1_NHS[c(1,6,9,10)]) #geneID, total exon length, and total read counts
+names(rep1_NHS_counts) <- c('geneID', 'length', 'rep1_NHS_rpkm', 'rep1_NHS_fold_over_upstream') #set col names
+rep1_HS_counts <- data.frame(genes = ls$rep1_HS[c(1,6,9,10)]) #geneID, total exon length, and total read counts
+names(rep1_HS_counts) <- c('geneID', 'length', 'rep1_HS_rpkm', 'rep1_HS_fold_over_upstream') #set col names
+rep2_NHS_counts <- data.frame(genes = ls$rep2_NHS[c(1,6,9,10)]) #geneID, total exon length, and total read counts
+names(rep2_NHS_counts) <- c('geneID', 'length', 'rep2_NHS_rpkm', 'rep2_NHS_fold_over_upstream') #set col names
+rep2_HS_counts <- data.frame(genes = ls$rep2_HS[c(1,6,9,10)]) #geneID, total exon length, and total read counts
+names(rep2_HS_counts) <- c('geneID', 'length', 'rep2_HS_rpkm', 'rep2_HS_fold_over_upstream') #set col names
+rep3_NHS_counts <- data.frame(genes = ls$rep3_NHS[c(1,6,9,10)]) #geneID, total exon length, and total read counts
+names(rep3_NHS_counts) <- c('geneID', 'length', 'rep3_NHS_rpkm', 'rep3_NHS_fold_over_upstream') #set col names
+rep3_HS_counts <- data.frame(genes = ls$rep3_HS[c(1,6,9,10)]) #geneID, total exon length, and total read counts
+names(rep3_HS_counts) <- c('geneID', 'length', 'rep3_HS_rpkm', 'rep3_HS_fold_over_upstream') #set col names
+
+#make df with all counts
+merge_rep1 <- merge(rep1_NHS_counts, rep1_HS_counts, by = "geneID")
+merge_rep2 <- merge(rep2_NHS_counts, rep2_HS_counts, by = "geneID")
+merge_rep3 <- merge(rep3_NHS_counts, rep3_HS_counts, by = "geneID")
+merge_1_2 <- merge(merge_rep1, merge_rep2, by = "geneID")
+all_merge <- merge(merge_1_2, merge_rep3, by = "geneID")
+  #is length the same? (YES)
+  identical(all_merge$length.x, all_merge$length.y) #yes, lengths are identical for all samples (tested multiple pairs, all TRUE)
+#keep one length and all counts
+df_strandediso_2kb_1fold_clean_genes <- data.frame(MANE_ID = all_merge$geneID, total_exon_length = all_merge$length.x, all_merge[c(3,9,15, 6,12,18 ,4,10,16,7,13,19)])
+```
+checking by hand: some have 2.0 fold over upstream and look totally fine and others have 3-fold difference but look to have read-in
+most look ok
+issues: ENST00000356166.11, ENST00000330070.6, ENST00000334205.9
+(see excel sheet for full notes on testing thresholds and checking genes "HS_4sU-Seq_2021/documentation/06_checking_individual_genes/checking_read-in_thresholds.xlsx")
+
+to look at genes that didn't make the cut:
+```{r}
+IDs <- unstranded_MANE_GTF$IDs
+IDs_singles <- as.data.frame(unique(IDs))
+unclean_genes <- filter(IDs_singles, !(IDs_singles$`unique(IDs)` %in% df_exclusive_clean_genes_rpkm$MANE_ID))
+```
+
+
+```{r filter based on upstream fold threshold}
+##exclusive
+#NHS and HS over 3 in all reps
+#df_exclusive_ALLover3fold_2kbwindow <- filter(df_2kb_1fold_exclusive_clean_genes_rpkm, 
+  #     df_2kb_1fold_exclusive_clean_genes_rpkm$rep1_HS_fold_over_upstream >3,
+  #     df_2kb_1fold_exclusive_clean_genes_rpkm$rep2_HS_fold_over_upstream >3,
+  #     df_2kb_1fold_exclusive_clean_genes_rpkm$rep3_HS_fold_over_upstream >3,
+  #     df_2kb_1fold_exclusive_clean_genes_rpkm$rep1_NHS_fold_over_upstream >3,
+  #     df_2kb_1fold_exclusive_clean_genes_rpkm$rep2_NHS_fold_over_upstream >3,
+  #     df_2kb_1fold_exclusive_clean_genes_rpkm$rep3_NHS_fold_over_upstream >3)
+
+##avg
+#first make avg col
+df_strandediso_2kb_1fold_clean_genes$HS_avg <- round( ((df_strandediso_2kb_1fold_clean_genes$rep1_HS_fold_over_upstream +
+       df_strandediso_2kb_1fold_clean_genes$rep2_HS_fold_over_upstream +
+       df_strandediso_2kb_1fold_clean_genes$rep3_HS_fold_over_upstream) / 3), digits = 3)
+df_strandediso_2kb_1fold_clean_genes$NHS_avg <- round( ((df_strandediso_2kb_1fold_clean_genes$rep1_NHS_fold_over_upstream +
+       df_strandediso_2kb_1fold_clean_genes$rep2_NHS_fold_over_upstream +
+       df_strandediso_2kb_1fold_clean_genes$rep3_NHS_fold_over_upstream) / 3), digits = 3)
+#then filter for avg >3
+#df_avg_ALLover3fold_2kbwindow <- filter(df_2kb_1fold_exclusive_clean_genes_rpkm, 
+ #       df_2kb_1fold_exclusive_clean_genes_rpkm$HS_avg >3,
+ #       df_2kb_1fold_exclusive_clean_genes_rpkm$NHS_avg >3)
+
+#just HS > 3
+strandediso_HSavg_clean_genes_df_2kb_1fold <- filter(df_strandediso_2kb_1fold_clean_genes, 
+       df_strandediso_2kb_1fold_clean_genes$HS_avg >3)
+
+#write out full df's
+write_delim(strandediso_HSavg_clean_genes_df_2kb_1fold, "06_defining_gene_lists/defining_read_in/df_clean_genes_list_strandediso_exp_genes.tsv", delim = "\t", col_names = FALSE)
+write_delim(unstrandediso_HSavg_clean_genes_df_2kb_1fold, "06_defining_gene_lists/defining_read_in/df_clean_genes_UNstrandediso_exp_genes.tsv", delim = "\t", col_names = FALSE)
+
+
+```
+
+used HS avg >3 and 2kb window
+****FINAL: 6000 isolated (stranded), expressed, clean genes****
+****FINAL: 4000 isolated (UNstranded), expressed, clean genes****
+
+
+```{r write out final iso exp clean genes list}
+#write out iso exp clean genes
+strandediso_exp_clean_genes <- data.frame( ID = strandediso_HSavg_clean_genes_df_2kb_1fold$MANE_ID)
+unstrandediso_exp_clean_genes <- data.frame( ID = unstrandediso_HSavg_clean_genes_df_2kb_1fold$MANE_ID)
+
+
+write_delim(strandediso_exp_clean_genes, "06_defining_gene_lists/FINAL_clean_genes_list_strandediso_exp_genes.txt", delim = "\t", col_names = FALSE)
+write_delim(unstrandediso_exp_clean_genes, "06_defining_gene_lists/FINAL_clean_genes_list_UNstrandediso_exp_genes.txt", delim = "\t", col_names = FALSE)
+
+
+#cut of decimal so it's easier to convert to NCBI
+library(stringi)
+#stranded iso exp genes -> clean
+s_stranded <- stri_split_fixed(strandediso_exp_clean_genes$ID, ".", simplify = TRUE) 
+stranded_no_decimal_ids <- s_stranded[,1] #could use either col 2 or 4 here since identical
+write_delim(as.data.frame(stranded_no_decimal_ids), "06_defining_gene_lists/defining_read_in/no_decimal_FINAL_clean_genes_list_strandediso_exp_genes.txt", delim = "\n", col_names = FALSE)
+
+#unstranded iso exp genes -> clean
+s_unstranded <- stri_split_fixed(unstrandediso_exp_clean_genes$ID, ".", simplify = TRUE) 
+unstranded_no_decimal_ids <- s_unstranded[,1] #could use either col 2 or 4 here since identical
+write_delim(as.data.frame(unstranded_no_decimal_ids), "06_defining_gene_lists/defining_read_in/no_decimal_FINAL_clean_genes_list_UNstrandediso_exp_genes.txt", delim = "\n", col_names = FALSE)
+
+```
+
+
+
+
+
+
+---------------------------------------
+(backup method, used previously for ChIP-seq data *upstream window must end at TSS, can't count -3kb to -1kb with Homer method)
+  -> using bed tools and making custom windows for upstream of genes, then using R to set fold threshold
+  -> don't need to skip TSS to -1kb for 4sU-seq data since divergent txn is on opposite strand it's easy to ignore but probably should use this "backup" method whenever using ChIP-seq data since it's not stranded
+```{r filter for read-in: ChIP-seq bedtools method }
+#load bed files
+isolated_unstranded_genes_bed <- read_tsv("06_defining_gene_lists/defining_isolated_genes/isolated_unstranded_genes.bed", col_names = FALSE)
+isolated_stranded_genes_bed <- read_tsv("06_defining_gene_lists/defining_isolated_genes/isolated_stranded_genes.bed", col_names = FALSE)
+
+#set up bed file for -2kb before TSS
+  #set up window 
+  #start: 1kb upstream of TSS, end: 3kb upstream of TTS
+
+upstream_iso_exp_genes_bed <- isolated_unstranded_genes_bed
+upstream_iso_exp_genes_bed <- isolated_stranded_genes_bed ##repeat for stranded iso exp genes
+
+
+i=1
+while(i <= nrow(upstream_iso_exp_genes_bed)){
+  #if on + strand, start = TSS and end = TTS
+  #for upstream window: start = start - 7kb & end = start - 2kb
+  if(upstream_iso_exp_genes_bed$strand[i]=="+"){
+    upstream_iso_exp_genes_bed$end[i] = upstream_iso_exp_genes_bed$start[i] - 1000
+    upstream_iso_exp_genes_bed$start[i] = upstream_iso_exp_genes_bed$start[i] - 3000
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #for upstream window: start = end + 2kb & end = end + 7kb
+  else if(upstream_iso_exp_genes_bed$strand[i]=="-"){
+    upstream_iso_exp_genes_bed$start[i] = upstream_iso_exp_genes_bed$end[i] + 1000
+    upstream_iso_exp_genes_bed$end[i] = upstream_iso_exp_genes_bed$end[i] + 3000  
+    }
+  else{
+    print("no strand annotation!!")
+  }
+  i = i+1
+}
+#remove any negative values
+upstream_iso_exp_genes_bed <- filter(upstream_iso_exp_genes_bed, upstream_iso_exp_genes_bed$start >= 0)
+upstream_iso_exp_genes_bed <- filter(upstream_iso_exp_genes_bed, upstream_iso_exp_genes_bed$end >= 0)
+#check window size
+x<- abs(upstream_iso_exp_genes_bed$start - upstream_iso_exp_genes_bed$end) == 2000
+stopifnot(x)
+summary(x) #all true
+
+#save
+##unstranded
+write_delim(upstream_iso_exp_genes_bed, "06_defining_gene_lists/defining_isolated_genes/upstream_1-3kb_isolated_unstranded_genes.bed", delim = "\t", col_names = FALSE)
+##stranded
+write_delim(upstream_iso_exp_genes_bed, "06_defining_gene_lists/defining_isolated_genes/upstream_1-3kb_isolated_stranded_genes.bed", delim = "\t", col_names = FALSE)
+
+```
+
+then count reads -1kb to -3kb before genes in HS 
+#<Bed_Tools> count upstream_window.be
+
+
+

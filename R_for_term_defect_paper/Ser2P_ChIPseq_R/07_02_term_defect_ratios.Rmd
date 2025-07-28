@@ -1,0 +1,482 @@
+---
+title: "07_02_term_defect_ratios"
+author: "Katy Walsh"
+date: "5/13/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+wd: /Users/goodrichlab/Desktop/Katy_ChIPseq1/hg38/
+
+```{r setup, include=FALSE}
+library(tidyverse)
+```
+
+making a df with counts accross various regions so we can calculate term defect ratios (ds/gnbd)
+df format:
+geneID, gnbd_counts, 5kb_ds_counts, 20kb_ds_counts, term_defect_ratio_5kb, term_defect_ratio_20kb
+
+1. make bed files with windows to count over, using isolated genes list
+(gnbd, TTS-5kb ds, 5kb-20kb ds)
+```{r make count windows}
+#read in isolated genes bed file
+iso_genes_bed <- read.table("05_making_isolated_genes_list_hg38/gene_lists_bed_files/03c_isolated_expressed_genes.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+colnames(iso_genes_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+
+#make gnbd window
+iso_gnbd_bed <- iso_genes_bed
+i = 1
+while(i <= nrow(iso_gnbd_bed)){
+  #if on + strand, start = TSS and end = TTS
+  #for gnbd (TSS+250 to TTS): start = start +250, end = end
+  if(iso_gnbd_bed$strand[i]=="+"){
+    iso_gnbd_bed$start[i] = iso_gnbd_bed$start[i] + 250
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #for gnbd (TSS+250 to TTS): start = start, end = end -250
+  else{
+    iso_gnbd_bed$end[i] = iso_gnbd_bed$end[i] - 250
+  }
+  i = i+1
+}
+
+#5kb ds
+ds_5kb_bed <- iso_genes_bed
+i = 1
+while(i <= nrow(ds_5kb_bed)){
+  #if on + strand, start = TSS and end = TTS
+  #for 5kb ds: start = end & end = end + 5,000 bp
+  if(ds_5kb_bed$strand[i]=="+"){
+    ds_5kb_bed$start[i] = ds_5kb_bed$end[i]
+    ds_5kb_bed$end[i] = ds_5kb_bed$end[i] + 5000
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #for 5kb ds: end = start & start = start - 5,000 bp
+  else{
+    ds_5kb_bed$end[i] = ds_5kb_bed$start[i]
+    ds_5kb_bed$start[i] = ds_5kb_bed$start[i] - 5000
+  }
+  i = i+1
+}
+
+#remove annotations that go into the negative
+ds_5kb_bed <- filter(ds_5kb_bed, ds_5kb_bed$start >= 0)
+#didn't remove any
+
+#20kb ds
+ds_20kb_bed <- iso_genes_bed
+i = 1
+while(i <= nrow(ds_20kb_bed)){
+  #if on + strand, start = TSS and end = TTS
+  #for 5kb-20kb ds: start = end + 5000 & end = end + 20,000 bp
+  if(ds_20kb_bed$strand[i]=="+"){
+    ds_20kb_bed$start[i] = ds_20kb_bed$end[i] + 5000
+    ds_20kb_bed$end[i] = ds_20kb_bed$end[i] + 20000
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #for 5kb-20kb ds: end = start - 5000 & start = start - 20,000 bp
+  else{
+    ds_20kb_bed$end[i] = ds_20kb_bed$start[i] - 5000
+    ds_20kb_bed$start[i] = ds_20kb_bed$start[i] - 20000
+  }
+  i = i+1
+}
+
+#remove annotations that go into the negative
+ds_20kb_bed <- filter(ds_20kb_bed, ds_20kb_bed$start >= 0)
+#didn't remove any
+
+#write out bed files
+write_delim(iso_gnbd_bed, "07_analysis/07_02_bed_files/gnbd_isolated_genes.bed", delim = "\t", col_names = FALSE)
+write_delim(ds_5kb_bed, "07_analysis/07_02_bed_files/ds_5kb_of_isolated_genes.bed", delim = "\t", col_names = FALSE)
+write_delim(ds_20kb_bed, "07_analysis/07_02_bed_files/ds_20kb_of_isolated_genes.bed", delim = "\t", col_names = FALSE)
+
+```
+
+2. bedtools coverage to count tags in each window per gene
+#<Bed_Tools> bedtools coverage ....
+see 07_02 bash script
+
+3. import, normalize and make df
+```{r import}
+fl <- list.files("07_analysis/07_02_bed_files/counts/", 
+                  pattern = "*_count.bed",
+                  full.names = TRUE)
+term_defect_counts <- lapply(fl, read.table, header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(term_defect_counts) <- gsub("07_analysis/07_02_bed_files/counts//|_count.bed", "", fl)
+```
+
+```{r make df and normalize for num reads}
+#geneID, gnbd_counts, 5kb_ds_counts, 20kb_ds_counts
+term_defect_df <- data.frame(geneID = term_defect_counts$gnbd_input[,4],
+                             gnbd_input = term_defect_counts$gnbd_input[,7],
+                             gnbd_NHS_Rpb1 = term_defect_counts$gnbd_NHS_Rpb1_pooled[,7],
+                             gnbd_HS_Rpb1 = term_defect_counts$gnbd_HS_Rpb1_pooled[,7],
+                             gnbd_NHS_Ser2P = term_defect_counts$gnbd_NHS_Ser2P_pooled[,7],
+                             gnbd_HS_Ser2P = term_defect_counts$gnbd_HS_Ser2P_pooled[,7],
+                             ds_5kb_input = term_defect_counts$`5kb_ds_input`[,7],
+                             ds_5kb_NHS_Rpb1 = term_defect_counts$`5kb_ds_NHS_Rpb1_pooled`[,7],
+                             ds_5kb_HS_Rpb1 = term_defect_counts$`5kb_ds_HS_Rpb1_pooled`[,7],
+                             ds_5kb_NHS_Ser2P = term_defect_counts$`5kb_ds_NHS_Ser2P_pooled`[,7],
+                             ds_5kb_HS_Ser2P = term_defect_counts$`5kb_ds_HS_Ser2P_pooled`[,7],
+                             ds_20kb_input = term_defect_counts$`20kb_ds_input`[,7],
+                             ds_20kb_NHS_Rpb1 = term_defect_counts$`20kb_ds_NHS_Rpb1_pooled`[,7],
+                             ds_20kb_HS_Rpb1 = term_defect_counts$`20kb_ds_HS_Rpb1_pooled`[,7],
+                             ds_20kb_NHS_Ser2P = term_defect_counts$`20kb_ds_NHS_Ser2P_pooled`[,7],
+                             ds_20kb_HS_Ser2P = term_defect_counts$`20kb_ds_HS_Ser2P_pooled`[,7])
+
+#term_defect_df <- column_to_rownames(term_defect_df, var = "geneID")
+
+
+#norm for num mapped reads
+#import num reads per sample
+mapped_reads <- read.table("notes/mapped_reads_per_sample.tsv", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(mapped_reads) <- c("sample","reads")
+mapped_reads <- column_to_rownames(mapped_reads, var = "sample")
+#50,000,000 = factor * num mapped reads
+mapped_reads$factor <- 50000000 / mapped_reads$reads
+
+#normalize
+term_defect_norm_df <- term_defect_df
+#input
+term_defect_norm_df$gnbd_input <- term_defect_norm_df$gnbd_input * mapped_reads["input", "factor"]
+term_defect_norm_df$ds_5kb_input <- term_defect_norm_df$ds_5kb_input * mapped_reads["input", "factor"]
+term_defect_norm_df$ds_20kb_input <- term_defect_norm_df$ds_20kb_input * mapped_reads["input", "factor"]
+#NHS_Rpb1_pooled
+term_defect_norm_df$gnbd_NHS_Rpb1 <- term_defect_norm_df$gnbd_NHS_Rpb1 * mapped_reads["NHS_Rpb1_pooled", "factor"]
+term_defect_norm_df$ds_5kb_NHS_Rpb1 <- term_defect_norm_df$ds_5kb_NHS_Rpb1 * mapped_reads["NHS_Rpb1_pooled", "factor"]
+term_defect_norm_df$ds_20kb_NHS_Rpb1 <- term_defect_norm_df$ds_20kb_NHS_Rpb1 * mapped_reads["NHS_Rpb1_pooled", "factor"]
+#HS_Rpb1_pooled
+term_defect_norm_df$gnbd_HS_Rpb1 <- term_defect_norm_df$gnbd_HS_Rpb1 * mapped_reads["HS_Rpb1_pooled", "factor"]
+term_defect_norm_df$ds_5kb_HS_Rpb1 <- term_defect_norm_df$ds_5kb_HS_Rpb1 * mapped_reads["HS_Rpb1_pooled", "factor"]
+term_defect_norm_df$ds_20kb_HS_Rpb1 <- term_defect_norm_df$ds_20kb_HS_Rpb1 * mapped_reads["HS_Rpb1_pooled", "factor"]
+#NHS_Ser2P_pooled
+term_defect_norm_df$gnbd_NHS_Ser2P <- term_defect_norm_df$gnbd_NHS_Ser2P * mapped_reads["NHS_Ser2P_pooled", "factor"]
+term_defect_norm_df$ds_5kb_NHS_Ser2P <- term_defect_norm_df$ds_5kb_NHS_Ser2P * mapped_reads["NHS_Ser2P_pooled", "factor"]
+term_defect_norm_df$ds_20kb_NHS_Ser2P <- term_defect_norm_df$ds_20kb_NHS_Ser2P * mapped_reads["NHS_Ser2P_pooled", "factor"]
+#HS_Ser2P_pooled
+term_defect_norm_df$gnbd_HS_Ser2P <- term_defect_norm_df$gnbd_HS_Ser2P * mapped_reads["HS_Ser2P_pooled", "factor"]
+term_defect_norm_df$ds_5kb_HS_Ser2P <- term_defect_norm_df$ds_5kb_HS_Ser2P * mapped_reads["HS_Ser2P_pooled", "factor"]
+term_defect_norm_df$ds_20kb_HS_Ser2P <- term_defect_norm_df$ds_20kb_HS_Ser2P * mapped_reads["HS_Ser2P_pooled", "factor"]
+```
+
+
+4. calc. term defect ratios (ds/gnbd)
+```{r calc ratios}
+#calc ratios and add ratio columns
+term_defect_ratio_df <- data.frame(geneID = term_defect_norm_df$geneID)
+#5kb / gnbd
+term_defect_ratio_df$NHS_Rpb1_ratio_5kb_div_gnbd <- term_defect_norm_df$ds_5kb_NHS_Rpb1 / term_defect_norm_df$gnbd_NHS_Rpb1
+term_defect_ratio_df$HS_Rpb1_ratio_5kb_div_gnbd <- term_defect_norm_df$ds_5kb_HS_Rpb1 / term_defect_norm_df$gnbd_HS_Rpb1
+term_defect_ratio_df$NHS_Ser2P_ratio_5kb_div_gnbd <- term_defect_norm_df$ds_5kb_NHS_Ser2P / term_defect_norm_df$gnbd_NHS_Ser2P
+term_defect_ratio_df$HS_Ser2P_ratio_5kb_div_gnbd <- term_defect_norm_df$ds_5kb_HS_Ser2P / term_defect_norm_df$gnbd_HS_Ser2P
+
+#20kb / gnbd
+term_defect_ratio_df$NHS_Rpb1_ratio_20kb_div_gnbd <- term_defect_norm_df$ds_20kb_NHS_Rpb1 / term_defect_norm_df$gnbd_NHS_Rpb1
+term_defect_ratio_df$HS_Rpb1_ratio_20kb_div_gnbd <- term_defect_norm_df$ds_20kb_HS_Rpb1 / term_defect_norm_df$gnbd_HS_Rpb1
+term_defect_ratio_df$NHS_Ser2P_ratio_20kb_div_gnbd <- term_defect_norm_df$ds_20kb_NHS_Ser2P / term_defect_norm_df$gnbd_NHS_Ser2P
+term_defect_ratio_df$HS_Ser2P_ratio_20kb_div_gnbd <- term_defect_norm_df$ds_20kb_HS_Ser2P / term_defect_norm_df$gnbd_HS_Ser2P
+
+```
+need to look at fold change HS / NHS
+```{r ratio fold change}
+#make new df for fold changes
+#geneID, Rpb1 5kb HS/NHS, Ser2P 5kb HS/NHS, Rpb1 20kb HS/NHS, Ser2P 20kb HS/NHS
+fold_change_term_ratio_df <- data.frame(geneID = term_defect_ratio_df$geneID,
+                                        Rpb1_5kb_HS_d_NHS = (term_defect_ratio_df$HS_Rpb1_ratio_5kb_div_gnbd / term_defect_ratio_df$NHS_Rpb1_ratio_5kb_div_gnbd),
+                                        Rpb1_20kb_HS_d_NHS = (term_defect_ratio_df$HS_Rpb1_ratio_20kb_div_gnbd / term_defect_ratio_df$NHS_Rpb1_ratio_20kb_div_gnbd),
+                                        Ser2P_5kb_HS_d_NHS = (term_defect_ratio_df$HS_Ser2P_ratio_5kb_div_gnbd / term_defect_ratio_df$NHS_Ser2P_ratio_5kb_div_gnbd),
+                                        Ser2P_20kb_HS_d_NHS = (term_defect_ratio_df$HS_Ser2P_ratio_20kb_div_gnbd / term_defect_ratio_df$NHS_Ser2P_ratio_20kb_div_gnbd))
+
+
+```
+
+export tables
+```{r export df's}
+write_delim(term_defect_norm_df, "07_analysis/isoloated_genes_norm_counts_gnbd_5kb_20kb.tsv", delim = "\t", col_names = TRUE)
+write_delim(term_defect_ratio_df, "07_analysis/isoloated_genes_norm_counts_5kb_20kb_div_gnbd.tsv", delim = "\t", col_names = TRUE)
+write_delim(fold_change_term_ratio_df, "07_analysis/isoloated_genes_HSdNHS_5kb_20kb.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+5. define genes with term defects (Rpb1 ratios)
+```{r explore term defects}
+library(ggplot2)
+
+summary(term_defect_ratio_df$NHS_Rpb1_ratio_20kb_div_gnbd)
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+# 0.00396  0.11733  0.24105  0.76625  0.58346 90.95000 
+summary(term_defect_ratio_df$HS_Rpb1_ratio_20kb_div_gnbd)
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+# 0.00563  0.19106  0.42319  0.96905  0.92700 53.66667 
+summary(term_defect_ratio_df$NHS_Ser2P_ratio_20kb_div_gnbd)
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+# 0.00984  0.21188  0.43557  1.08909  1.02627 33.81818 
+summary(term_defect_ratio_df$HS_Ser2P_ratio_20kb_div_gnbd)
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+# 0.00669  0.22578  0.51585  1.28456  1.27900 33.61538 
+
+#plot Rpb1 NHS 20kb/gnbd and HS 20kb/gnbd
+ggplot(term_defect_ratio_df, aes(x=HS_Rpb1_ratio_20kb_div_gnbd)) +
+  geom_density() +
+  scale_x_continuous(limits = c(0,10)) +
+  labs(x="20kb/gnbd", y="density", title="HS Rpb1 term defect ratio distribution")
+
+ggplot(term_defect_ratio_df, aes(x=HS_Ser2P_ratio_20kb_div_gnbd)) +
+  geom_density() +
+  scale_x_continuous(limits = c(0,10))+
+  labs(x="20kb/gnbd", y="density", title="HS Ser2P term defect ratio distribution")
+
+#hist
+ggplot(term_defect_ratio_df, aes(x=HS_Ser2P_ratio_20kb_div_gnbd)) +
+  geom_histogram() +
+  scale_x_continuous(limits = c(0,20)) 
+
+ggplot(term_defect_ratio_df, aes(x=HS_Rpb1_ratio_20kb_div_gnbd)) +
+  geom_histogram() +
+  scale_x_continuous(limits = c(0,20)) 
+
+#no difference between Rpb1 and Ser2P... what about the term defect ratio for Ser2P/Pol II?
+
+#clac. Ser2P/Pol II term ratios
+term_defect_ratio_df$NHS_S_div_P_ratio_5kb_div_gnbd <- (term_defect_norm_df$ds_5kb_NHS_Ser2P/term_defect_norm_df$ds_5kb_NHS_Rpb1) / (term_defect_norm_df$gnbd_NHS_Ser2P/term_defect_norm_df$gnbd_NHS_Rpb1)
+term_defect_ratio_df$HS_S_div_P_ratio_5kb_div_gnbd <- (term_defect_norm_df$ds_5kb_HS_Ser2P/term_defect_norm_df$ds_5kb_HS_Rpb1) / (term_defect_norm_df$gnbd_HS_Ser2P/term_defect_norm_df$gnbd_HS_Rpb1)
+
+#plot
+ggplot(fold_change_term_ratio_df, aes(x=Rpb1_20kb_HS_d_NHS)) +
+  geom_histogram()+
+  scale_x_continuous(limits = c(0,5)) 
+ggplot(fold_change_term_ratio_df, aes(x=Rpb1_5kb_HS_d_NHS)) +
+  geom_histogram() +
+  scale_x_continuous(limits = c(0,5)) 
+ggplot(fold_change_term_ratio_df, aes(x=Ser2P_5kb_HS_d_NHS)) +
+  geom_histogram() +
+  scale_x_continuous(limits = c(0,5)) 
+ggplot(fold_change_term_ratio_df, aes(x=Ser2P_20kb_HS_d_NHS)) +
+  geom_histogram() +
+  scale_x_continuous(limits = c(0,5)) 
+#might be right-shifted for HS (would make sense, term defect ratios should go up)
+
+```
+
+define genes with a termination defect by setting a theshold
+```{r set threshold}
+#rank genes based on the term defect ratios and see where genes look like they have term defects in the UCSC browser
+
+#require 5kb ratio to decrease and 20kb ratio to increase
+#just tag counts over those areas or normalized to gnbd? - NO need to normalize to gnbd to account for changes in expression
+
+#using fold change (HS/NHS) of term defect ratios
+#2.5 for Rpb1 20kb HS/NHS term defect ratios? (when Histogramed that seems to be aprox where another population starts)
+
+#threshold: 20kb HS/NHS > 1 & 5kb HS/NHS < 1
+term_defect_genes_df <- filter(fold_change_term_ratio_df, fold_change_term_ratio_df$Rpb1_20kb_HS_d_NHS > 1 & fold_change_term_ratio_df$Rpb1_5kb_HS_d_NHS < 1)
+
+#2149 genes have term defects of 3965 total
+2149/3527
+#60% of isolated genes have termination defects
+
+#make metagene analysis TTS plot of no term defect genes vs term defect genes to see how well it worked
+#make gene ID lists of both
+non_term_defect_genes_df <- filter(fold_change_term_ratio_df, fold_change_term_ratio_df$Rpb1_20kb_HS_d_NHS <= 1 | fold_change_term_ratio_df$Rpb1_5kb_HS_d_NHS >= 1)
+
+term_defect_genes_list <- as.data.frame(term_defect_genes_df$geneID)
+non_term_defect_genes_list <- as.data.frame(non_term_defect_genes_df$geneID)
+
+#write out just geneID list
+write_delim(term_defect_genes_list, "07_analysis/term_defect_genes_list", delim = "\n", col_names = FALSE)
+write_delim(non_term_defect_genes_list, "07_analysis/non_term_defect_genes_list", delim = "\n", col_names = FALSE)
+#write out whole term_defect and non_term_defect dfs plus all isolated genes df
+write_delim(term_defect_genes_df, "07_analysis/term_defect_genes_HS_fold_change.tsv", delim = "\t", col_names = TRUE)
+write_delim(non_term_defect_genes_df, "07_analysis/non_term_defect_genes_HS_fold_change.tsv", delim = "\t", col_names = TRUE)
+
+
+#add y/n term defect column to fold_change_term_ratio_df
+rownames(fold_change_term_ratio_df) <- fold_change_term_ratio_df$geneID
+defect_list <- list()
+for (n in rownames(fold_change_term_ratio_df)) {
+  if(n %in% term_defect_genes_df$geneID){
+    defect_list <- append(defect_list, "term_defect")
+  }
+  else if(n %in% non_term_defect_genes_df$geneID){
+    defect_list <- append(defect_list, "no_term_defect")
+  }
+  print(n)
+}
+#if it's not in either term defect or non term defect lists then it won't add to the defect list so the number of genes won't match
+#have the same number of genes in list which is the same number of genes in the df so everything has either term_defect or non_term_defect
+
+fold_change_term_ratio_df$term_defect <- defect_list
+fold_change_term_ratio_df$term_defect <- factor(fold_change_term_ratio_df$term_defect, levels = c('term_defect', 'no_term_defect'))
+
+#write out
+write_delim(fold_change_term_ratio_df, "07_analysis/isolated_genes_term_defect_ratio.tsv", delim = "\t", col_names = TRUE)
+```
+
+```{r filter for clean genes}
+#read-in clean genes
+clean_genes_bed <- read.table("05_making_isolated_genes_list_hg38/gene_lists_bed_files/04c_TSS_2_7kb_HS_clean_isolated_expressed_genes.bed", header = FALSE)
+colnames(clean_genes_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+#filter fold_change_term_ratio_df, and term_defect and no_defect lists
+clean_genes_term_ratio_df <- filter(fold_change_term_ratio_df, fold_change_term_ratio_df$geneID %in% clean_genes_bed$id)
+term_defect_clean_genes_df <- filter(term_defect_genes_df, term_defect_genes_df$geneID %in% clean_genes_bed$id)
+no_defect_clean_genes_df <- filter(non_term_defect_genes_df, non_term_defect_genes_df$geneID %in% clean_genes_bed$id)
+#679 term defect, 481 no defect
+679 + 481 == 1160
+#all clean genes accounted for
+
+#write out
+write_delim(clean_genes_term_ratio_df, "07_analysis/clean_genes_term_defect_ratio.tsv", delim = "\t", col_names = TRUE)
+write_delim(term_defect_clean_genes_df, "07_analysis/clean_genes_term_defect_list", delim = "\n", col_names = FALSE)
+write_delim(no_defect_clean_genes_df, "07_analysis/clean_genes_no_defect_list", delim = "\n", col_names = FALSE)
+```
+
+
+6. plot TTS hist for non-defect and term-defect genes
+
+make TTS bed files for each set
+```{r make TTS bed files}
+#read-in bed file for isolated expressed genes
+tts_iso_exp_genes_bed <- read.table("07_analysis/07_02_bed_files/TTS_isolated_expressed_genes.bed", header = FALSE, sep="\t", stringsAsFactors = FALSE, quote="")
+colnames(tts_iso_exp_genes_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+#split into term defect and no defect
+td_genes_bed <- filter(tts_iso_exp_genes_bed, tts_iso_exp_genes_bed$id %in% term_defect_genes_list[,1])
+nd_genes_bed <- filter(tts_iso_exp_genes_bed, tts_iso_exp_genes_bed$id %in% non_term_defect_genes_list[,1])
+
+#check
+for (n in row(td_genes_bed)) {
+  stopifnot(td_genes_bed$start == td_genes_bed$end)
+  print(n)
+}
+for (n in row(nd_genes_bed)) {
+  stopifnot(nd_genes_bed$start == nd_genes_bed$end)
+  print(n)
+}
+
+#write out
+write_delim(td_genes_bed, "07_analysis/07_02_bed_files/term_defect_genes_TTS_isolated_expressed_genes.bed", delim = "\t", col_names = FALSE)
+write_delim(nd_genes_bed, "07_analysis/07_02_bed_files/no_defect_genes_TTS_isolated_expressed_genes.bed", delim = "\t", col_names = FALSE)
+
+
+##repeat for clean genes
+td_clean_genes_bed <- filter(tts_iso_exp_genes_bed, tts_iso_exp_genes_bed$id %in% term_defect_clean_genes_df[,1])
+nd_clean_genes_bed <- filter(tts_iso_exp_genes_bed, tts_iso_exp_genes_bed$id %in% no_defect_clean_genes_df[,1])
+
+#check
+for (n in row(td_clean_genes_bed)) {
+  stopifnot(td_clean_genes_bed$start == td_clean_genes_bed$end)
+  print(n)
+}
+for (n in row(nd_clean_genes_bed)) {
+  stopifnot(nd_clean_genes_bed$start == nd_clean_genes_bed$end)
+  print(n)
+}
+
+#write-out
+write_delim(td_clean_genes_bed, "07_analysis/07_02_bed_files/clean_genes_term_defect_TTS_isolated_expressed_genes.bed", delim = "\t", col_names = FALSE)
+write_delim(nd_clean_genes_bed, "07_analysis/07_02_bed_files/clean_genes_no_defect_TTS_isolated_expressed_genes.bed", delim = "\t", col_names = FALSE)
+```
+
+homer TTS hist (NHS and HS, Rpb1 and Ser2P)
+#<homer> analyzePeaks.pl -hist command
+see bash script 07_03
+
+then plot with 07_01.Rmd and save figures (in 07_analysis/TTS_hist/figures/)
+
+*need to re-check term-defect definitions*
+
+7. look at Ser2P for no term defect vs term defect:
+```{r Ser2P vs term defect}
+#read in term_defect_df, non_term_defect_df and all isolated genes df written out in the last section
+library(tidyverse)
+library(ggplot2)
+term_defect_df <- read.table("07_analysis/term_defect_genes_HS_fold_change.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+non_term_defect_df <- read.table("07_analysis/non_term_defect_genes_HS_fold_change.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+both_term_defect_df <- read.table("07_analysis/isolated_genes_HS_fold_change.tsv", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+
+#hist Ser2P fold change and color by term_defect
+ggplot(both_term_defect_df, aes(x=Ser2P_20kb_HS_d_NHS, fill=term_defect)) +
+  geom_histogram() +
+  scale_x_continuous(limits = c(0,5)) 
+
+ggplot(both_term_defect_df, aes(x=Ser2P_20kb_HS_d_NHS, color=term_defect, fill=term_defect)) +
+  geom_density(alpha=0.4) +
+  scale_x_continuous(limits = c(0,5)) 
+#term defect genes have more of an increase in occupancy ds while no_term_defect avg looks closer to 1
+#let's calculate the averages for both to check
+summary(term_defect_df$Ser2P_20kb_HS_d_NHS) 
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.4597  0.9589  1.1102  1.2394  1.3542  5.9961 
+summary(non_term_defect_df$Ser2P_20kb_HS_d_NHS)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.1693  0.8033  1.0183  1.1865  1.3510 13.0430 
+#they're suprisingly similar... 
+#let's double check Rpb1
+summary(term_defect_df$Rpb1_20kb_HS_d_NHS)
+summary(non_term_defect_df$Rpb1_20kb_HS_d_NHS)
+ggplot(both_term_defect_df, aes(x=Rpb1_20kb_HS_d_NHS, fill=term_defect)) +
+  geom_histogram() +
+  scale_x_continuous(limits = c(0,10)) 
+ggplot(both_term_defect_df, aes(x=Rpb1_20kb_HS_d_NHS, color=term_defect, fill=term_defect)) +
+  geom_density(alpha=0.4) +
+  scale_x_continuous(limits = c(0,10)) 
+ggplot(both_term_defect_df, aes(x=Rpb1_5kb_HS_d_NHS, color=term_defect, fill=term_defect)) +
+  geom_density(alpha=0.4) +
+  scale_x_continuous(limits = c(0,10)) 
+#these look as expected, significant difference between term_defect and non. Clearly filtered out some genes that had increased ds but no loss of term peak and some with lost term peaks but no increase ds
+
+#let's look at Ser2P 5kb
+ggplot(both_term_defect_df, aes(x=Ser2P_5kb_HS_d_NHS, color=term_defect, fill=term_defect)) +
+  geom_density(alpha=0.4) 
+#significant shift indicating loss of Ser2P at 3'ends for term_defect genes
+#opposite of what was seen with the Ser2P/pol II graph?
+
+#let's look at Ser2P/Pol II... need HS and NHS seperately (norm_counts, then norm to gnbd, then Ser2P/PolII ... so need to start with term_defect_ratio_df)
+#reran lines 102-173 to repopulate term_defect_ratio_df
+#now need to make Ser2P/PolII
+Ser2P_d_PolII_df <- data.frame(geneID=term_defect_ratio_df$geneID,
+                               NHS_5kb_SdP = term_defect_ratio_df$NHS_Ser2P_ratio_5kb_div_gnbd / term_defect_ratio_df$NHS_Rpb1_ratio_5kb_div_gnbd,
+                               HS_5kb_SdP = term_defect_ratio_df$HS_Ser2P_ratio_5kb_div_gnbd / term_defect_ratio_df$HS_Rpb1_ratio_5kb_div_gnbd,
+                               NHS_20kb_SdP = term_defect_ratio_df$NHS_Ser2P_ratio_20kb_div_gnbd / term_defect_ratio_df$NHS_Rpb1_ratio_20kb_div_gnbd,
+                               HS_20kb_SdP = term_defect_ratio_df$HS_Ser2P_ratio_20kb_div_gnbd / term_defect_ratio_df$HS_Rpb1_ratio_20kb_div_gnbd)
+Ser2P_d_PolII_df$geneID <- as.character(Ser2P_d_PolII_df$geneID)
+#add term_defect column
+  #check they're in the same order first
+i=1
+while (i<=nrow(Ser2P_d_PolII_df)) {
+  stopifnot(identical(Ser2P_d_PolII_df[i,"geneID"],both_term_defect_df[i,"geneID"]))
+  print(i)
+  i=i+1
+}
+#good, they are, there's no reason why they wouldn't be but wanted to double check
+#now add the column
+Ser2P_d_PolII_df$term_defect <- both_term_defect_df$term_defect
+
+ggplot(Ser2P_d_PolII_df, aes(x=HS_5kb_SdP, color=term_defect, fill=term_defect)) +
+  geom_density(alpha=0.4) 
+ggplot(Ser2P_d_PolII_df, aes(x=HS_20kb_SdP, color=term_defect, fill=term_defect)) +
+  geom_density(alpha=0.4) 
+ggplot(Ser2P_d_PolII_df, aes(x=NHS_5kb_SdP, color=term_defect, fill=term_defect)) +
+  geom_density(alpha=0.4) 
+ggplot(Ser2P_d_PolII_df, aes(x=NHS_20kb_SdP, color=term_defect, fill=term_defect)) +
+  geom_density(alpha=0.4) 
+
+
+#make HS/NHS columns
+Ser2P_d_PolII_df$`5kb_HSdNHS_SdP` <- Ser2P_d_PolII_df$HS_5kb_SdP / Ser2P_d_PolII_df$NHS_5kb_SdP
+Ser2P_d_PolII_df$`20kb_HSdNHS_SdP` <- Ser2P_d_PolII_df$HS_20kb_SdP / Ser2P_d_PolII_df$NHS_20kb_SdP
+  #this is getting to be a lot of divisions (/gnbd, S/P, HS/NHS)
+
+ggplot(Ser2P_d_PolII_df, aes(x=`5kb_HSdNHS_SdP`, color=term_defect, fill=term_defect)) +
+  geom_density(alpha=0.4) 
+ggplot(Ser2P_d_PolII_df, aes(x=`20kb_HSdNHS_SdP`, color=term_defect, fill=term_defect)) +
+  geom_density(alpha=0.4) 
+
+```
+
+
+

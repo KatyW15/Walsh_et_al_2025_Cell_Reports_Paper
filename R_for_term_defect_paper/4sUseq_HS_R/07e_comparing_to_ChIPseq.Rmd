@@ -1,0 +1,1308 @@
+---
+title: "07e_comparing_to_ChIPseq"
+author: "Katy Walsh"
+date: "2/15/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+____________________________________________________________________________________________________________________________
+using unstranded iso_exp_clean genes list so can compare to ChIP-seq
+making term defect and no defect lists
+pulling in ChIP-seq Pol II data to compare (avg replicates)
+ ->metaplot with ChIP-seq and 4sU to defect and no defect genes to see if 4sU term defect genes also have ChIP-seq defects
+
+____________________________________________________________________________________________________________________________
+
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(grid)
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+library(ggfortify)
+library(gtable)
+
+setwd("~/Desktop/Katy/HS_4sU-Seq_2021")
+
+```
+
+define term defect genes using the unstranded Iso_exp_clean genes so can compare with ChIP-seq
+-----------------------------------------------------------------------------------------------
+```{r filter master df for iso unstranded list}
+#read in unstranded iso_exp_clean_genes
+iec_genes_ls <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/06_defining_gene_lists/FINAL_clean_genes_list_UNstrandediso_exp_genes.txt", header = FALSE, sep="\n", stringsAsFactors = FALSE, quote = "")
+#4027 genes
+
+
+#read in master df
+final_master_df <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/FINAL_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+#filter master df
+ChIP_genes_master_df <- filter(final_master_df, final_master_df$transcriptID %in% iec_genes_ls$V1) #why are there not all 4027 genes? - filtered out due to low expression
+ChIP_gene_IDs <- as.data.frame(ChIP_genes_master_df$transcriptID)
+
+#save
+write_delim(ChIP_genes_master_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/ChIP_genes_master_df.tsv", delim = "\t", col_names = TRUE)
+write_delim(ChIP_gene_IDs, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/ChIP_genes_IDs.txt", delim = "\t", col_names = FALSE)
+
+```
+
+
+Rpb1 TTS hist
+--------------
+let's make TTS hist using defect and no defect lists from 4sU-seq data now with ChIP-Rpb1 data to see if the list applies well accross seq methods
+
+first, make TTS bed files:
+```{r make TTS bed files}
+TTS_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/annotation_bed_files/iso_exp_clean_genes_TTS.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+colnames(TTS_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+#filter TTS bed file for ChIP gene list
+ChIP_TTS_bed <- filter(TTS_bed, TTS_bed$id %in% ChIP_gene_IDs$`ChIP_genes_master_df$transcriptID`)
+
+#save
+write_delim(ChIP_TTS_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/ChIP_genes_TTS.bed", delim = "\t", col_names = FALSE)
+
+
+#make defect and no defect bed files
+defect_master_df <- filter(ChIP_genes_master_df, ChIP_genes_master_df$term_defect_final == TRUE)
+ChIP_defect_TTS_bed <- filter(ChIP_TTS_bed, ChIP_TTS_bed$id %in%  defect_master_df$transcriptID)
+ChIP_no_defect_TTS_bed <- filter(ChIP_TTS_bed, !(ChIP_TTS_bed$id %in%  defect_master_df$transcriptID) )
+ChIP_no_defect_no_long_RT_TTS_bed <- filter(ChIP_no_defect_TTS_bed, !(ChIP_no_defect_TTS_bed$id %in% long_RT_genes$transcriptID) )
+
+#save
+write_delim(ChIP_defect_TTS_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/ChIP_defect_genes_TTS.bed", delim = "\t", col_names = FALSE)
+write_delim(ChIP_no_defect_TTS_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/ChIP_no_defect_genes_TTS.bed", delim = "\t", col_names = FALSE)
+write_delim(ChIP_no_defect_no_long_RT_TTS_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/ChIP_no_defect_no_long_RT_genes_TTS.bed", delim = "\t", col_names = FALSE)
+
+```
+
+now run homer hist command
+
+    see bash script 07e_Rpb1_TTS_hist.sh
+
+```{r read in data and avg reps}
+#read-in hist outputs
+fl_all <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/homer_hist_outputs/all_genes", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+all_hist <- lapply(fl_all, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(all_hist) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/homer_hist_outputs/all_genes/|.tsv", "", fl_all)
+
+fl_defect <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/homer_hist_outputs/defect_genes", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+defect_hist <- lapply(fl_defect, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(defect_hist) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/homer_hist_outputs/defect_genes/|.tsv", "", fl_defect)
+
+fl_no_defect <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/homer_hist_outputs/no_defect_genes", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+no_defect_hist <- lapply(fl_no_defect, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(no_defect_hist) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/homer_hist_outputs/no_defect_genes/|.tsv", "", fl_no_defect)
+
+
+## care about col 1 (distance from TTS) and col 2 (avg accross all given genes, normalized coverage)
+#make avg of reps
+all_hist_df <-data.frame(distance_from_TTS = all_hist$input[,1], 
+                input = all_hist$input[,2],
+                NHS = (all_hist$NHS_Rpb1_R6[,2] + all_hist$NHS_Rpb1_R8[,2]) /2,
+                HS = (all_hist$HS_Rpb1_R6[,2] + all_hist$HS_Rpb1_R6[,2])/2)
+                #Ser2P_NHS = (all_hist$NHS_Ser2P_R6[,2] + all_hist$NHS_Ser2P_R8[,2]) /2,
+                #Ser2P_HS = (all_hist$HS_Ser2P_R6[,2] + all_hist$HS_Ser2P_R8[,2]) /2 )
+
+defect_hist_df <- data.frame(distance_from_TTS = defect_hist$input[,1], 
+                input = defect_hist$input[,2],
+                NHS = (defect_hist$NHS_Rpb1_R6[,2] + defect_hist$NHS_Rpb1_R8[,2]) /2,
+                HS = (defect_hist$HS_Rpb1_R6[,2] + defect_hist$HS_Rpb1_R6[,2])/2)
+                #Ser2P_NHS = (defect_hist$NHS_Ser2P_R6[,2] + defect_hist$NHS_Ser2P_R8[,2]) /2,
+                #Ser2P_HS = (defect_hist$HS_Ser2P_R6[,2] + defect_hist$HS_Ser2P_R8[,2]) /2 )
+
+no_defect_hist_df <- data.frame(distance_from_TTS = no_defect_hist$input[,1], 
+                input = no_defect_hist$input[,2],
+                NHS = (no_defect_hist$NHS_Rpb1_R6[,2] + no_defect_hist$NHS_Rpb1_R8[,2]) /2,
+                HS = (no_defect_hist$HS_Rpb1_R6[,2] + no_defect_hist$HS_Rpb1_R6[,2])/2)
+                #Ser2P_NHS = (no_defect_hist$NHS_Ser2P_R6[,2] + no_defect_hist$NHS_Ser2P_R8[,2]) /2,
+                #Ser2P_HS = (no_defect_hist$HS_Ser2P_R6[,2] + no_defect_hist$HS_Ser2P_R8[,2]) /2 )
+
+
+## trim off -20kb upstream ##
+#for 20kb ds had to also do 20kb upstream of the TTS, but we don't need to go that far into the gene so I'm trimming it to 2kb into the gene body
+
+all_hist_df <- filter(all_hist_df, distance_from_TTS >= -2000)
+defect_hist_df <- filter(defect_hist_df, distance_from_TTS >= -2000)
+no_defect_hist_df <- filter(no_defect_hist_df, distance_from_TTS >= -2000)
+
+#need both NHS and HS values in one col with corresponding ID so can plot both at once
+all_hist_df <- pivot_longer(all_hist_df, cols =2:4)
+defect_hist_df <- pivot_longer(defect_hist_df, cols =2:4)
+no_defect_hist_df <- pivot_longer(no_defect_hist_df, cols =2:4)
+
+#needs to be factored to tell which one to show first
+all_hist_df$name <- factor(all_hist_df$name, levels = c('input', 'NHS', 'HS'))
+defect_hist_df$name <- factor(defect_hist_df$name, levels = c('input', 'NHS', 'HS'))
+no_defect_hist_df$name <- factor(no_defect_hist_df$name, levels = c('input', 'NHS', 'HS'))
+
+```
+
+setup plot settings:
+```{r plotting setup}
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+
+###defining plot histogram function###
+#testing
+#hist_df <- Rpb1_hist_data
+#plot_title <- "Metagene Analysis of Pol II ocupancy at the TTS"
+
+plot_hist_function <- function(hist_df, plot_title, subt = "isolated genes"){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line() +
+    labs(subtitle = subt, x= "distance from TTS", y="avg norm tag coverage") +
+    ggtitle(plot_title) +
+    scale_color_manual(values=c("black", "red", "grey"))
+}
+
+
+```
+
+
+plot:
+```{r quick plot}
+#all
+a <- plot_hist_function(all_hist_df, "Metagene Analysis of Rpb1 ChIP-seq around the TTS", subt = "all genes")
+a
+
+# defect genes
+d <- plot_hist_function(defect_hist_df, "Metagene Analysis of Rpb1 ChIP-seq around the TTS", subt = "defect genes")
+d
+
+#no defect genes
+nd <- plot_hist_function(no_defect_hist_df, "Metagene Analysis of Rpb1 ChIP-seq around the TTS", subt = "no defect genes")
+nd
+```
+
+```{r save figures}
+#all
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Rpb1_TTS_hist_all_genes.pdf", 5, 5)
+print(a)
+dev.off()
+
+#defect
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Rpb1_TTS_hist_defect_genes.pdf", 5, 5)
+print(d)
+dev.off()
+
+#no defect
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Rpb1_TTS_hist_no_defect_genes.pdf", 5, 5)
+print(nd)
+dev.off()
+
+```
+
+
+polished all genes figure:
+```{r}
+plot_fun_sized_hist_function_Rpb1 <- function(hist_df, plot_title="", subt = "", lege = c(0.8,0.8)){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs(subtitle = subt, x= "", y="Read Count") +
+    ggtitle(plot_title) +
+    scale_x_continuous(labels=c("test","3'end", "", "+10kb", "", "+20kb"))+
+    scale_y_continuous(limits = c(0,40), breaks = c(0,20,40))+ #limits = y_labs,
+    #scale_y_continuous(labels = c(0,10,20,30,40,50))+ coord_cartesian(ylim=c(0,50))+
+    theme(axis.title.y = element_text(size = 13), axis.text = element_text(size = 13), #change axis label size
+          legend.position = lege, legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 20, 10, 5),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold"),   #change size of title
+          plot.subtitle = element_text(size = 12)) +             #change size of subtitle
+    scale_color_manual(values=c("lightgray", "black", "red"))
+}
+
+#all genes
+a <- plot_fun_sized_hist_function_Rpb1(all_hist_df, "Pol II ChIP-seq", subt = "All analyzable genes")
+a
+
+jpeg("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/fun_sized/Rpb1_TTS_hist_all_genes.jpeg", width=3, height=2.75, units="in", res=300)
+print(a)
+dev.off()
+
+```
+
+
+
+*need to check no defect genes, Rpb1 metaplot doesn't look like there's no defect*
+  do no defect genes not compare between 4sU and ChIP?
+
+
+let's look at Ser2P anyway...
+```{r plotting Ser2P / Pol II}
+## care about col 1 (distance from TTS) and col 2 (avg accross all given genes, normalized coverage)
+#make avg of reps
+Ser2P_all_hist_df <-data.frame(distance_from_TTS = all_hist$input[,1], 
+                input = all_hist$input[,2],
+                NHS = (all_hist$NHS_Ser2P_R6[,2] + all_hist$NHS_Ser2P_R8[,2]) /2,
+                HS = (all_hist$HS_Ser2P_R6[,2] + all_hist$HS_Ser2P_R8[,2]) /2 )
+
+Ser2P_defect_hist_df <- data.frame(distance_from_TTS = defect_hist$input[,1], 
+                input = defect_hist$input[,2],
+                NHS = (defect_hist$NHS_Ser2P_R6[,2] + defect_hist$NHS_Ser2P_R8[,2]) /2,
+                HS = (defect_hist$HS_Ser2P_R6[,2] + defect_hist$HS_Ser2P_R8[,2]) /2 )
+
+Ser2P_no_defect_hist_df <- data.frame(distance_from_TTS = no_defect_hist$input[,1], 
+                input = no_defect_hist$input[,2],
+                NHS = (no_defect_hist$NHS_Ser2P_R6[,2] + no_defect_hist$NHS_Ser2P_R8[,2]) /2,
+                HS = (no_defect_hist$HS_Ser2P_R6[,2] + no_defect_hist$HS_Ser2P_R8[,2]) /2 )
+
+#Ser2P / Pol II
+Ser2PdRpb1_all_hist_df <-data.frame(distance_from_TTS = Ser2P_all_hist_df$distance_from_TTS, 
+                NHS = Ser2P_all_hist_df$NHS / all_hist_df$NHS,
+                HS = Ser2P_all_hist_df$HS / all_hist_df$HS )
+
+Ser2PdRpb1_defect_hist_df <-data.frame(distance_from_TTS = Ser2P_defect_hist_df$distance_from_TTS, 
+                NHS = Ser2P_defect_hist_df$NHS / all_hist_df$NHS,
+                HS = Ser2P_defect_hist_df$HS / all_hist_df$HS )
+
+Ser2PdRpb1_no_defect_hist_df <-data.frame(distance_from_TTS = Ser2P_no_defect_hist_df$distance_from_TTS, 
+                NHS = Ser2P_no_defect_hist_df$NHS / all_hist_df$NHS,
+                HS = Ser2P_no_defect_hist_df$HS / all_hist_df$HS )
+
+
+
+## trim off -20kb upstream ##
+#for 20kb ds had to also do 20kb upstream of the TTS, but we don't need to go that far into the gene so I'm trimming it to 2kb into the gene body
+
+Ser2P_all_hist_df <- filter(Ser2P_all_hist_df, distance_from_TTS >= -2000)
+Ser2P_defect_hist_df <- filter(Ser2P_defect_hist_df, distance_from_TTS >= -2000)
+Ser2P_no_defect_hist_df <- filter(Ser2P_no_defect_hist_df, distance_from_TTS >= -2000)
+
+Ser2PdRpb1_all_hist_df <- filter(Ser2PdRpb1_all_hist_df, distance_from_TTS >= -2000)
+Ser2PdRpb1_defect_hist_df <- filter(Ser2PdRpb1_defect_hist_df, distance_from_TTS >= -2000)
+Ser2PdRpb1_no_defect_hist_df <- filter(Ser2PdRpb1_no_defect_hist_df, distance_from_TTS >= -2000)
+
+
+
+#need both NHS and HS values in one col with corresponding ID so can plot both at once
+Ser2P_all_hist_df <- pivot_longer(Ser2P_all_hist_df, cols =2:4)
+Ser2P_defect_hist_df <- pivot_longer(Ser2P_defect_hist_df, cols =2:4)
+Ser2P_no_defect_hist_df <- pivot_longer(Ser2P_no_defect_hist_df, cols =2:4)
+
+Ser2PdRpb1_all_hist_df <- pivot_longer(Ser2PdRpb1_all_hist_df, cols =2:3)
+Ser2PdRpb1_defect_hist_df <- pivot_longer(Ser2PdRpb1_defect_hist_df, cols =2:3)
+Ser2PdRpb1_no_defect_hist_df <- pivot_longer(Ser2PdRpb1_no_defect_hist_df, cols =2:3)
+
+
+
+#needs to be factored to tell which one to show first
+Ser2P_all_hist_df$name <- factor(Ser2P_all_hist_df$name, levels = c('NHS', 'HS', 'input'))
+Ser2P_defect_hist_df$name <- factor(Ser2P_defect_hist_df$name, levels = c('NHS', 'HS', 'input'))
+Ser2P_no_defect_hist_df$name <- factor(Ser2P_no_defect_hist_df$name, levels = c('NHS', 'HS', 'input'))
+
+Ser2PdRpb1_all_hist_df$name <- factor(Ser2PdRpb1_all_hist_df$name, levels = c('NHS', 'HS'))
+Ser2PdRpb1_defect_hist_df$name <- factor(Ser2PdRpb1_defect_hist_df$name, levels = c('NHS', 'HS'))
+Ser2PdRpb1_no_defect_hist_df$name <- factor(Ser2PdRpb1_no_defect_hist_df$name, levels = c('NHS', 'HS'))
+
+```
+
+plot:
+```{r quick plot}
+#all
+a <- plot_hist_function(Ser2P_all_hist_df, "Metagene Analysis of Ser2P ChIP-seq around the TTS", subt = "all genes")
+a
+
+# defect genes
+d <- plot_hist_function(Ser2P_defect_hist_df, "Metagene Analysis of Ser2P ChIP-seq around the TTS", subt = "defect genes")
+d
+
+#no defect genes
+nd <- plot_hist_function(Ser2P_no_defect_hist_df, "Metagene Analysis of Ser2P ChIP-seq around the TTS", subt = "no defect genes")
+nd
+
+
+##repeat for Ser2P / Pol II
+#all
+r_a <- plot_hist_function(Ser2PdRpb1_all_hist_df, "Metagene Analysis of Ser2P / Rpb1 ChIP-seq around the TTS", subt = "all genes")
+r_a
+
+# defect genes
+r_d <- plot_hist_function(Ser2PdRpb1_defect_hist_df, "Metagene Analysis of Ser2P / Rpb1 ChIP-seq around the TTS", subt = "defect genes")
+r_d
+
+#no defect genes
+r_nd <- plot_hist_function(Ser2PdRpb1_no_defect_hist_df, "Metagene Analysis of Ser2P / Rpb1 ChIP-seq around the TTS", subt = "no defect genes")
+r_nd
+
+```
+
+```{r save figures}
+#all
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Ser2P_TTS_hist_all_genes.pdf", 6, 6)
+print(a)
+dev.off()
+
+#defect
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Ser2P_TTS_hist_defect_genes.pdf", 6, 6)
+print(d)
+dev.off()
+
+#no defect
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Ser2P_TTS_hist_no_defect_genes.pdf", 6, 6)
+print(nd)
+dev.off()
+
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Ser2P_d_Rpb1_TTS_hist_all_genes.pdf", 6, 6)
+print(r_a)
+dev.off()
+
+#defect
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Ser2P_d_Rpb1_TTS_hist_defect_genes.pdf", 6, 6)
+print(r_d)
+dev.off()
+
+#no defect
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Ser2P_d_Rpb1_TTS_hist_no_defect_genes.pdf", 6, 6)
+print(r_nd)
+dev.off()
+
+```
+
+
+--------------
+
+
+
+
+
+moderate, severe, max defect cat TTS hists
+-------------------------------------------
+
+first, make TTS bed files:
+```{r make TTS bed files}
+#read-in TTS bed file with only ChIP analyzable genes
+ChIP_TTS_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/ChIP_genes_TTS.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+colnames(TTS_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+
+
+#make gene ID lists for each cat.
+ChIP_moderate_defect_IDs <- filter(ChIP_genes_master_df, ChIP_genes_master_df$defect_cat == "moderate defect")
+ChIP_severe_defect_IDs <- filter(ChIP_genes_master_df, ChIP_genes_master_df$defect_cat == "severe defect")
+ChIP_max_defect_IDs <- filter(ChIP_genes_master_df, ChIP_genes_master_df$defect_cat == "max defect")
+#make bed files
+ChIP_moderate_defect_TTS_bed <- filter(ChIP_TTS_bed, ChIP_TTS_bed$id %in%  ChIP_moderate_defect_IDs$transcriptID)
+ChIP_severe_defect_TTS_bed <- filter(ChIP_TTS_bed, ChIP_TTS_bed$id %in%  ChIP_severe_defect_IDs$transcriptID) 
+ChIP_max_defect_TTS_bed <- filter(ChIP_TTS_bed, ChIP_TTS_bed$id %in%  ChIP_max_defect_IDs$transcriptID) 
+
+
+#save
+write_delim(ChIP_moderate_defect_TTS_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/moderate_defect_genes_TTS.bed", delim = "\t", col_names = FALSE)
+write_delim(ChIP_severe_defect_TTS_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/severe_defect_genes_TTS.bed", delim = "\t", col_names = FALSE)
+write_delim(ChIP_max_defect_TTS_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/max_defect_genes_TTS.bed", delim = "\t", col_names = FALSE)
+
+```
+
+now run homer hist command
+
+    see bash script 07e_defect_cat_ChIP_TTS_hist.sh
+  
+  
+read-in and set up data:
+```{r read in data and avg reps}
+#read-in hist outputs
+fl_noD_noLRT <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/homer_hist_outputs/no_defect_no_long_RT_genes", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+noD_noLRT_hist <- lapply(fl_noD_noLRT, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(noD_noLRT_hist) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/homer_hist_outputs/no_defect_no_long_RT_genes/|.tsv", "", fl_noD_noLRT)
+
+fl_modD <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/homer_hist_outputs/moderate_defect_genes", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+modD_hist <- lapply(fl_modD, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(modD_hist) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/homer_hist_outputs/moderate_defect_genes/|.tsv", "", fl_modD)
+
+fl_severeD <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/homer_hist_outputs/severe_defect_genes", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+severeD_hist <- lapply(fl_severeD, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(severeD_hist) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/homer_hist_outputs/severe_defect_genes/|.tsv", "", fl_severeD)
+
+fl_maxD <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/homer_hist_outputs/max_defect_genes", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+maxD_hist <- lapply(fl_maxD, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(maxD_hist) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/homer_hist_outputs/max_defect_genes/|.tsv", "", fl_maxD)
+
+
+
+## care about col 1 (distance from TTS) and col 2 (avg accross all given genes, normalized coverage)
+#make avg of reps
+
+#no defect no long RT genes
+Rpb1_noD_noLRT_hist_df <-data.frame(distance_from_TTS = noD_noLRT_hist$input[,1], 
+                input = noD_noLRT_hist$input[,2],
+                NHS = (noD_noLRT_hist$NHS_Rpb1_R6[,2] + noD_noLRT_hist$NHS_Rpb1_R8[,2]) /2,
+                HS = (noD_noLRT_hist$HS_Rpb1_R6[,2] + noD_noLRT_hist$HS_Rpb1_R6[,2])/2)
+Ser2P_noD_noLRT_hist_df <-data.frame(distance_from_TTS = noD_noLRT_hist$input[,1], 
+                input = noD_noLRT_hist$input[,2],
+                NHS = (noD_noLRT_hist$NHS_Ser2P_R6[,2] + noD_noLRT_hist$NHS_Ser2P_R8[,2]) /2,
+                HS = (noD_noLRT_hist$HS_Ser2P_R6[,2] + noD_noLRT_hist$HS_Ser2P_R8[,2]) /2 )
+#moderate defect
+Rpb1_modD_hist_df <-data.frame(distance_from_TTS = modD_hist$input[,1], 
+                input = modD_hist$input[,2],
+                NHS = (modD_hist$NHS_Rpb1_R6[,2] + modD_hist$NHS_Rpb1_R8[,2]) /2,
+                HS = (modD_hist$HS_Rpb1_R6[,2] + modD_hist$HS_Rpb1_R6[,2])/2)
+Ser2P_modD_hist_df <-data.frame(distance_from_TTS = modD_hist$input[,1], 
+                input = modD_hist$input[,2],
+                NHS = (modD_hist$NHS_Ser2P_R6[,2] + modD_hist$NHS_Ser2P_R8[,2]) /2,
+                HS = (modD_hist$HS_Ser2P_R6[,2] + modD_hist$HS_Ser2P_R8[,2]) /2 )
+#severe defect
+Rpb1_severeD_hist_df <-data.frame(distance_from_TTS = severeD_hist$input[,1], 
+                input = severeD_hist$input[,2],
+                NHS = (severeD_hist$NHS_Rpb1_R6[,2] + severeD_hist$NHS_Rpb1_R8[,2]) /2,
+                HS = (severeD_hist$HS_Rpb1_R6[,2] + severeD_hist$HS_Rpb1_R6[,2])/2)
+Ser2P_severeD_hist_df <-data.frame(distance_from_TTS = severeD_hist$input[,1], 
+                input = severeD_hist$input[,2],
+                NHS = (severeD_hist$NHS_Ser2P_R6[,2] + severeD_hist$NHS_Ser2P_R8[,2]) /2,
+                HS = (severeD_hist$HS_Ser2P_R6[,2] + severeD_hist$HS_Ser2P_R8[,2]) /2 )
+#max defect
+Rpb1_maxD_hist_df <-data.frame(distance_from_TTS = maxD_hist$input[,1], 
+                input = maxD_hist$input[,2],
+                NHS = (maxD_hist$NHS_Rpb1_R6[,2] + maxD_hist$NHS_Rpb1_R8[,2]) /2,
+                HS = (maxD_hist$HS_Rpb1_R6[,2] + maxD_hist$HS_Rpb1_R6[,2])/2)
+Ser2P_maxD_hist_df <-data.frame(distance_from_TTS = maxD_hist$input[,1], 
+                input = maxD_hist$input[,2],
+                NHS = (maxD_hist$NHS_Ser2P_R6[,2] + maxD_hist$NHS_Ser2P_R8[,2]) /2,
+                HS = (maxD_hist$HS_Ser2P_R6[,2] + maxD_hist$HS_Ser2P_R8[,2]) /2 )
+
+#Ser2P / Pol II
+Ser2PdRpb1_noD_noLRT_hist_df <-data.frame(distance_from_TTS = Ser2P_noD_noLRT_hist_df$distance_from_TTS, 
+                NHS = Ser2P_noD_noLRT_hist_df$NHS / Rpb1_noD_noLRT_hist_df$NHS,
+                HS = Ser2P_noD_noLRT_hist_df$HS / Rpb1_noD_noLRT_hist_df$HS )
+
+Ser2PdRpb1_modD_hist_df <-data.frame(distance_from_TTS = Ser2P_modD_hist_df$distance_from_TTS, 
+                NHS = Ser2P_modD_hist_df$NHS / Rpb1_modD_hist_df$NHS,
+                HS = Ser2P_modD_hist_df$HS / Rpb1_modD_hist_df$HS )
+
+Ser2PdRpb1_severeD_hist_df <-data.frame(distance_from_TTS = Ser2P_severeD_hist_df$distance_from_TTS, 
+                NHS = Ser2P_severeD_hist_df$NHS / Rpb1_severeD_hist_df$NHS,
+                HS = Ser2P_severeD_hist_df$HS / Rpb1_severeD_hist_df$HS )
+
+Ser2PdRpb1_maxD_hist_df <-data.frame(distance_from_TTS = Ser2P_maxD_hist_df$distance_from_TTS, 
+                NHS = Ser2P_maxD_hist_df$NHS / Rpb1_maxD_hist_df$NHS,
+                HS = Ser2P_maxD_hist_df$HS / Rpb1_maxD_hist_df$HS )
+
+
+## trim off -20kb upstream ##
+#for 20kb ds had to also do 20kb upstream of the TTS, but we don't need to go that far into the gene so I'm trimming it to 2kb into the gene body
+#also cut off the last bin because it's 19.5kb to 20.5kb ds
+Rpb1_noD_noLRT_hist_df <- filter(Rpb1_noD_noLRT_hist_df, distance_from_TTS >= -2000 & distance_from_TTS <20000)
+Ser2P_noD_noLRT_hist_df <- filter(Ser2P_noD_noLRT_hist_df, distance_from_TTS >= -2000 & distance_from_TTS <20000)
+Rpb1_modD_hist_df <- filter(Rpb1_modD_hist_df, distance_from_TTS >= -2000 & distance_from_TTS <20000)
+Ser2P_modD_hist_df <- filter(Ser2P_modD_hist_df, distance_from_TTS >= -2000 & distance_from_TTS <20000)
+Rpb1_severeD_hist_df <- filter(Rpb1_severeD_hist_df, distance_from_TTS >= -2000 & distance_from_TTS <20000)
+Ser2P_severeD_hist_df <- filter(Ser2P_severeD_hist_df, distance_from_TTS >= -2000 & distance_from_TTS <20000)
+Rpb1_maxD_hist_df <- filter(Rpb1_maxD_hist_df, distance_from_TTS >= -2000 & distance_from_TTS <20000)
+Ser2P_maxD_hist_df <- filter(Ser2P_maxD_hist_df, distance_from_TTS >= -2000 & distance_from_TTS <20000)
+#Ser2P / Pol II
+Ser2PdRpb1_noD_noLRT_hist_df <- filter(Ser2PdRpb1_noD_noLRT_hist_df, distance_from_TTS >= -2000 & distance_from_TTS <20000)
+Ser2PdRpb1_modD_hist_df <- filter(Ser2PdRpb1_modD_hist_df, distance_from_TTS >= -2000 & distance_from_TTS <20000)
+Ser2PdRpb1_severeD_hist_df <- filter(Ser2PdRpb1_severeD_hist_df, distance_from_TTS >= -2000 & distance_from_TTS <20000) 
+Ser2PdRpb1_maxD_hist_df <- filter(Ser2PdRpb1_maxD_hist_df, distance_from_TTS >= -2000 & distance_from_TTS <20000) 
+
+
+
+#need both NHS and HS values in one col with corresponding ID so can plot both at once
+Rpb1_noD_noLRT_hist_df <- pivot_longer(Rpb1_noD_noLRT_hist_df, cols =2:4)
+Ser2P_noD_noLRT_hist_df <- pivot_longer(Ser2P_noD_noLRT_hist_df, cols =2:4)
+Rpb1_modD_hist_df <- pivot_longer(Rpb1_modD_hist_df, cols =2:4)
+Ser2P_modD_hist_df <- pivot_longer(Ser2P_modD_hist_df, cols =2:4)
+Rpb1_severeD_hist_df <- pivot_longer(Rpb1_severeD_hist_df, cols =2:4)
+Ser2P_severeD_hist_df <- pivot_longer(Ser2P_severeD_hist_df, cols =2:4)
+Rpb1_maxD_hist_df <- pivot_longer(Rpb1_maxD_hist_df, cols =2:4)
+Ser2P_maxD_hist_df <- pivot_longer(Ser2P_maxD_hist_df, cols =2:4)
+#Ser2P / Pol II
+Ser2PdRpb1_noD_noLRT_hist_df <- pivot_longer(Ser2PdRpb1_noD_noLRT_hist_df, cols =2:3) #no input so only cols 2:3
+Ser2PdRpb1_modD_hist_df <- pivot_longer(Ser2PdRpb1_modD_hist_df, cols =2:3)
+Ser2PdRpb1_severeD_hist_df <- pivot_longer(Ser2PdRpb1_severeD_hist_df, cols =2:3)
+Ser2PdRpb1_maxD_hist_df <- pivot_longer(Ser2PdRpb1_maxD_hist_df, cols =2:3) 
+
+#needs to be factored to tell which one to show first
+Rpb1_noD_noLRT_hist_df$name <- factor(Rpb1_noD_noLRT_hist_df$name, levels = c('input', 'NHS', 'HS'))
+Ser2P_noD_noLRT_hist_df$name <- factor(Ser2P_noD_noLRT_hist_df$name, levels = c('input', 'NHS', 'HS'))
+Rpb1_modD_hist_df$name <- factor(Rpb1_modD_hist_df$name, levels = c('input', 'NHS', 'HS'))
+Ser2P_modD_hist_df$name <- factor(Ser2P_modD_hist_df$name, levels = c('input', 'NHS', 'HS'))
+Rpb1_severeD_hist_df$name <- factor(Rpb1_severeD_hist_df$name, levels = c('input', 'NHS', 'HS'))
+Ser2P_severeD_hist_df$name <- factor(Ser2P_severeD_hist_df$name, levels = c('input', 'NHS', 'HS'))
+Rpb1_maxD_hist_df$name <- factor(Rpb1_maxD_hist_df$name, levels = c('input', 'NHS', 'HS'))
+Ser2P_maxD_hist_df$name <- factor(Ser2P_maxD_hist_df$name, levels = c('input', 'NHS', 'HS'))
+#Ser2P / Pol II
+Ser2PdRpb1_noD_noLRT_hist_df$name <- factor(Ser2PdRpb1_noD_noLRT_hist_df$name, levels = c('NHS', 'HS'))
+Ser2PdRpb1_modD_hist_df$name <- factor(Ser2PdRpb1_modD_hist_df$name, levels = c('NHS', 'HS'))
+Ser2PdRpb1_severeD_hist_df$name <- factor(Ser2PdRpb1_severeD_hist_df$name, levels = c('NHS', 'HS'))
+Ser2PdRpb1_maxD_hist_df$name <- factor(Ser2PdRpb1_maxD_hist_df$name, levels = c('NHS', 'HS'))
+
+```
+
+setup plot settings:
+```{r plotting setup}
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+
+###defining plot histogram function###
+#testing
+#hist_df <- Rpb1_hist_data
+#plot_title <- "Metagene Analysis of Pol II ocupancy at the TTS"
+
+plot_hist_function <- function(hist_df, plot_title, subt = "isolated genes"){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line() +
+    labs(subtitle = subt, x= "Distance from TTS (bp)", y="Avg Normalized Tag Coverage") +
+    ggtitle(plot_title) +
+    scale_color_manual(values=c("black", "red", "grey"))
+}
+
+```
+
+samples:
+Rpb1_noD_noLRT_hist_df 
+Ser2P_noD_noLRT_hist_df
+Rpb1_modD_hist_df 
+Ser2P_modD_hist_df 
+Rpb1_severeD_hist_df 
+Ser2P_severeD_hist_df 
+Rpb1_maxD_hist_df 
+Ser2P_maxD_hist_df 
+
+Ser2PdRpb1_noD_noLRT_hist_df 
+Ser2PdRpb1_modD_hist_df
+Ser2PdRpb1_severeD_hist_df 
+Ser2PdRpb1_maxD_hist_df 
+
+
+plot:
+```{r hist plot Rpb1 and Ser2P}
+###Rpb1###
+#no defect genes
+nd_r <- plot_hist_function(Rpb1_noD_noLRT_hist_df, "No Termination Defect Genes", subt = "Metagene Analysis of RNA Pol II ChIP-seq around the TTS")
+nd_r
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Rpb1_TTS_hist_no_defect_no_long_RT_genes.pdf", 6, 6)
+print(nd_r)
+dev.off()
+
+#moderate defect
+md_r <- plot_hist_function(Rpb1_modD_hist_df, "Moderate Termination Defect Genes", subt = "Metagene Analysis of RNA Pol II ChIP-seq around the TTS")
+md_r
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Rpb1_TTS_hist_moderate_defect_genes.pdf", 6, 6)
+print(md_r)
+dev.off()
+
+#severe defect
+sd_r <- plot_hist_function(Rpb1_severeD_hist_df, "Severe Termination Defect Genes", subt = "Metagene Analysis of RNA Pol II ChIP-seq around the TTS")
+sd_r
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Rpb1_TTS_hist_severe_defect_genes.pdf", 6, 6)
+print(sd_r)
+dev.off()
+
+#max defect
+xd_r <- plot_hist_function(Rpb1_maxD_hist_df, "Maximum Termination Defect Genes", subt = "Metagene Analysis of RNA Pol II ChIP-seq around the TTS")
+xd_r
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Rpb1_TTS_hist_max_defect_genes.pdf", 6, 6)
+print(xd_r)
+dev.off()
+
+###Ser2P###
+#no defect genes
+nd_s <- plot_hist_function(Ser2P_noD_noLRT_hist_df, "No Termination Defect Genes", subt = "Metagene Analysis of Ser2P Pol II ChIP-seq around the TTS")
+nd_s
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Ser2P_TTS_hist_no_defect_no_long_RT_genes.pdf", 6, 6)
+print(nd_s)
+dev.off()
+
+#moderate defect
+md_s <- plot_hist_function(Ser2P_modD_hist_df, "Moderate Termination Defect Genes", subt = "Metagene Analysis of Ser2P Pol II ChIP-seq around the TTS")
+md_s
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Ser2P_TTS_hist_moderate_defect_genes.pdf", 6, 6)
+print(md_s)
+dev.off()
+
+#severe defect
+sd_s <- plot_hist_function(Ser2P_severeD_hist_df, "Severe Termination Defect Genes", subt = "Metagene Analysis of Ser2P Pol II ChIP-seq around the TTS")
+sd_s
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Ser2P_TTS_hist_severe_defect_genes.pdf", 6, 6)
+print(sd_s)
+dev.off()
+
+#max defect
+xd_s <- plot_hist_function(Ser2P_maxD_hist_df, "Maximum Termination Defect Genes", subt = "Metagene Analysis of Ser2P Pol II ChIP-seq around the TTS")
+xd_s
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Ser2P_TTS_hist_max_defect_genes.pdf", 6, 6)
+print(xd_s)
+dev.off()
+
+```
+
+plot Ser2P / Pol II
+```{r hist plot Ser2P/PolII}
+##repeat for Ser2P / Pol II
+#no defect no long RT
+nd_sr <- plot_hist_function(Ser2PdRpb1_noD_noLRT_hist_df, "Metagene Analysis of Ser2P / Rpb1 ChIP-seq around the TTS", subt = "no defect no long RT genes")
+nd_sr
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Ser2PdRpb1_TTS_hist_no_defect_no_long_RT_genes.pdf", 6, 6)
+print(nd_sr)
+dev.off()
+
+# moderate defect genes
+md_sr <- plot_hist_function(Ser2PdRpb1_modD_hist_df, "Metagene Analysis of Ser2P / Rpb1 ChIP-seq around the TTS", subt = "moderate defect genes")
+md_sr
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Ser2PdRpb1_TTS_hist_moderate_defect_genes.pdf", 6, 6)
+print(md_sr)
+dev.off()
+
+#severe defect genes
+sd_sr <- plot_hist_function(Ser2PdRpb1_severeD_hist_df, "Metagene Analysis of Ser2P / Rpb1 ChIP-seq around the TTS", subt = "severe defect genes")
+sd_sr
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Ser2PdRpb1_TTS_hist_severe_defect_genes.pdf", 6, 6)
+print(sd_sr)
+dev.off()
+
+#max defect genes
+xd_sr <- plot_hist_function(Ser2PdRpb1_maxD_hist_df, "Metagene Analysis of Ser2P / Rpb1 ChIP-seq around the TTS", subt = "max defect genes")
+xd_sr
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Ser2PdRpb1_TTS_hist_max_defect_genes.pdf", 6, 6)
+print(xd_sr)
+dev.off()
+
+```
+
+```{r save figures}
+#all
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Ser2P_TTS_hist_all_genes.pdf", 6, 6)
+print(a)
+dev.off()
+
+#defect
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Ser2P_TTS_hist_defect_genes.pdf", 6, 6)
+print(d)
+dev.off()
+
+#no defect
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Ser2P_TTS_hist_no_defect_genes.pdf", 6, 6)
+print(nd)
+dev.off()
+
+
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Ser2P_d_Rpb1_TTS_hist_all_genes.pdf", 6, 6)
+print(r_a)
+dev.off()
+
+#defect
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Ser2P_d_Rpb1_TTS_hist_defect_genes.pdf", 6, 6)
+print(r_d)
+dev.off()
+
+#no defect
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Ser2P_d_Rpb1_TTS_hist_no_defect_genes.pdf", 6, 6)
+print(r_nd)
+dev.off()
+
+```
+
+
+
+
+
+FUN SIZED:
+```{r Fun sized TTS plots}
+plot_fun_sized_hist_function_Rpb1 <- function(hist_df, plot_title="", subt = "", lege = c(0.8,0.8), y_labs=c(0,100)){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs(subtitle = subt, x= "", y="Read Count") +
+    ggtitle(plot_title) +
+    scale_x_continuous(labels=c("test","3'end", "", "", "", "+20kb"))+
+    scale_y_continuous(limits = y_labs, breaks = y_labs)+
+    #scale_y_continuous(labels = c(0,10,20,30,40,50))+ coord_cartesian(ylim=c(0,50))+
+    theme(axis.title.y = element_text(size = 13), axis.text = element_text(size = 13), #change axis label size
+          legend.position = lege, legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 20, 10, 5),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold"),   #change size of title
+          plot.subtitle = element_text(size = 12)) +             #change size of subtitle
+    scale_color_manual(values=c("lightgray", "black", "red"))
+}
+
+
+a <- plot_fun_sized_hist_function_Rpb1(all_hist_df, "Rpb1 ChIP-seq", subt = "All Analyzable Genes")
+a
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/fun_sized/Rpb1_TTS_hist_all_genes.pdf", 4, 3.5)
+print(a)
+dev.off()
+
+# defect genes
+d <- plot_fun_sized_hist_function_Rpb1(defect_hist_df, "Rpb1 ChIP-seq", subt = "Term Defect Genes")
+d
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/fun_sized/Rpb1_TTS_hist_defect_genes.pdf", 4, 3.5)
+print(d)
+dev.off()
+
+#no defect genes
+nd <- plot_fun_sized_hist_function_Rpb1(no_defect_hist_df, "Rpb1 ChIP-seq", subt = "No Defect Genes")
+nd
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/fun_sized/Rpb1_TTS_hist_no_defect_genes.pdf", 4, 3.5)
+print(nd)
+dev.off()
+
+
+
+###Rpb1###
+#no defect genes (excluding long RT genes) Rpb1_noD_noLRT_hist_df
+nd_r <- plot_fun_sized_hist_function_Rpb1(Rpb1_noD_noLRT_hist_df, "No Termination Defect Genes", subt = "Rpb1 ChIP-seq")
+nd_r
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/fun_sized/Rpb1_TTS_hist_no_defect_no_long_RT_genes.pdf", 4,3.5)
+print(nd_r)
+dev.off()
+
+#moderate defect Rpb1_modD_hist_df
+md_r <- plot_fun_sized_hist_function_Rpb1(Rpb1_modD_hist_df,"Termination Defect 1-9kb", subt = "Rpb1 ChIP-seq")
+md_r
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/fun_sized/Rpb1_TTS_hist_moderate_defect_genes.pdf", 4,3.5)
+print(md_r)
+dev.off()
+
+#severe defect Rpb1_severeD_hist_df
+sd_r <- plot_fun_sized_hist_function_Rpb1(Rpb1_severeD_hist_df, "Termination Defect 10-19kb", subt = "Rpb1 ChIP-seq")
+sd_r
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/fun_sized/Rpb1_TTS_hist_severe_defect_genes.pdf", 4,3.5)
+print(sd_r)
+dev.off()
+
+#max defect Rpb1_maxD_hist_df
+xd_r <- plot_fun_sized_hist_function_Rpb1(Rpb1_maxD_hist_df, "Termination Defect 20kb+", subt = "Rpb1 ChIP-seq")
+xd_r
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/fun_sized/Rpb1_TTS_hist_max_defect_genes.pdf", 4,3.5)
+print(xd_r)
+dev.off()
+
+#plot together
+nd_r <- plot_fun_sized_hist_function_Rpb1(Rpb1_noD_noLRT_hist_df,  "Rpb1 ChIP-seq", subt = "No RT", lege = "none", y_labs=c(0,45))
+md_r <- plot_fun_sized_hist_function_Rpb1(Rpb1_modD_hist_df,"", subt = "RT 1-9kb", lege = "none", y_labs=c(0,45))
+sd_r <- plot_fun_sized_hist_function_Rpb1(Rpb1_severeD_hist_df,"", subt = "RT 10-19kb", lege = "none", y_labs=c(0,45))
+xd_r <- plot_fun_sized_hist_function_Rpb1(Rpb1_maxD_hist_df, "", subt = "RT 20kb+", y_labs=c(0,45))
+
+gg <- ggarrange(nd_r, md_r, sd_r, xd_r, ncol = 4, nrow = 1)
+gg
+jpeg("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/fun_sized/Rpb1_TTS_hist_all_plots_same_scale.jpeg", width=9, height=2.5, units="in", res=300)
+print(gg)
+dev.off()
+
+
+
+```
+
+-------------------------------------------
+
+
+leaky and sharp NHS termination
+--------------------------------
+first, make TTS bed files:
+```{r make TTS bed files}
+TTS_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/annotation_bed_files/iso_exp_clean_genes_TTS.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+colnames(TTS_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+ChIP_TTS_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/ChIP_genes_TTS.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+colnames(ChIP_TTS_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+#read in sharp and leaky lists
+sharp_gene_IDs <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/leaky_and_sharp_NHS_termination_gene_lists/sharp_NHS_term_1kb_method_IDs.txt", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+leaky_gene_IDs <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07d_read_through_length_and_term_defects/V2_gene_lists/leaky_and_sharp_NHS_termination_gene_lists/leaky_NHS_term_1kb_method_IDs.txt", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+
+#make sharp and leaky bed files
+sharp_genes_TTS_bed <- filter(TTS_bed, TTS_bed$id %in%  sharp_gene_IDs$V1)
+leaky_genes_TTS_bed <- filter(TTS_bed, TTS_bed$id %in%  leaky_gene_IDs$V1)
+
+ChIP_sharp_genes_TTS_bed <- filter(ChIP_TTS_bed, ChIP_TTS_bed$id %in%  sharp_gene_IDs$V1)
+ChIP_leaky_genes_TTS_bed <- filter(ChIP_TTS_bed, ChIP_TTS_bed$id %in%  leaky_gene_IDs$V1)
+
+
+#save
+write_delim(sharp_genes_TTS_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/sharp_NHS_genes_TTS.bed", delim = "\t", col_names = FALSE)
+write_delim(leaky_genes_TTS_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/leaky_NHS_genes_TTS.bed", delim = "\t", col_names = FALSE)
+
+write_delim(ChIP_sharp_genes_TTS_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/ChIP_sharp_NHS_genes_TTS.bed", delim = "\t", col_names = FALSE)
+write_delim(ChIP_leaky_genes_TTS_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/ChIP_leaky_NHS_genes_TTS.bed", delim = "\t", col_names = FALSE)
+
+```
+
+now run homer hist command
+
+    see bash script 07e_sharp_or_leaky_cat_ChIP_TTS_hist.sh
+  
+read-in and set up data:
+```{r read in data and avg reps}
+#read-in hist outputs
+fl_sharp <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/homer_hist_outputs/sharp_NHS_genes_TTS_hist", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+sharp_hist <- lapply(fl_sharp, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(sharp_hist) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/homer_hist_outputs/sharp_NHS_genes_TTS_hist/|.tsv", "", fl_sharp)
+
+fl_leaky <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/homer_hist_outputs/leaky_NHS_genes_TTS_hist", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+leaky_hist <- lapply(fl_leaky, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(leaky_hist) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/homer_hist_outputs/leaky_NHS_genes_TTS_hist/|.tsv", "", fl_leaky)
+
+
+
+
+## care about col 1 (distance from TTS) and col 2 (avg accross all given genes, normalized coverage)
+#make avg of reps
+
+#sharp
+Rpb1_sharp_hist_df <-data.frame(distance_from_TTS = sharp_hist$input[,1], 
+                input = sharp_hist$input[,2],
+                NHS = (sharp_hist$NHS_Rpb1_R6[,2] + sharp_hist$NHS_Rpb1_R8[,2]) /2,
+                HS = (sharp_hist$HS_Rpb1_R6[,2] + sharp_hist$HS_Rpb1_R6[,2])/2)
+Ser2P_sharp_hist_df <-data.frame(distance_from_TTS = sharp_hist$input[,1], 
+                input = sharp_hist$input[,2],
+                NHS = (sharp_hist$NHS_Ser2P_R6[,2] + sharp_hist$NHS_Ser2P_R8[,2]) /2,
+                HS = (sharp_hist$HS_Ser2P_R6[,2] + sharp_hist$HS_Ser2P_R8[,2]) /2 )
+Ser2PdRpb1_sharp_hist_df <-data.frame(distance_from_TTS = Ser2P_sharp_hist_df$distance_from_TTS, 
+                NHS = Ser2P_sharp_hist_df$NHS / Rpb1_sharp_hist_df$NHS,
+                HS = Ser2P_sharp_hist_df$HS / Rpb1_sharp_hist_df$HS )
+
+#leaky
+Rpb1_leaky_hist_df <-data.frame(distance_from_TTS = leaky_hist$input[,1], 
+                input = leaky_hist$input[,2],
+                NHS = (leaky_hist$NHS_Rpb1_R6[,2] + leaky_hist$NHS_Rpb1_R8[,2]) /2,
+                HS = (leaky_hist$HS_Rpb1_R6[,2] + leaky_hist$HS_Rpb1_R6[,2])/2)
+Ser2P_leaky_hist_df <-data.frame(distance_from_TTS = leaky_hist$input[,1], 
+                input = leaky_hist$input[,2],
+                NHS = (leaky_hist$NHS_Ser2P_R6[,2] + leaky_hist$NHS_Ser2P_R8[,2]) /2,
+                HS = (leaky_hist$HS_Ser2P_R6[,2] + leaky_hist$HS_Ser2P_R8[,2]) /2 )
+Ser2PdRpb1_leaky_hist_df <-data.frame(distance_from_TTS = Ser2P_leaky_hist_df$distance_from_TTS, 
+                NHS = Ser2P_leaky_hist_df$NHS / Rpb1_leaky_hist_df$NHS,
+                HS = Ser2P_leaky_hist_df$HS / Rpb1_leaky_hist_df$HS )
+
+
+
+
+## trim off -20kb upstream ##
+#for 20kb ds had to also do 20kb upstream of the TTS, but we don't need to go that far into the gene so I'm trimming it to 2kb into the gene body
+Rpb1_sharp_hist_df <- filter(Rpb1_sharp_hist_df, distance_from_TTS >= -2000)
+Ser2P_sharp_hist_df <- filter(Ser2P_sharp_hist_df, distance_from_TTS >= -2000)
+Ser2PdRpb1_sharp_hist_df <- filter(Ser2PdRpb1_sharp_hist_df, distance_from_TTS >= -2000)
+
+Rpb1_leaky_hist_df <- filter(Rpb1_leaky_hist_df, distance_from_TTS >= -2000)
+Ser2P_leaky_hist_df <- filter(Ser2P_leaky_hist_df, distance_from_TTS >= -2000)
+Ser2PdRpb1_leaky_hist_df <- filter(Ser2PdRpb1_leaky_hist_df, distance_from_TTS >= -2000)
+
+
+#save dfs
+write_delim(Rpb1_sharp_hist_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/other_data_tables/TTS_hist_Rpb1_sharp_df.tsv", delim = "\t", col_names = FALSE)
+write_delim(Rpb1_leaky_hist_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/other_data_tables/TTS_hist_Rpb1_leaky_df.tsv", delim = "\t", col_names = FALSE)
+write_delim(Ser2P_sharp_hist_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/other_data_tables/TTS_hist_Ser2P_sharp_df.tsv", delim = "\t", col_names = FALSE)
+write_delim(Ser2P_leaky_hist_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/other_data_tables/TTS_hist_Ser2P_leaky_df.tsv", delim = "\t", col_names = FALSE)
+
+
+
+#need both NHS and HS values in one col with corresponding ID so can plot both at once
+Rpb1_sharp_hist_df <- pivot_longer(Rpb1_sharp_hist_df, cols =2:4)
+Ser2P_sharp_hist_df <- pivot_longer(Ser2P_sharp_hist_df, cols =2:4)
+Ser2PdRpb1_sharp_hist_df <- pivot_longer(Ser2PdRpb1_sharp_hist_df, cols =2:3) #no input so only cols 2:3
+
+Rpb1_leaky_hist_df <- pivot_longer(Rpb1_leaky_hist_df, cols =2:4)
+Ser2P_leaky_hist_df <- pivot_longer(Ser2P_leaky_hist_df, cols =2:4)
+Ser2PdRpb1_leaky_hist_df <- pivot_longer(Ser2PdRpb1_leaky_hist_df, cols =2:3) #no input so only cols 2:3
+
+
+#needs to be factored to tell which one to show first
+Rpb1_sharp_hist_df$name <- factor(Rpb1_sharp_hist_df$name, levels = c('NHS', 'HS', 'input'))
+Ser2P_sharp_hist_df$name <- factor(Ser2P_sharp_hist_df$name, levels = c('NHS', 'HS', 'input'))
+Ser2PdRpb1_sharp_hist_df$name <- factor(Ser2PdRpb1_sharp_hist_df$name, levels = c('NHS', 'HS'))
+
+Rpb1_leaky_hist_df$name <- factor(Rpb1_leaky_hist_df$name, levels = c('NHS', 'HS', 'input'))
+Ser2P_leaky_hist_df$name <- factor(Ser2P_leaky_hist_df$name, levels = c('NHS', 'HS', 'input'))
+Ser2PdRpb1_leaky_hist_df$name <- factor(Ser2PdRpb1_leaky_hist_df$name, levels = c('NHS', 'HS'))
+
+
+
+
+```
+
+setup plot settings:
+```{r plotting setup}
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+
+###defining plot histogram function###
+#testing
+#hist_df <- Rpb1_hist_data
+#plot_title <- "Metagene Analysis of Pol II ocupancy at the TTS"
+
+plot_hist_function <- function(hist_df, plot_title, subt = "isolated genes"){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line() +
+    labs(subtitle = subt, x= "distance from TTS", y="avg norm tag coverage") +
+    ggtitle(plot_title) +
+    scale_color_manual(values=c("black", "red", "grey"))
+}
+
+```
+
+plot:
+```{r hist plot Rpb1 and Ser2P}
+###Rpb1###
+#sharp
+s_r <- plot_hist_function(Rpb1_sharp_hist_df, "Metagene Analysis of Rpb1 ChIP-seq around the TTS", subt = "sharp genes")
+s_r
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Rpb1_TTS_hist_sharp_genes.pdf", 5, 5)
+print(s_r)
+dev.off()
+
+#leaky
+l_r <- plot_hist_function(Rpb1_leaky_hist_df, "Metagene Analysis of Rpb1 ChIP-seq around the TTS", subt = "leaky genes")
+l_r
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Rpb1_TTS_hist_leaky_genes.pdf", 5, 5)
+print(l_r)
+dev.off()
+
+
+
+###Ser2P###
+#sharp
+s_s <- plot_hist_function(Ser2P_sharp_hist_df, "Metagene Analysis of Ser2P ChIP-seq around the TTS", subt = "sharp genes")
+s_s
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Ser2P_TTS_hist_sharp_genes.pdf", 5, 5)
+print(s_s)
+dev.off()
+
+#leaky
+l_s <- plot_hist_function(Ser2P_leaky_hist_df, "Metagene Analysis of Rpb1 ChIP-seq around the TTS", subt = "leaky genes")
+l_s
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Ser2P_TTS_hist_leaky_genes.pdf", 5, 5)
+print(l_s)
+dev.off()
+
+
+
+###Ser2P / Rpb1###
+#sharp
+s_sr <- plot_hist_function(Ser2PdRpb1_sharp_hist_df, "Metagene Analysis of Ser2P / Pol II ChIP-seq around the TTS", subt = "sharp genes")
+s_sr
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Ser2PdPolII_TTS_hist_sharp_genes.pdf", 6, 6)
+print(s_sr)
+dev.off()
+
+#leaky
+l_sr <- plot_hist_function(Ser2PdRpb1_leaky_hist_df, "Metagene Analysis of Rpb1 ChIP-seq around the TTS", subt = "leaky genes")
+l_sr
+pdf("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Ser2PdPolII_TTS_hist_leaky_genes.pdf", 6, 6)
+print(l_sr)
+dev.off()
+
+```
+
+
+
+--------------------------------
+
+
+
+
+
+Pol II pause ratio
+------------------
+  gnbd counts / 0-5kb ds termination window
+  
+  
+counts ran previously:
+/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/raw_counts_by_region/gnbd/
+/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/raw_counts_by_region/TTS_Peak/
+```{r read-in data}
+#read-in hist outputs
+fl_gnbd <- list.files("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/raw_counts_by_region/gnbd",
+                  pattern = "*.bed",
+                  full.names = TRUE)
+Rpb1_gnbd_hist <- lapply(fl_gnbd, read.table, header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(Rpb1_gnbd_hist) <- gsub("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/raw_counts_by_region/gnbd/|.bed", "", fl_gnbd)
+
+
+fl_TTS <- list.files("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/raw_counts_by_region/TTS_Peak",
+                  pattern = "*.bed",
+                  full.names = TRUE)
+Rpb1_TTS_hist <- lapply(fl_TTS, read.table, header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(Rpb1_TTS_hist) <- gsub("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/raw_counts_by_region/TTS_Peak/|.bed", "", fl_TTS)
+
+```
+```{r make dfs}
+#put into dfs
+Rpb1_gnbd_counts_df <- data.frame(transcriptID = Rpb1_gnbd_hist$NHS_Rpb1_R6_counts$V4,
+                 NHS_R6 = Rpb1_gnbd_hist$NHS_Rpb1_R6_counts$V7,
+                 NHS_R8 = Rpb1_gnbd_hist$NHS_Rpb1_R8_counts$V7,
+                 HS_R6 = Rpb1_gnbd_hist$HS_Rpb1_R6_counts$V7,
+                 HS_R8 = Rpb1_gnbd_hist$HS_Rpb1_R8_counts$V7
+                 )
+
+Rpb1_5kbds_counts_df <- data.frame(transcriptID = Rpb1_TTS_hist$NHS_Rpb1_R6_counts$V4 ,
+                 NHS_R6 = Rpb1_TTS_hist$NHS_Rpb1_R6_counts$V7,
+                 NHS_R8 = Rpb1_TTS_hist$NHS_Rpb1_R8_counts$V7,
+                 HS_R6 = Rpb1_TTS_hist$HS_Rpb1_R6_counts$V7,
+                 HS_R8 = Rpb1_TTS_hist$HS_Rpb1_R8_counts$V7
+                 )
+
+#calc RPK
+#bed file to calc gene lengths
+gnbd_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/ChIP_analyzable_genes_MANE_v095_gnbd.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+colnames(gnbd_bed) <- c("chrom", "start", "end", "transcriptID", "score", "strand")
+gnbd_bed$gene_length <- abs(gnbd_bed$start - gnbd_bed$end) / 1000
+
+Rpb1_gnbd_counts_df <- left_join(Rpb1_gnbd_counts_df, gnbd_bed[c(4,7)], by = "transcriptID")
+
+Rpb1_gnbd_RPK_df <- data.frame(transcriptID = Rpb1_gnbd_counts_df$transcriptID,
+                 NHS_R6 = Rpb1_gnbd_counts_df$NHS_R6 / Rpb1_gnbd_counts_df$gene_length,
+                 NHS_R8 = Rpb1_gnbd_counts_df$NHS_R8 / Rpb1_gnbd_counts_df$gene_length,
+                 HS_R6 = Rpb1_gnbd_counts_df$HS_R6 / Rpb1_gnbd_counts_df$gene_length,
+                 HS_R8 = Rpb1_gnbd_counts_df$HS_R8 / Rpb1_gnbd_counts_df$gene_length
+                 )
+Rpb1_5kbds_RPK_df <- data.frame(transcriptID = Rpb1_5kbds_counts_df$transcriptID,
+                 NHS_R6 = Rpb1_5kbds_counts_df$NHS_R6 / 5, #5kb ds window
+                 NHS_R8 = Rpb1_5kbds_counts_df$NHS_R8 / 5,
+                 HS_R6 = Rpb1_5kbds_counts_df$HS_R6 / 5,
+                 HS_R8 = Rpb1_5kbds_counts_df$HS_R8 / 5
+                 )
+
+
+#norm ds to gnbd
+  #(don't need to norm for seq depth because it would cancel out)
+Rpb1_pause_df <- data.frame(transcriptID = Rpb1_gnbd_RPK_df$transcriptID,
+                            NHS_R6 = Rpb1_5kbds_RPK_df$NHS_R6 / Rpb1_gnbd_RPK_df$NHS_R6,
+                            NHS_R8 = Rpb1_5kbds_RPK_df$NHS_R8 / Rpb1_gnbd_RPK_df$NHS_R8,
+                            HS_R6 = Rpb1_5kbds_RPK_df$HS_R6 / Rpb1_gnbd_RPK_df$HS_R6,
+                            HS_R8 = Rpb1_5kbds_RPK_df$HS_R8 / Rpb1_gnbd_RPK_df$HS_R8
+                            )
+Rpb1_pause_df$NHS_avg <- (Rpb1_pause_df$NHS_R6 + Rpb1_pause_df$NHS_R8) /2
+Rpb1_pause_df$HS_avg <- (Rpb1_pause_df$HS_R6 + Rpb1_pause_df$HS_R8) /2
+
+```
+```{r pause index boxplot}
+pause_plotting_df <- pivot_longer( Rpb1_pause_df[,6:7], cols = 1:2 )
+pause_plotting_df$name <- factor(pause_plotting_df$name, levels = c("NHS_avg", "HS_avg"))
+
+
+p <- ggplot(pause_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,3)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  scale_x_discrete(labels=c("NHS", "HS"))+
+  ylab("Termination Pause Ratio") +
+  labs(title = "All Analyzable Genes") +
+  theme(plot.title = element_text(size = 13, hjust=0.9),            #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("black", "red")) + #box colors
+  annotate("text", x=1.5, y=3, label= "****", colour = "gray40", size = 6) + #add * above boxplot
+    annotate("segment", x = 1, xend = 2, y = 3, yend = 3, colour = "gray40")
+
+
+jpeg("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Rpb1_termination_pause_ratio_boxplot.jpeg", width=2, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+#stats
+#ctl vs OE
+res <- wilcox.test(as.numeric(Rpb1_pause_df$NHS_avg), as.numeric(Rpb1_pause_df$HS_avg) )
+res$p.value #0 ?
+
+
+
+
+
+### defect RT length cats ###
+t <- left_join(Rpb1_pause_df, master_df[c(1,21)], by = "transcriptID")
+nd <- filter(t, t$defect_cat == "no defect")
+m <- filter(t, t$defect_cat == "moderate defect")
+s <- filter(t, t$defect_cat == "severe defect")
+x <- filter(t, t$defect_cat == "max defect")
+
+nd_plotting_df <- pivot_longer( nd[,6:7], cols = 1:2 )
+nd_plotting_df$name <- factor(nd_plotting_df$name, levels = c("NHS_avg", "HS_avg"))
+m_plotting_df <- pivot_longer( m[,6:7], cols = 1:2 )
+m_plotting_df$name <- factor(m_plotting_df$name, levels = c("NHS_avg", "HS_avg"))
+s_plotting_df <- pivot_longer( s[,6:7], cols = 1:2 )
+s_plotting_df$name <- factor(s_plotting_df$name, levels = c("NHS_avg", "HS_avg"))
+x_plotting_df <- pivot_longer( x[,6:7], cols = 1:2 )
+x_plotting_df$name <- factor(x_plotting_df$name, levels = c("NHS_avg", "HS_avg"))
+#plot all together
+colnames(t) <- c("transcriptID", "NHS_R6", "NHS_R8", "HS_R6", "HS_R8", "NHS", "HS", "defect_cat"  )
+plot_t <- pivot_longer(t[,6:8], cols = 1:2)
+plot_t$label <- paste(plot_t$defect_cat, plot_t$name)
+plot_t$label <- factor(plot_t$label, levels = c("no defect NHS", "no defect HS", "moderate defect NHS", "moderate defect HS",  "severe defect NHS", "severe defect HS","max defect NHS", "max defect HS"))
+plot_t$defect_cat <- factor(plot_t$defect_cat, levels = c("no defect", "moderate defect", "severe defect", "max defect"))
+
+
+#plot
+p <- ggplot(plot_t, aes(y=value, x=label, color = defect_cat ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,3.2)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  scale_x_discrete(labels=c("NHS", "HS","NHS", "HS","NHS", "HS","NHS", "HS"))+
+  ylab("Termination Pause Ratio") +
+  labs(title = "") +
+  theme(plot.title = element_text(size = 13, hjust=0.9),            #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+  scale_colour_manual(values=c("gray30", "#d45050","#b50d0d", "darkred")) + #box colors
+  annotate("text", x=1.5, y=3.2, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 1, xend = 2, y = 3.2, yend = 3.2, colour = "gray40")+ #left line and * for stats
+  annotate("text", x=3.5, y=3.2, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 3, xend = 4, y = 3.2, yend = 3.2, colour = "gray40")+ #middle line and * for stats
+  annotate("text", x=5.5, y=3.2, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 5, xend = 6, y = 3.2, yend = 3.2, colour = "gray40")+ #middle line and * for stats
+  annotate("text", x=7.5, y=3.2, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 7, xend = 8, y = 3.2, yend = 3.2, colour = "gray40") #+ #right line and * for stats
+
+
+jpeg("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/Rpb1_RT_length_cat_termination_pause_ratio_boxplot.jpeg", width=4, height=3, units="in", res=300)
+print(p)
+dev.off()
+
+
+#stats
+res <- wilcox.test(as.numeric(nd$NHS_avg), as.numeric(nd$HS_avg) )
+res$p.value #1.052209e-49 ****
+res <- wilcox.test(as.numeric(m$NHS_avg), as.numeric(m$HS_avg) )
+res$p.value #9.928012e-74 ****
+res <- wilcox.test(as.numeric(s$NHS_avg), as.numeric(s$HS_avg) )
+res$p.value #1.791926e-101 ****
+res <- wilcox.test(as.numeric(x$NHS_avg), as.numeric(x$HS_avg) )
+res$p.value #4.032062e-150 ****
+
+```
+
+FC after HS for each RT cat
+```{r}
+t <- left_join(Rpb1_pause_df, final_master_df[c(1,21)], by = "transcriptID") #add defect cat col
+#calc FC
+t$FC <- t$HS_avg / t$NHS_avg
+  ## is avg after FC different from FC each rep then avg? 
+t$FC_2 <- ((t$HS_R6 / t$NHS_R6) + (t$HS_R8 / t$NHS_R8)) /2
+  ### yes, slightly... go with FC then avg
+
+t$defect_cat <- factor(t$defect_cat, levels = c("no defect", "moderate defect", "severe defect", "max defect"))
+
+b <- ggplot(t, aes(y=FC_2, x=defect_cat, color = defect_cat ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,1.5)) +
+  #geom_abline(color="gray30", lty=2, slope =  0, intercept =  1, lwd = 1) + #line at 1
+  scale_x_discrete(labels=c("no RT", "1-9kb", "10-19kb", "20kb"))+
+  ylab("Termination Pause Ratio\nFC after HS") +
+  labs(title = "") +
+  theme(plot.title = element_text(size = 13, hjust=0.9),            #change size of title
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = 13), 
+        legend.position="none", 
+        axis.title.y = element_text(size = 13),                               #y-axis label text size 
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 11, color = "gray40")              #caption font and color
+        ) +
+    scale_colour_manual(values=c("#c27a7a", "#d45050","#b50d0d", "darkred")) + #box colors
+  annotate("text", x=1.5, y=1.5, label= "***", colour = "gray40", size = 6) + 
+      annotate("segment", x = 1.05, xend = 1.95, y = 1.5, yend = 1.5, colour = "gray40")+ #left line and * for stats
+  annotate("text", x=2.5, y=1.5, label= "***", colour = "gray40", size = 6) + 
+      annotate("segment", x = 2.05, xend = 2.95, y = 1.5, yend = 1.5, colour = "gray40")+ #middle line and * for stats
+  annotate("text", x=3.5, y=1.5, label= "***", colour = "gray40", size = 6) + 
+      annotate("segment", x = 3.05, xend = 3.95, y = 1.5, yend = 1.5, colour = "gray40")
+
+jpeg("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/figures/FC_Rpb1_RT_length_cat_termination_pause_ratio_boxplot_all_reds.jpeg", width=3.6, height=3, units="in", res=300)
+print(b)
+dev.off()
+
+
+#stats
+nd <- filter(t, t$defect_cat == "no defect")
+m <- filter(t, t$defect_cat == "moderate defect")
+s <- filter(t, t$defect_cat == "severe defect")
+x <- filter(t, t$defect_cat == "max defect")
+
+res <- wilcox.test(as.numeric(nd$FC_2), as.numeric(m$FC_2) )
+res$p.value #0.0006600801 *** 
+res <- wilcox.test(as.numeric(nd$FC_2), as.numeric(s$FC_2) )
+res$p.value #1.210337e-11 ****
+res <- wilcox.test(as.numeric(nd$FC_2), as.numeric(x$FC_2) )
+res$p.value #2.825038e-24 ****
+
+
+res <- wilcox.test(as.numeric(m$FC_2), as.numeric(s$FC_2) )
+res$p.value #0.0001063438 ***
+res <- wilcox.test(as.numeric(m$FC_2), as.numeric(x$FC_2) )
+res$p.value #3.415069e-14 ****
+
+res <- wilcox.test(as.numeric(s$FC_2), as.numeric(x$FC_2) )
+res$p.value #0.0002514806 ***
+```
+

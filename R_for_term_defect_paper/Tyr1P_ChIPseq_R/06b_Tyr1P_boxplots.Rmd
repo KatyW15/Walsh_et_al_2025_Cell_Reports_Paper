@@ -1,0 +1,475 @@
+---
+title: "06b_Tyr1P_boxplots"
+author: "Katy Walsh"
+date: "4/2/2024"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(grid)
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+library(ggfortify)
+library(gtable)
+library(ggpmisc)
+#install.packages("VennDiagram")
+library(VennDiagram)
+
+#wd: 
+setwd("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/06_analysis/boxplots")
+
+```
+setup plot settings:
+```{r plotting setup}
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+library(ggpmisc)
+
+theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+    )
+
+###defining plot histogram function###
+#testing
+#hist_df <- Rpb1_hist_data
+#plot_title <- "Metagene Analysis of Pol II ocupancy at the TTS"
+
+    
+plot_hist_function <- function(hist_df, plot_title, subt = "isolated genes"){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line() +
+    labs(subtitle = subt, x= "distance from TTS", y="avg norm tag coverage") +
+    ggtitle(plot_title) +
+    scale_color_manual(values=c("black", "red", "grey"))
+}
+
+```
+
+
+
+
+
+```{r make better master df for common genes}
+#make a filtered master DF with just 1.5 SD sig genes
+ChIP_genes_master_df <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/ChIP_analyzable_genes_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#add 4sU uncleaved reads FC and Ser2P d Pol II columns
+Ser2P_v_uncleaved_boxplot_df <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/plotting_dfs/uncleaved_FC_and_Ser2PdPolII_cat.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+common_genes_MASTER_df <- left_join(Ser2P_v_uncleaved_boxplot_df, ChIP_genes_master_df, by = "transcriptID")
+
+#filter for common genes list
+common_genes <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/06_analysis/TTS5kbds_common_genes_list.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+common_genes_MASTER_df <- filter(common_genes_MASTER_df, common_genes_MASTER_df$transcriptID %in%  common_genes$transcriptID)
+
+
+#clean up df
+#don't use the 4sU coverage cols so remove extra 4sU data
+common_genes_MASTER_df <- common_genes_MASTER_df[c(1,22,17,18:21,23,24,27,29,2:4)]
+
+colnames(common_genes_MASTER_df) <- c("transcriptID", "gene_length", "term_defect_final", "NHS_RT_end_point_4sU", "HS_RT_end_point_4sU", "final_defect_length_4sU", "longRT_4sU", "cat_NHS_term_4sU", "defect_cat_4sU", "DESeq_1.5fold_cat_4sU", "cleaved_cat_4sU", "uncleaved_reads_FC_4sU", "Ser2PdPolII_avg", "cat_Ser2P")
+#actually want to swap col 11 and 12 so FC then cat same as Ser2P
+common_genes_MASTER_df <- common_genes_MASTER_df[c(1:10,12,11,13,14)]
+
+#add cols for if outside 1.5 SD from scatterplot
+scatterplot_outside_1p5SD_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/06_analysis/scatterplots/common_genes_outside_1p5_SD.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+common_genes_MASTER_df <- left_join(common_genes_MASTER_df, scatterplot_outside_1p5SD_df, by = "transcriptID")
+#has NA if gene is a long RT gene since those weren't plotted
+
+
+#save
+write_delim(common_genes_MASTER_df, "../ChIP_common_TTS5kbds_genes_MASTER_df.tsv", delim = "\t", col_names = TRUE)
+```
+
+
+make Tyr1P / Pol II data frame (TTS-5kb ds)
+```{r}
+#read in common genes master df
+common_genes_MASTER_df <- read.table("../ChIP_common_TTS5kbds_genes_MASTER_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#read-in FC TTS data from scatterplots
+Tyr1P_exp_FC_5kbds_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/06_analysis/scatterplots/FC_5kbds_exp.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+#R7 Tyr1P / R7 Pol II, repeat for R8, then avg
+Tyr1P_exp_FC_5kbds_df$Tyr1PdPolII_R7 <- Tyr1P_exp_FC_5kbds_df$Tyr1P_R7 / Tyr1P_exp_FC_5kbds_df$Rpb1_R7 
+Tyr1P_exp_FC_5kbds_df$Tyr1PdPolII_R8 <- Tyr1P_exp_FC_5kbds_df$Tyr1P_R8 / Tyr1P_exp_FC_5kbds_df$Rpb1_R8
+Tyr1P_exp_FC_5kbds_df$Tyr1PdPolII_avg <- (Tyr1P_exp_FC_5kbds_df$Tyr1PdPolII_R7 + Tyr1P_exp_FC_5kbds_df$Tyr1PdPolII_R8) /2
+#is this different than Ser2P avg / PolII avg?
+Tyr1P_exp_FC_5kbds_df$test_avg_order <- Tyr1P_exp_FC_5kbds_df$Tyr1P_avg / Tyr1P_exp_FC_5kbds_df$Rpb1_avg
+#yes but fairly similar, sticking with Tyr1P / Pol II per rep then avg
+
+Tyr1P_boxplot_df <- data.frame(transcriptID = Tyr1P_exp_FC_5kbds_df$transcriptID,
+                    Tyr1PdPolII = Tyr1P_exp_FC_5kbds_df$Tyr1PdPolII_avg )
+#filter for common genes
+Tyr1P_boxplot_df <- filter(Tyr1P_boxplot_df, Tyr1P_boxplot_df$transcriptID %in% common_genes_MASTER_df$transcriptID)
+#remove long RT genes
+t <- filter(common_genes_MASTER_df, common_genes_MASTER_df$longRT_4sU == FALSE)
+Tyr1P_boxplot_df <- filter(Tyr1P_boxplot_df, Tyr1P_boxplot_df$transcriptID %in% t$transcriptID )
+
+
+
+
+Ser2P_boxplot_df <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/plotting_dfs/boxplot_TTS_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "") 
+#filter for common genes
+Ser2P_boxplot_df <- filter(Ser2P_boxplot_df, Ser2P_boxplot_df$transcriptID %in% common_genes_MASTER_df$transcriptID) 
+#only keep first 2 cols (ID and Ser2PdPolII)
+Ser2P_boxplot_df <- Ser2P_boxplot_df[1:2]
+
+
+#add to master df for plotting boxplots
+common_genes_MASTER_df <- left_join(common_genes_MASTER_df, Tyr1P_boxplot_df, by = "transcriptID") 
+common_genes_MASTER_df <- left_join(common_genes_MASTER_df, Ser2P_boxplot_df, by = "transcriptID") 
+
+#save
+write_delim(common_genes_MASTER_df, "../ChIP_common_TTS5kbds_genes_MASTER_df.tsv", delim = "\t", col_names = TRUE)
+
+
+
+#filter out long RT genes
+common_genes_MASTER_df <- filter(common_genes_MASTER_df, common_genes_MASTER_df$longRT_4sU == FALSE)
+
+
+#how many genes have increased Tyr1P / Pol II (<1.5)?
+nrow( filter(common_genes_MASTER_df, common_genes_MASTER_df$Tyr1PdPolII > 1.5) ) #710 / 1713 = ~41% 
+nrow( filter(common_genes_MASTER_df, common_genes_MASTER_df$Tyr1PdPolII > 1.25) ) #1001 / 1713 = ~58% 
+#less than 0.5?
+nrow( filter(common_genes_MASTER_df, common_genes_MASTER_df$Tyr1PdPolII <0.5) ) #32 / 1713 = ~2% 
+nrow( filter(common_genes_MASTER_df, common_genes_MASTER_df$Tyr1PdPolII <0.75) ) #150 / 1713 = ~9% 
+
+#how many genes have increased Ser2P / Pol II (<1.5)?
+nrow( filter(common_genes_MASTER_df, common_genes_MASTER_df$Ser2PdPolII > 1.5) ) #280 / 1713 = ~16% (unfiltered Ser2P = 20%)
+nrow( filter(common_genes_MASTER_df, common_genes_MASTER_df$Ser2PdPolII > 1.25) ) #719 / 1713 = ~41% (unfiltered Ser2P = 50%)
+#less than 0.5?
+nrow( filter(common_genes_MASTER_df, common_genes_MASTER_df$Ser2PdPolII <0.5) ) #23 / 1713 = ~1% (old 1%)
+nrow( filter(common_genes_MASTER_df, common_genes_MASTER_df$Ser2PdPolII <0.75) ) #129 / 1713 = ~7.5% (old 6%)
+
+```
+
+
+
+now can plot
+  *uncleaved reads vs CTD phos*
+```{r uncleaved reads boxplots}
+#if need to read in data
+#common_genes_MASTER_df <- read.table("../ChIP_common_TTS5kbds_genes_MASTER_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#filter out long RT genes
+common_genes_MASTER_df <- filter(common_genes_MASTER_df, common_genes_MASTER_df$longRT_4sU == FALSE)
+
+#make plotting dfs
+  ###cleaved or uncleaved
+cleavage_TTS_df <- common_genes_MASTER_df[c(17,18,12)]
+#factor for order
+cleavage_TTS_df$cleaved_cat_4sU <- factor(cleavage_TTS_df$cleaved_cat_4sU, c('"NA"', "decreased","no change", "increased") )
+
+
+#make boxplots
+tb <- ggplot(cleavage_TTS_df, aes(y=Tyr1PdPolII, x=cleaved_cat_4sU, color = cleaved_cat_4sU ) ) +
+  geom_boxplot(width=0.75, outlier.shape = 16) + 
+  coord_cartesian(ylim = c(0,5)) +
+  ylab("Fold change in Tyr1P Pol II / total Pol II after HS") + 
+  ggtitle("3' Tyr1P / Pol II by category of RNA uncleaved reads across TTS") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13), legend.position="none", axis.text.x = element_text(angle = -45, vjust=1, hjust = 0)) +
+  theme(plot.title = element_text(size = 9, face = "bold")) + #change size of title
+  scale_colour_manual(values=c("#FFA607","#FE7316","#FE5A1D", "#273ba3")) #oranges
+  #gray/red/yellow/gray "#696969","#b52d0e","#e3bc68", "#273ba3"
+summary(cleavage_TTS_df$cleaved_cat_4sU)
+
+#Ser2P labels
+sb <- ggplot(cleavage_TTS_df, aes(y=Ser2PdPolII, x=cleaved_cat_4sU, color = cleaved_cat_4sU ) ) +
+  geom_boxplot(width=0.75, outlier.shape = 16) + 
+  coord_cartesian(ylim = c(0,5)) +
+  ylab("Fold change in Ser2P Pol II / total Pol II after HS") + 
+  ggtitle("3' Ser2P / Pol II by category of RNA uncleaved reads across TTS") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13), legend.position="none", axis.text.x = element_text(angle = -45, vjust=1, hjust = 0)) +
+  theme(plot.title = element_text(size = 9, face = "bold")) + #change size of title
+  scale_colour_manual(values=c("#B19CD9","#816EA7","#534278", "#273ba3")) #purples
+
+
+#save
+png("figures/Ser2PdPolII_all_cleavage_boxplot_purple.png", 300, 350)
+print(sb)
+dev.off()
+
+
+
+#for inc and dec only
+cleavage_TTS_df_filtered <- filter(cleavage_TTS_df, cleavage_TTS_df$cleaved_cat_4sU == "decreased" | cleavage_TTS_df$cleaved_cat_4sU == "increased")
+
+tb <- ggplot(cleavage_TTS_df_filtered, aes(y=Tyr1PdPolII, x=cleaved_cat_4sU, color = cleaved_cat_4sU ) ) +
+  geom_boxplot(width=0.75, outlier.shape = 16) + 
+  coord_cartesian(ylim = c(0,5)) +
+  ylab("Fold change in Tyr1P Pol II / total Pol II after HS") + 
+  ggtitle("3' Tyr1P / Pol II by category of\nRNA uncleaved reads across TTS") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13), legend.position="none", axis.text.x = element_text(angle = -45, vjust=1, hjust = 0)) +
+  theme(plot.title = element_text(size = 10, face = "bold")) + #change size of title
+  scale_colour_manual(values=c("#FFA607","#FE5A1D")) #oranges
+
+#Ser2P labels
+sb <- ggplot(cleavage_TTS_df_filtered, aes(y=Ser2PdPolII, x=cleaved_cat_4sU, color = cleaved_cat_4sU ) ) +
+  geom_boxplot(width=0.75, outlier.shape = 16) + 
+  coord_cartesian(ylim = c(0,5)) +
+  ylab("Fold change in Ser2P Pol II / total Pol II after HS") + 
+  ggtitle("3' Ser2P / Pol II by category of\nRNA uncleaved reads across TTS") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13), legend.position="none", axis.text.x = element_text(angle = -45, vjust=1, hjust = 0)) +
+  theme(plot.title = element_text(size = 10, face = "bold")) + #change size of title
+  scale_colour_manual(values=c("#B19CD9","#534278")) #purples
+
+#save
+png("figures/Tyr1PdPolII_all_cleavage_boxplot_inc_dec_only.png", 200, 350)
+print(tb)
+dev.off()
+png("figures/Ser2PdPolII_all_cleavage_boxplot_inc_dec_only.png", 200, 350)
+print(sb)
+dev.off()
+
+
+
+
+
+
+#stats
+inc_stats <- filter(cleavage_TTS_df, cleaved_cat_4sU == "increased")
+nc_stats <- filter(cleavage_TTS_df, cleaved_cat_4sU == "no change")
+dec_stats <- filter(cleavage_TTS_df, cleaved_cat_4sU == "decreased")
+#NA_stats <- filter(cleavage_TTS_df, !(cleaved_cat_4sU == "increased" | cleaved_cat_4sU == "no change" | cleaved_cat_4sU == "decreased") )
+summary(cleavage_TTS_df$cleaved_cat_4sU)
+#can't figure out how to pull out NAs... oh well
+
+#inc vs dec
+ ## Ser2P
+res <- wilcox.test(as.numeric(inc_stats[,2]), as.numeric(dec_stats[,2]) )
+res$p.value #3.615574e-05
+#inc vs nc
+res <- wilcox.test(as.numeric(inc_stats[,2]), as.numeric(nc_stats[,2]) )
+res$p.value #0.003732589
+#dec vs nc
+res <- wilcox.test(as.numeric(nc_stats[,2]), as.numeric(dec_stats[,2]) )
+res$p.value #0.001567738
+#sanity check
+res <- wilcox.test(as.numeric(dec_stats[,2]), as.numeric(dec_stats[,2]) )
+res$p.value #1 good
+
+  ## Tyr1P
+res <- wilcox.test(as.numeric(inc_stats[,1]), as.numeric(dec_stats[,1]) )
+res$p.value #7.286939e-09
+#inc vs nc
+res <- wilcox.test(as.numeric(inc_stats[,1]), as.numeric(nc_stats[,1]) )
+res$p.value #0.004835584
+#dec vs nc
+res <- wilcox.test(as.numeric(nc_stats[,1]), as.numeric(dec_stats[,1]) )
+res$p.value #1.400422e-06
+#sanity check
+res <- wilcox.test(as.numeric(dec_stats[,1]), as.numeric(dec_stats[,1]) )
+res$p.value #1 good
+
+#make a stats df
+stats_wilcox_test_df <- data.frame(comparison = c("inc_v_dec", "inc_v_nc", "dec_v_nc"),
+                                   Ser2P_p_values = c(3.615574e-05, 0.003732589, 0.001567738),
+                                   Tyr1P_p_values = c(7.286939e-09, 0.004835584, 1.400422e-06))
+#save
+write_delim(stats_wilcox_test_df, "uncleaved_boxplot_stats_wilcox_test.tsv", delim = "\t", col_names = TRUE)
+
+
+```
+
+  *term defect vs CTD phos*
+```{r term defect}
+#if need to read in data
+#common_genes_MASTER_df <- read.table("../ChIP_common_TTS5kbds_genes_MASTER_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#filter out long RT genes
+common_genes_MASTER_df <- filter(common_genes_MASTER_df, common_genes_MASTER_df$longRT_4sU == FALSE)
+
+#make plotting dfs
+  ###cleaved or uncleaved
+defect_TTS_df <- common_genes_MASTER_df[c(17,18,3,9)]
+#factor for order
+defect_TTS_df$defect_cat_4sU <- factor(defect_TTS_df$defect_cat_4sU, c("no defect", "moderate defect","severe defect", "max defect") )
+table(defect_TTS_df$defect_cat_4sU)
+
+#make boxplots
+tb <- ggplot(defect_TTS_df, aes(y=Tyr1PdPolII, x=defect_cat_4sU, color = defect_cat_4sU ) ) +
+  geom_boxplot(width=0.75, outlier.shape = 16) + 
+  coord_cartesian(ylim = c(0,5)) +
+  ylab("Fold change in Tyr1P Pol II / total Pol II after HS") + 
+  ggtitle("3' Tyr1P / Pol II by termination defect category") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13), legend.position="none", axis.text.x = element_text(angle = -45, vjust=1, hjust = 0)) +
+  theme(plot.title = element_text(size = 13, face = "bold")) + #change size of title
+  scale_colour_manual(values=c("#696969","#FFA607","#FE7316", "#FE5A1D")) #oranges 
+  
+
+
+#Ser2P labels
+sb <- ggplot(defect_TTS_df, aes(y=Ser2PdPolII, x=defect_cat_4sU, color = defect_cat_4sU ) ) +
+  geom_boxplot(width=0.75, outlier.shape = 16) + 
+  coord_cartesian(ylim = c(0,5)) +
+  ylab("Fold change in Ser2P Pol II / total Pol II after HS") + 
+  ggtitle("3' Ser2P / Pol II by termination defect category") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13), legend.position="none", axis.text.x = element_text(angle = -45, vjust=1, hjust = 0)) +
+  theme(plot.title = element_text(size = 13, face = "bold")) + #change size of title
+  scale_colour_manual(values=c("#696969","#B19CD9","#816EA7","#534278")) #purples
+
+
+#save
+png("figures/defect/Tyr1PdPolII_defect_cat_boxplot.png", 350, 350)
+print(tb)
+dev.off()
+png("figures/defect/Ser2PdPolII_defect_cat_boxplot.png", 350, 350)
+print(sb)
+dev.off()
+
+
+#stats
+nd_stats <- filter(defect_TTS_df, defect_cat_4sU == "no defect")
+md_stats <- filter(defect_TTS_df, defect_cat_4sU == "moderate defect")
+sd_stats <- filter(defect_TTS_df, defect_cat_4sU == "severe defect")
+xd_stats <- filter(defect_TTS_df, defect_cat_4sU == "max defect")
+
+ ## Ser2P
+#nd vs all
+res <- wilcox.test(as.numeric(nd_stats[,2]), as.numeric(md_stats[,2]) )
+res$p.value #3.35481e-06
+
+res <- wilcox.test(as.numeric(nd_stats[,2]), as.numeric(sd_stats[,2]) )
+res$p.value #9.474632e-08
+
+res <- wilcox.test(as.numeric(nd_stats[,2]), as.numeric(xd_stats[,2]) )
+res$p.value #9.404962e-07
+
+#md vs sd and xd
+res <- wilcox.test(as.numeric(md_stats[,2]), as.numeric(sd_stats[,2]) )
+res$p.value #0.4114241
+
+res <- wilcox.test(as.numeric(md_stats[,2]), as.numeric(xd_stats[,2]) )
+res$p.value #0.7118418
+
+#sd vs xd
+res <- wilcox.test(as.numeric(sd_stats[,2]), as.numeric(xd_stats[,2]) )
+res$p.value #0.1833743
+
+#only nd vs defect cats are stat sig for Ser2P
+
+
+  ## Tyr1P
+#nd vs all
+res <- wilcox.test(as.numeric(nd_stats[,1]), as.numeric(md_stats[,1]) )
+res$p.value #0.02402087
+
+res <- wilcox.test(as.numeric(nd_stats[,1]), as.numeric(sd_stats[,1]) )
+res$p.value #0.0004406006
+
+res <- wilcox.test(as.numeric(nd_stats[,1]), as.numeric(xd_stats[,1]) )
+res$p.value #0.01157111
+
+#md vs sd and xd
+res <- wilcox.test(as.numeric(md_stats[,1]), as.numeric(sd_stats[,1]) )
+res$p.value #0.02703218
+
+res <- wilcox.test(as.numeric(md_stats[,1]), as.numeric(xd_stats[,1]) )
+res$p.value #0.7706076
+
+#sd vs xd
+res <- wilcox.test(as.numeric(sd_stats[,1]), as.numeric(xd_stats[,1]) )
+res$p.value #0.04289633
+
+#really only nd vs severe defect is stat sig for Tyr1P (p<0.01), other two defect cat are p<0.05
+
+
+
+#make a stats df
+stats_wilcox_test_df <- data.frame(comparison = c("nd_v_md", "nd_v_sd", "nd_v_xd", "md_v_sd", "md_v_xd", "sd_v_xd"),
+                                   Ser2P_p_values = c(3.35481e-06, 9.474632e-08, 9.404962e-07, 0.4114241, 0.7118418, 0.1833743),
+                                   Tyr1P_p_values = c(0.02402087, 0.0004406006, 0.01157111, 0.02703218, 0.7706076, 0.04289633))
+#save
+write_delim(stats_wilcox_test_df, "defect_boxplot_stats_wilcox_test.tsv", delim = "\t", col_names = TRUE)
+
+
+
+
+
+
+##just defect vs no defect
+tb <- ggplot(defect_TTS_df, aes(y=Tyr1PdPolII, x=term_defect_final, color = term_defect_final ) ) +
+  geom_boxplot(width=0.75, outlier.shape = 16) + 
+  coord_cartesian(ylim = c(0,5)) +
+  ylab("Fold change in Tyr1P Pol II / total Pol II after HS") + 
+  ggtitle("3' Tyr1P / Pol II by termination defect category") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13), legend.position="none", axis.text.x = element_text(angle = -45, vjust=1, hjust = 0)) +
+  theme(plot.title = element_text(size = 13, face = "bold")) + #change size of title
+  scale_colour_manual(values=c("#696969", "#FE7316")) #oranges 
+  
+
+
+#Ser2P labels
+sb <- ggplot(defect_TTS_df, aes(y=Ser2PdPolII, x=term_defect_final, color = term_defect_final ) ) +
+  geom_boxplot(width=0.75, outlier.shape = 16) + 
+  coord_cartesian(ylim = c(0,5)) +
+  ylab("Fold change in Ser2P Pol II / total Pol II after HS") + 
+  ggtitle("3' Ser2P / Pol II by termination defect category") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13), legend.position="none", axis.text.x = element_text(angle = -45, vjust=1, hjust = 0)) +
+  theme(plot.title = element_text(size = 13, face = "bold")) + #change size of title
+  scale_colour_manual(values=c("#696969","#816EA7")) #purples
+
+
+#save
+png("figures/defect/Tyr1PdPolII_defect_boxplot.png", 250, 350)
+print(tb)
+dev.off()
+png("figures/defect/Ser2PdPolII_defect_boxplot.png", 250, 350)
+print(sb)
+dev.off()
+
+
+#stats
+nd_stats <- filter(defect_TTS_df, term_defect_final == FALSE)
+d_stats <- filter(defect_TTS_df, term_defect_final == TRUE)
+
+ ## Ser2P
+#nd vs d
+res <- wilcox.test(as.numeric(nd_stats[,2]), as.numeric(d_stats[,2]) )
+res$p.value #1.322801e-07
+
+ ## Tyr1P
+#nd vs d
+res <- wilcox.test(as.numeric(nd_stats[,1]), as.numeric(d_stats[,1]) )
+res$p.value #0.002564314
+
+#both Ser2P and Tyr1P are stat sig (p<0.01) for defect vs no defect boxplots
+#make a stats df
+stats_wilcox_test_df <- data.frame(comparison = c("nd_v_d"),
+                                   Ser2P_p_values = c(1.322801e-07),
+                                   Tyr1P_p_values = c(0.002564314))
+#save
+write_delim(stats_wilcox_test_df, "defect_v_no_defect_boxplot_stats_wilcox_test.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+
+
+
+
+
+
+

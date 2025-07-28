@@ -1,0 +1,449 @@
+---
+title: "07g_ChIP_DESeq2"
+author: "Katy Walsh"
+date: "4/4/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+DESeq2 documentation and walkthrough found here: https://bioconductor.org/packages/release/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#countmat
+
+```{r setup }
+library(tidyverse)
+library(grid)
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+library(ggfortify)
+library(gtable)
+
+
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+#    install.packages("BiocManager")
+
+#BiocManager::install("DESeq2")
+library(DESeq2)
+
+#BiocManager::install("apeglm")
+library(apeglm)
+
+#wd: setwd("~/Desktop/Katy/HS_4sU-Seq_2021")
+
+```
+
+didn't work
+-----------
+let's just run the 5kb counts we already have and see if DESeq works...
+```{r pull in counts}
+sum_5kb_ds_data <- read_tsv("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/sum_counts_first5kbds.tsv", col_names = TRUE)
+#fixing col names
+# colnames(sum_5kb_ds_data) <- c("transcriptID", "input", "NHS_Rpb1", "HS_Rpb1", "NHS_Ser2P", "HS_Ser2P", "4sU_gnbd_DESeq_2fold_cat")
+# write_delim(sum_5kb_ds_data, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/sum_counts_first5kbds.tsv", delim = "\t", col_names = TRUE)
+
+#avg input sums (more consistant, Tom had issues previously with using the input at each gene)
+avg_input <- mean(sum_5kb_ds_data$input)
+avg_exp_sum_5kb_df <- filter(sum_5kb_ds_data, sum_5kb_ds_data$NHS_Rpb1 > 1.5*(avg_input) & 
+                                     sum_5kb_ds_data$HS_Rpb1 > 1.5*(avg_input) &
+                                     sum_5kb_ds_data$NHS_Ser2P > 1.5*(avg_input) &
+                                     sum_5kb_ds_data$HS_Ser2P > 1.5*(avg_input) 
+                             )
+#only 1000 genes...
+
+#save
+write_delim(avg_exp_sum_5kb_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07f_scatterplots/exp_genes_sum_counts_first5kbds.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+*these counts are normalized already and DESeq2 wants unnormalized reads*
+  could try to un normalize by estimating the norm factor (norm to 1x10^8 reads, have reads for each sample)
+input	38407521
+NHS_Rpb1_R6	112704565
+NHS_Rpb1_R8	77598616
+HS_Rpb1_R6	115615600
+HS_Rpb1_R8	56775134
+NHS_Ser2P_R6	95052849
+NHS_Ser2P_R8	58773508
+HS_Ser2P_R6	86353808
+HS_Ser2P_R8	58478536
+```{r un-norm}
+norm_df <- data.frame(samples = c("input","NHS_Rpb1_R6","NHS_Rpb1_R8","HS_Rpb1_R6","HS_Rpb1_R8","NHS_Ser2P_R6","NHS_Ser2P_R8","HS_Ser2P_R6","HS_Ser2P_R8"),
+           reads = c(38407521,112704565,77598616,115615600,56775134,95052849,58773508,86353808,58478536)
+           )
+norm_df$factor <- norm_df$reads / 100000000
+
+unnorm_5kb_sum <- avg_exp_sum_5kb_df$NHS_Rpb1 * norm_df[]
+```
+-----------
+
+
+
+
+from scratch
+---------------------------------------------
+
+First need sorted bed files
+  made from TDs using Homer
+#tagDir2bed.pl TD > bed_file
+    
+    *see bash script 07g_ChIP_making_bed_files.sh
+
+
+
+DESeq2 needs un-normalized counts as input, so I'm using Bed Tools to count because it doesn't normalize
+  need a bed file for the 20kb ds regions of all 18,000 MANE genes
+  made in 07a Rmd 
+  "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v095_20kb_ds.bed"
+
+need TTS-5kb bed file
+```{r making 5kb ds bed annotation file}
+MANE_20kb_ds <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v095_20kb_ds.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+#make 5kb ds windows
+ds_5kb_bed <- MANE_20kb_ds
+i = 1
+while(i <= nrow(ds_20kb_bed)){
+  #if on + strand, start = TSS and end = TTS
+  #for 20kb ds: start = end & end = end + 20,000 bp
+  if(ds_20kb_bed$strand[i]=="+"){
+    ds_20kb_bed$start[i] = ds_20kb_bed$end[i]
+    ds_20kb_bed$end[i] = ds_20kb_bed$end[i] + 20000
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #for 20kb ds: end = start & start = start - 20,000 bp
+  else{
+    ds_20kb_bed$end[i] = ds_20kb_bed$start[i]
+    ds_20kb_bed$start[i] = ds_20kb_bed$start[i] - 20000
+  }
+  i = i+1
+}
+
+#remove annotations that go into the negative
+ds_20kb_bed <- filter(ds_20kb_bed, ds_20kb_bed$start >= 0)
+#didn't remove any genes, guess none of the 17,000 are close to the ends of the chromosomes
+
+#remove columns beyond the required first 6 because it causes issues down the road
+ds_20kb_bed <- ds_20kb_bed[1:6]
+
+#save 20kb ds bed file
+write_delim(ds_20kb_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v095_20kb_ds.bed", delim = "\t", col_names = FALSE)
+
+```
+
+  
+#Bedtools coverage -a 20kb_ds_MANE.bed -b sample_sorted.bed > output_counts.bed
+    
+    *see bash script 07g_CHIP_Counts.sh
+
+Now making counts matrix to feed into DESeq
+format:
+  geneID   NHS_R6_Ser2PdPolII     NHS_R8_Ser2PdPolII     HS_R6_Ser2PdPolII     HS_R8_Ser2PdPolII
+  <ID#>    <counts #>             <counts #>             <counts #>            <counts #>   
+  
+```{r making DESeq counts matrix}
+#read-in bed files from bedtools coverage output
+fl <- list.files("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07_DESeq2_Ser2P_d_PolII/Bedtools_20kb_counts", 
+                  pattern = "*_counts.bed",
+                  full.names = TRUE)
+counts <- lapply(fl, read.table, header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(counts) <- gsub("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07_DESeq2_Ser2P_d_PolII/Bedtools_20kb_counts/|_counts.bed", "", fl)
+
+
+#pull out counts and add as col in counts matrix
+Rpb1_counts_matrix <- data.frame(geneID = counts$Rpb1_NHS_R6$V4, 
+                                 NHS_R6 = counts$Rpb1_NHS_R6$V7,
+                                 NHS_R8 = counts$Rpb1_NHS_R8$V7,
+                                 HS_R6 = counts$Rpb1_HS_R6$V7,
+                                 HS_R8 = counts$Rpb1_HS_R8$V7
+                                 )
+
+Ser2P_counts_matrix <- data.frame(geneID = ds_20kb_counts$rep1_NHS$V4, 
+                                 NHS_rep1 = ds_20kb_counts$rep1_NHS$V7,
+                                 NHS_rep2 = ds_20kb_counts$rep2_NHS$V7,
+                                 NHS_rep3 = ds_20kb_counts$rep3_NHS$V7,
+                                 HS_rep1 = ds_20kb_counts$rep1_HS$V7,
+                                 HS_rep2 = ds_20kb_counts$rep2_HS$V7,
+                                 HS_rep3 = ds_20kb_counts$rep3_HS$V7
+                                 )
+
+#save matrix 
+write_delim(gnbd_counts_matrix, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07c_DESeq2/gnbd_counts_matrix.txt", delim = "\t", col_names = TRUE)
+write_delim(ds_counts_matrix, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07c_DESeq2/ds_counts_matrix.txt", delim = "\t", col_names = TRUE)
+
+#convert geneID to rownames
+gnbd_counts_matrix <- column_to_rownames(gnbd_counts_matrix, "geneID")
+ds_counts_matrix <- column_to_rownames(ds_counts_matrix, "geneID")
+
+```
+
+make coldata file 
+```{r coldata}
+
+my_coldata <- data.frame(condition = c("NHS","NHS","NHS","HS","HS","HS"),type = c("paired-end","paired-end","paired-end","paired-end","paired-end","paired-end"))
+rownames(my_coldata) <- c("NHS_rep1","NHS_rep2","NHS_rep3","HS_rep1","HS_rep2","HS_rep3")
+
+#check
+all(rownames(my_coldata) %in% colnames(gnbd_counts_matrix))
+all(rownames(my_coldata) %in% colnames(ds_counts_matrix))
+
+all(rownames(my_coldata) == colnames(gnbd_counts_matrix))
+all(rownames(my_coldata) == colnames(ds_counts_matrix))
+
+```
+
+
+Make DESeq object:
+```{r make dds}
+
+gnbd_dds <- DESeqDataSetFromMatrix(countData = gnbd_counts_matrix,
+                                 colData = my_coldata,
+                                 design = ~ condition)
+gnbd_dds
+
+ds_dds <- DESeqDataSetFromMatrix(countData = ds_counts_matrix,
+                                 colData = my_coldata,
+                                 design = ~ condition)
+
+```
+
+
+Pre-filtering:
+  remove low count genes (using settings recomended by DESeq2)
+  *more strict filtering is also applied when running the results function, this helps reduce memory required
+```{r}
+keep <- rowSums(counts(gnbd_dds)) >= 10
+gnbd_dds <- gnbd_dds[keep,]
+
+keep <- rowSums(counts(ds_dds)) >= 10
+ds_dds <- ds_dds[keep,]
+
+```
+
+setting factor levels to indicate what comparisons to make:
+```{r set factors}
+gnbd_dds$condition <- factor(gnbd_dds$condition, levels = c("NHS","HS"))
+ds_dds$condition <- factor(ds_dds$condition, levels = c("NHS","HS"))
+```
+
+don't need to colapse technical replicates. Using just biological replicates.
+
+
+
+Running differential expression analysis:
+```{r running DESeq}
+#running gnbd first so that I can verify everything's working correctly
+gnbd_dds2 <- DESeq(gnbd_dds)
+res_gnbd <- results(gnbd_dds2)
+
+
+ds_dds2 <- DESeq(ds_dds)
+res_ds <- results(ds_dds2)
+#res_ds
+
+#reocmend using LFC shrink for gene ranking and visualization. not really sure what it does but I'll do that since they say to
+resLFC_gnbd <- lfcShrink(gnbd_dds2, coef="condition_HS_vs_NHS", type="apeglm")
+#resLFC_gnbd
+
+resLFC_ds <- lfcShrink(ds_dds2, coef="condition_HS_vs_NHS", type="apeglm")
+#resLFC_ds
+
+#summary(resLFC_gnbd)
+#summary(resLFC_ds)
+
+#to order by p-value
+#resOrdered_gnbd <- resLFC_gnbd[order(resLFC_gnbd$pvalue),]
+
+```
+
+```{r pull out into df}
+
+df_resLFC_gnbd <- as.data.frame(resLFC_gnbd@listData)
+df_resLFC_ds <- as.data.frame(resLFC_ds@listData)
+
+df_resLFC_gnbd <- rownames_to_column(df_resLFC_gnbd, var = "transcript_ID")
+df_resLFC_ds <- rownames_to_column(df_resLFC_ds, var = "transcript_ID")
+#need to add rownames to 
+
+#save results
+write_delim(df_resLFC_gnbd, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07c_DESeq2/DESeq2_results/gnbd_diff_expression_DESeq2_LFCshrink_results.tsv", delim = "\t", col_names = TRUE)
+write_delim(df_resLFC_ds, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07c_DESeq2/DESeq2_results/ds_20kb_diff_expression_DESeq2_LFCshrink_results.tsv", delim = "\t", col_names = TRUE)
+
+
+#repeat for non-LFC shrink
+df_res_gnbd <- as.data.frame(res_gnbd@listData)
+df_res_ds <- as.data.frame(res_ds@listData)
+#need to add rownames (slightly different from LFC version for some reason)
+df_res_gnbd$transcript_ID <- res_gnbd@rownames
+df_res_ds$transcript_ID <-  res_ds@rownames
+#re-order so ID is first col
+df_res_gnbd <- df_res_gnbd[c(7,1:6)]
+df_res_ds <- df_res_ds[c(7,1:6)]
+
+
+#save results
+write_delim(df_res_gnbd, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07c_DESeq2/DESeq2_results/gnbd_diff_expression_DESeq2_results.tsv", delim = "\t", col_names = TRUE)
+write_delim(df_res_ds, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07c_DESeq2/DESeq2_results/ds_20kb_diff_expression_DESeq2_results.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+now that we have results, let's filter for iso, exp, no read-in genes
+```{r filter for iso exp clean genes}
+#read in gene ID list (STRANDED list)
+final_gene_list <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/06_defining_gene_lists/FINAL_clean_genes_list_strandediso_exp_genes.txt", header = FALSE, sep="\n",stringsAsFactors=FALSE, quote="")
+
+#filter DESeq results
+filtered_resLFC_gnbd <- filter(df_resLFC_gnbd, df_resLFC_gnbd$transcript_ID %in% final_gene_list$V1)
+filtered_resLFC_ds <- filter(df_resLFC_ds, df_resLFC_ds$transcript_ID %in% final_gene_list$V1)
+
+#make sure gnbd and ds match (some removed from ds due to having zero reads, one still in final list)
+  #gnbd has one more gene than ds so let's remove it
+filtered_resLFC_gnbd <- filter(filtered_resLFC_gnbd, filtered_resLFC_gnbd$transcript_ID %in% filtered_resLFC_ds$transcript_ID)
+
+#save
+write_delim(filtered_resLFC_gnbd, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07c_DESeq2/DESeq2_results/iso-exp-clean_gnbd_diff_expression_DESeq2_LFCshrink_results.tsv", delim = "\t", col_names = TRUE)
+write_delim(filtered_resLFC_ds, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07c_DESeq2/DESeq2_results/iso-exp-clean_ds_20kb_diff_expression_DESeq2_LFCshrink_results.tsv", delim = "\t", col_names = TRUE)
+
+
+
+#non-LFCshrink
+#filter DESeq results
+filtered_gnbd <- filter(df_res_gnbd, df_res_gnbd$transcript_ID %in% final_gene_list$V1)
+filtered_ds <- filter(df_res_ds, df_res_ds$transcript_ID %in% final_gene_list$V1)
+
+#make sure gnbd and ds match (some removed from ds due to having zero reads, one still in final list)
+  #gnbd has one more gene than ds so let's remove it
+filtered_gnbd <- filter(filtered_gnbd, filtered_gnbd$transcript_ID %in% filtered_ds$transcript_ID)
+
+
+#save
+write_delim(filtered_gnbd, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07c_DESeq2/DESeq2_results/iso-exp-clean_gnbd_diff_expression_DESeq2_results.tsv", delim = "\t", col_names = TRUE)
+write_delim(filtered_ds, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07c_DESeq2/DESeq2_results/iso-exp-clean_ds_20kb_diff_expression_DESeq2_results.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+```{r master df}
+#need gnbd and ds df's to have same number of genes
+overlapp_df_res_gnbd <- filter(df_res_gnbd, df_res_gnbd$transcript_ID %in% df_res_ds$transcript_ID)
+overlapp_df_res_ds <- filter(df_res_ds, df_res_ds$transcript_ID %in% df_res_gnbd$transcript_ID)
+
+master_df <- data.frame(transcriptID = overlapp_df_res_gnbd$transcript_ID,
+                        gnbd_mean_counts = overlapp_df_res_gnbd$baseMean,
+                        gnbd_log2FoldChange = overlapp_df_res_gnbd$log2FoldChange,
+                        gnbd_padj = overlapp_df_res_gnbd$padj,
+                        ds_mean_counts = overlapp_df_res_ds$baseMean,
+                        ds_log2FoldChange = overlapp_df_res_ds$log2FoldChange,
+                        ds_padj = overlapp_df_res_ds$padj)
+
+#add ds/gnbd
+# 2^log2(ds HS / ds NHS) / 2^log2(gnbd HS / gnbd NHS)
+log2(5 / 6)   /   log2(10 / 11) #not the same thing as below so need to reverse the log2
+
+# ds HS / ds NHS   /   gnbd HS / gnbd NHS
+5 / 6   /   10 / 11
+# vs: 
+# ds HS / gnbd HS   /   ds NHS / gnbd NHS
+5 / 10  /   6 / 11
+#mathematically the same thing
+#(don't need to account for gene length or use rpk because dividing by length on both sides would cancel out)
+
+master_df$HS_FoldChange_ds_div_gnbd <- 2^(master_df$ds_log2FoldChange) / 2^(master_df$gnbd_log2FoldChange)
+
+#add activated or repressed categorization
+master_df$HS_activated <- master_df$gnbd_log2FoldChange >= log2(1.5) & master_df$gnbd_padj <= 0.01
+summary(master_df$HS_activated) #5273 activate genes (off by 11 genes from MA plot, not sure why)
+
+master_df$HS_repressed <- master_df$gnbd_log2FoldChange <= log2(0.75) & master_df$gnbd_padj <= 0.01
+summary(master_df$HS_repressed) #4681 reppressed genes (1,000 more genes than MA plot...)
+
+master_df$term_defect <- master_df$ds_log2FoldChange >= log2(1.5) & master_df$ds_padj <=0.01
+summary(master_df$term_defect) #5786 genes (not controlled for iso. exp. clean genes)
+
+master_df$reverse_defect <- master_df$ds_log2FoldChange <= log2(0.75) & master_df$ds_padj <=0.01
+summary(master_df$reverse_defect) #5776 genes with decrease in ds region after HS
+
+master_df$iso_exp_clean_gene <- master_df$transcriptID %in% final_gene_list$V1
+summary(master_df$iso_exp_clean_gene) #good, matches the number of iso exp clean genes
+
+#how many iso exp clean genes have term defects when defined this way?
+master_df$iec_genes_with_defects <- master_df$iso_exp_clean_gene == TRUE & master_df$term_defect == TRUE
+summary(master_df$iec_genes_with_defects) #2372, exactly the same number as from MA plot
+#what about reverse defects?
+master_df$iec_genes_with_rev_defects <- master_df$iso_exp_clean_gene==TRUE & master_df$reverse_defect == TRUE
+summary(master_df$iec_genes_with_rev_defects) #1762 genes with decreased ds signal with HS
+##reverse defects not being categorized correctly
+
+#save master df
+write_delim(master_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07c_DESeq2/DESeq2_results/all_genes_all_results.tsv", delim = "\t", col_names = TRUE)
+
+
+
+#how many genes have a FC > 1 when norm to gnbd
+filter_genes <- filter(master_df, master_df$transcriptID %in% final_gene_list$V1)
+defect_genes <- filter(filter_genes, filter_genes$HS_FoldChange_ds_div_gnbd > 1.5) #3070 genes with increase
+reverse_defect_genes <- filter(filter_genes, filter_genes$HS_FoldChange_ds_div_gnbd < 0.75) #1417 genes with decrease
+
+#### fairly similar numbers of genes that have a defect or reverse defect as when plotting MA plot. Probably don't need to normalize to gnbd
+
+
+
+```
+
+
+
+
+PLOTTING
+```{r MA plot}
+plotMA(resLFC_gnbd)
+#plotMA(res_gnbd) #has issues with mean of normalized counts at low numbers (makes diagonal lines). outter points seem mostly unaffected
+  #DESeq2's explination:
+  #"It is more useful visualize the MA-plot for the shrunken log2 fold changes, which remove the noise associated with log2 fold changes from low count genes without requiring arbitrary filtering thresholds."
+
+#looking at individual genes in the plot:
+  #"After calling plotMA, one can use the function identify to interactively detect the row number of individual genes by clicking on the plot. One can then recover the gene identifiers by saving the resulting indices:"
+idx <- identify(resLFC_gnbd$baseMean, resLFC_gnbd$log2FoldChange)
+rownames(resLFC_gnbd)[idx]
+#can't get this to work properly. can get to interactive plot and see rownames of points you click on but can't figure out how to get it to save
+
+```
+
+```{r make MA plot with just final gene list?}
+#can I filter the res obj so it's just iso-exp-clean genes? -> not easily
+
+#let's try plotting MA plot from filted dfs
+#     MA plot is mean of normalized counts vs log fold change
+
+?ggmaplot()
+
+ggmaplot(filtered_gnbd, fdr = 0.01, fc = 1.5, genenames = as.vector(filtered_gnbd$transcript_ID), size = 1, palette = c("#B31B21", "#1465AC", "darkgray"), top = 5, main = "iso. exp. clean genes: gene body MA plot", xlab = "mean of normalized counts", ylab = "log2 fold change")
+#fdr also sets padj cuttoff so points padj <= 0.01 & fold change >=1.5 are considered significant with these settings
+    #LFC shrink doesn't do much with the filtered gene list, both MA plots look basically the same
+
+#compare to unfiltered (all MANE genes):
+ggmaplot(df_resLFC_gnbd, fdr = 0.01, fc = 1.5, genenames = as.vector(df_resLFC_gnbd$transcript_ID), size = 1, palette = c("#B31B21", "#1465AC", "darkgray"), top = 5, main = "iso. exp. clean genes: gene body MA plot", xlab = "mean of normalized counts", ylab = "log2 fold change")
+    #need to use LFC shrink for the all genes MA plot otherwise the low end looks really streaky
+ggmaplot(df_resLFC_ds, fdr = 0.01, fc = 1.5, genenames = as.vector(df_resLFC_ds$transcript_ID), size = 1, palette = c("#B31B21", "#1465AC", "darkgray"), top = 5, main = "iso. exp. clean genes: 20kb ds MA plot", xlab = "mean of normalized counts", ylab = "log2 fold change")
+
+
+#what about ds?
+ggmaplot(filtered_ds, fdr = 0.01, fc = 1.5, genenames = as.vector(filtered_ds$transcript_ID), size = 1, palette = c("#B31B21", "#1465AC", "darkgray"), top = 5, main = "iso. exp. clean genes: 20kb ds MA plot", xlab = "mean of normalized counts", ylab = "log2 fold change")
+#2372 genes with increase in ds region
+#1560 genes with decrease in ds region
+
+```
+
+
+
+
+```{r individual genes}
+#to look at counts for an individual gene and compare replicates
+plotCounts(gnbd_dds2, gene="ENST00000322723.9", intgroup="condition")
+
+#can we see term defects?
+plotCounts(ds_dds2, gene="ENST00000322723.9", intgroup="condition")
+#NCL: ENST00000322723.9
+#increases significantly with HS so looks like it
+
+```
+
+

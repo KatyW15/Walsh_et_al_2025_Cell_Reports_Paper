@@ -1,0 +1,288 @@
+---
+title: "04b_RBBP6_OE_uncleaved_reads"
+author: "Katy Walsh"
+date: "3/26/2025"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+bedtools approach - count reads that must overlap with TTS by at least 10bp (100% of TTS window, 13.3% of 75bp read)
+
+make bed file for TTS window
+```{r setup}
+library(tidyverse)
+library(grid)
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+library(ggfortify)
+library(gtable)
+
+setwd("~/Desktop/Katy/RBBP6_OE_4sUseq_20250304")
+
+```
+
+set up bedtools command
+  want read to cover all of TTS window (bed file A): -f 1
+  stranded: -s
+
+#bedtools coverage -s -f 1 -a /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/TTS_10bp_windows_4sU_analyzable_genes.bed -b /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/05_evaluating_replicates/bed_files/rep1_HS_sorted.Bed
+
+counting reads accross cleavage sites genome-wide - using analyzable genes (isolated, expressed, no read-in)
+
+read in bed files, avg and normalize to total mapped reads
+```{r formatting counts data into df's}
+fl_bed <- list.files("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/uncleaved_reads/bedtools_counts", pattern = "*.bed", full.names = TRUE)
+uncleaved_OE_beds <- lapply(fl_bed, read.table, header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(uncleaved_OE_beds) <- gsub("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/04_analysis/uncleaved_reads/bedtools_counts/|_uncleaved_counts.bed", "", fl_bed)
+
+raw_counts_df <- data.frame(transcriptID = uncleaved_OE_beds$ctl_NHS_rep1$V4,
+                        ctl_NHS_R1 = uncleaved_OE_beds$ctl_NHS_rep1$V7,
+                        ctl_NHS_R2 = uncleaved_OE_beds$ctl_NHS_rep2$V7,
+                        ctl_HS_R1 = uncleaved_OE_beds$ctl_HS_rep1$V7,
+                        ctl_HS_R2 = uncleaved_OE_beds$ctl_HS_rep2$V7,
+                        OE_NHS_R1 = uncleaved_OE_beds$OE_NHS_rep1$V7,
+                        OE_NHS_R2 = uncleaved_OE_beds$OE_NHS_rep2$V7,
+                        OE_HS_R1 = uncleaved_OE_beds$OE_HS_rep1$V7,
+                        OE_HS_R2 = uncleaved_OE_beds$OE_HS_rep2$V7 
+                        )
+
+#read in norm. factors for 4sU
+norm_factors_df <- read.table("/Users/goodrichlab/Desktop/Katy/RBBP6_OE_4sUseq_20250304/documentation/mapped_reads_for_norm.txt", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#mapped reads * factor = 50M reads
+norm_factors_df$factor <- 50000000 / norm_factors_df$aligned_concordantly_1_time
+
+norm_counts_df <- data.frame(transcriptID = uncleaved_OE_beds$ctl_NHS_rep1$V4,
+                        ctl_NHS_R1 = uncleaved_OE_beds$ctl_NHS_rep1$V7 * norm_factors_df$factor[1],
+                        ctl_NHS_R2 = uncleaved_OE_beds$ctl_NHS_rep2$V7 * norm_factors_df$factor[2],
+                        ctl_HS_R1 = uncleaved_OE_beds$ctl_HS_rep1$V7 * norm_factors_df$factor[3],
+                        ctl_HS_R2 = uncleaved_OE_beds$ctl_HS_rep2$V7 * norm_factors_df$factor[4],
+                        OE_NHS_R1 = uncleaved_OE_beds$OE_NHS_rep1$V7 * norm_factors_df$factor[5],
+                        OE_NHS_R2 = uncleaved_OE_beds$OE_NHS_rep2$V7 * norm_factors_df$factor[6],
+                        OE_HS_R1 = uncleaved_OE_beds$OE_HS_rep1$V7 * norm_factors_df$factor[7],
+                        OE_HS_R2 = uncleaved_OE_beds$OE_HS_rep2$V7 * norm_factors_df$factor[8] 
+                        )
+#avg reps
+norm_counts_df$ctl_NHS_avg <- (norm_counts_df$ctl_NHS_R1 + norm_counts_df$ctl_NHS_R2) /2
+norm_counts_df$ctl_HS_avg <- (norm_counts_df$ctl_HS_R1 + norm_counts_df$ctl_HS_R2 ) /2
+norm_counts_df$OE_NHS_avg <- (norm_counts_df$OE_NHS_R1 + norm_counts_df$OE_NHS_R2) /2
+norm_counts_df$OE_HS_avg <- (norm_counts_df$OE_HS_R1 + norm_counts_df$OE_HS_R2 ) /2
+
+write_delim(norm_counts_df, "04_analysis/uncleaved_reads/norm_uncleaved_counts.tsv", delim = "\t", col_names = TRUE)
+
+
+#calc FCs
+FC_df <- data.frame(transcriptID = norm_counts_df$transcriptID,
+                    ctl_HS_FC = norm_counts_df$ctl_HS_avg / norm_counts_df$ctl_NHS_avg,
+                    OE_HS_FC = norm_counts_df$OE_HS_avg / norm_counts_df$OE_NHS_avg,
+                    OE_HS_d_ctl_HS = norm_counts_df$OE_HS_avg / norm_counts_df$ctl_HS_avg,
+                    OE_NHS_d_ctl_HS = norm_counts_df$OE_NHS_avg / norm_counts_df$ctl_NHS_avg
+                    )
+FC_df$OE_FC_d_ctl_FC <- FC_df$OE_HS_FC / FC_df$ctl_HS_FC
+
+write_delim(FC_df, "04_analysis/uncleaved_reads/FC_uncleaved_reads.tsv", delim = "\t", col_names = TRUE)
+
+
+
+#norm to gene expression
+  #find gene expression FC data...
+gene_RPK_df <- read.table("04_analysis/ds_counts/whole_gene_RPK.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#calc FC
+gene_FC_df <- data.frame(transcriptID = gene_RPK_df$transcriptID,
+                    ctl_HS_FC = gene_RPK_df$ctl_HS / gene_RPK_df$ctl_NHS,
+                    OE_HS_FC = gene_RPK_df$OE_HS / gene_RPK_df$OE_NHS,
+                    OE_HS_d_ctl_HS = gene_RPK_df$OE_HS / gene_RPK_df$ctl_HS,
+                    OE_NHS_d_ctl_HS = gene_RPK_df$OE_NHS / gene_RPK_df$ctl_NHS
+                    )
+gene_FC_df$OE_FC_d_ctl_FC <- gene_FC_df$OE_HS_FC / gene_FC_df$ctl_HS_FC
+
+write_delim(gene_FC_df, "04_analysis/uncleaved_reads/FC_whole_gene.tsv", delim = "\t", col_names = TRUE)
+
+
+#norm uncleaved FC to gene FC
+table(FC_df$transcriptID == gene_FC_df$transcriptID) #make sure rows are the same genes between UC and gene dfs
+norm_FC_df <- data.frame(transcriptID = FC_df$transcriptID,
+                         ctl_HS_FC = FC_df$ctl_HS_FC / gene_FC_df$ctl_HS_FC,
+                         OE_HS_FC = FC_df$OE_HS_FC / gene_FC_df$OE_HS_FC,
+                         OE_HS_d_ctl_HS = FC_df$OE_HS_d_ctl_HS / gene_FC_df$OE_HS_d_ctl_HS,
+                         OE_NHS_d_ctl_HS = FC_df$OE_NHS_d_ctl_HS / gene_FC_df$OE_NHS_d_ctl_HS,
+                         OE_FC_d_ctl_FC = FC_df$OE_FC_d_ctl_FC / gene_FC_df$OE_FC_d_ctl_FC
+                         )
+
+write_delim(norm_FC_df, "04_analysis/uncleaved_reads/FC_uncleaved_reads_gene_norm.tsv", delim = "\t", col_names = TRUE)
+
+
+
+```
+
+initial investigation
+```{r}
+#more uncleaved reads after HS?
+sum(norm_counts_df$ctl_NHS_avg) #20001.09
+sum(norm_counts_df$ctl_HS_avg) #29802.97
+## ctl difference of 9800 reads
+sum(norm_counts_df$OE_NHS_avg) #19743.47
+sum(norm_counts_df$OE_HS_avg) #27371.54
+# OE difference of 7600 reads so a bit less
+
+t <- filter(norm_FC_df, is.finite(norm_FC_df$ctl_HS_FC) )
+summary(t$ctl_HS_FC)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.0000  0.8801  1.5722  2.1690  2.7067 31.5733 
+t2 <- filter(norm_FC_df, is.finite(norm_FC_df$OE_HS_FC) )
+summary(t2$OE_HS_FC)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.0000  0.9063  1.6069  2.2090  2.6626 32.3260   
+```
+
+
+genes that have improved cleavage with RBBP6 OE
+  FC of RBBP6 OE HS / ctl HS
+```{r}
+summary(norm_FC_df$OE_HS_d_ctl_HS)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA's 
+# 0.0000  0.6459  0.9853     Inf  1.5258     Inf     343  
+ 
+t <- filter(norm_FC_df, is.finite(norm_FC_df$OE_HS_d_ctl_HS) ) #about 700 genes removed
+summary(t$OE_HS_d_ctl_HS)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.0000  0.6144  0.9487  1.1141  1.3424 10.3086 
+
+t <- filter(norm_FC_df, is.finite(norm_FC_df$OE_FC_d_ctl_FC) )
+summary(t$OE_FC_d_ctl_FC)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.0000  0.3770  0.8575  1.2951  1.5840 47.3749  
+## pretty similar... how to pull out RBBP6 sensitive genes?
+
+#cat. cleaved or uncleaved
+norm_FC_df <- read.table("04_analysis/uncleaved_reads/FC_uncleaved_reads_gene_norm.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+norm_FC_df$ctl_uncleaved_cat <- "test"
+i=1
+while (i<=nrow(norm_FC_df)) {
+  if (is.na(norm_FC_df$ctl_HS_FC[i]) ) {
+    norm_FC_df$ctl_uncleaved_cat[i] <- NA
+  } else if (norm_FC_df$ctl_HS_FC[i] >= 2) {
+  norm_FC_df$ctl_uncleaved_cat[i] <- "increased"
+} else if (norm_FC_df$ctl_HS_FC[i] <= 0.5) {
+    norm_FC_df$ctl_uncleaved_cat[i] <- "decreased"
+} else{    
+  norm_FC_df$ctl_uncleaved_cat[i] <- "no change"
+}
+  i=i+1
+}
+table(norm_FC_df$ctl_uncleaved_cat)
+#decreased    increased   no change 
+#      670      2626        2393
+
+## 1.5 fold cutoff
+norm_FC_df$ctl_uncleaved_cat_1p5 <- "test"
+i=1
+while (i<=nrow(norm_FC_df)) {
+  if (is.na(norm_FC_df$ctl_HS_FC[i]) ) {
+    norm_FC_df$ctl_uncleaved_cat_1p5[i] <- NA
+  } else if (norm_FC_df$ctl_HS_FC[i] >= 1.5) {
+  norm_FC_df$ctl_uncleaved_cat_1p5[i] <- "increased"
+} else if (norm_FC_df$ctl_HS_FC[i] <= 0.75) {
+    norm_FC_df$ctl_uncleaved_cat_1p5[i] <- "decreased"
+} else{    
+  norm_FC_df$ctl_uncleaved_cat_1p5[i] <- "no change"
+}
+  i=i+1
+}
+
+
+#repeat for OE
+norm_FC_df$OE_uncleaved_cat <- "test"
+i=1
+while (i<=nrow(norm_FC_df)) {
+  if (is.na(norm_FC_df$OE_HS_FC[i]) ) {
+    norm_FC_df$OE_uncleaved_cat[i] <- NA
+  } else if (norm_FC_df$OE_HS_FC[i] >= 2) {
+  norm_FC_df$OE_uncleaved_cat[i] <- "increased"
+} else if (norm_FC_df$OE_HS_FC[i] <= 0.5) {
+    norm_FC_df$OE_uncleaved_cat[i] <- "decreased"
+} else{    
+  norm_FC_df$OE_uncleaved_cat[i] <- "no change"
+}
+  i=i+1
+}
+table(norm_FC_df$OE_uncleaved_cat)
+#decreased increased no change 
+#      670      2491      2569 
+
+#1.5 fold cutoff
+norm_FC_df$OE_uncleaved_cat_1p5 <- "test"
+i=1
+while (i<=nrow(norm_FC_df)) {
+  if (is.na(norm_FC_df$OE_HS_FC[i]) ) {
+    norm_FC_df$OE_uncleaved_cat_1p5[i] <- NA
+  } else if (norm_FC_df$OE_HS_FC[i] >= 1.5) {
+  norm_FC_df$OE_uncleaved_cat_1p5[i] <- "increased"
+} else if (norm_FC_df$OE_HS_FC[i] <= 0.75) {
+    norm_FC_df$OE_uncleaved_cat_1p5[i] <- "decreased"
+} else{    
+  norm_FC_df$OE_uncleaved_cat_1p5[i] <- "no change"
+}
+  i=i+1
+}
+
+
+#label genes as RBBP6 sensitive
+  #2-fold cutoff
+RBBP6_sensitive_genes <- filter(norm_FC_df, norm_FC_df$OE_HS_d_ctl_HS < 0.5) #981 genes
+RBBP6_insensitive_genes <- filter(norm_FC_df, norm_FC_df$OE_HS_d_ctl_HS > 2) #955 genes
+
+#cat. RBBP6 sensitive
+norm_FC_df$RBBP6_sensitive <- "test"
+i=1
+while (i<=nrow(norm_FC_df)) {
+  if (is.na(norm_FC_df$OE_HS_d_ctl_HS[i]) ) {
+    norm_FC_df$RBBP6_sensitive[i] <- NA
+  } else if (norm_FC_df$OE_HS_d_ctl_HS[i] >= 2) {
+  norm_FC_df$RBBP6_sensitive[i] <- "insensitive"
+} else if (norm_FC_df$OE_HS_d_ctl_HS[i] <= 0.5) {
+    norm_FC_df$RBBP6_sensitive[i] <- "sensitive"
+} else{    
+  norm_FC_df$RBBP6_sensitive[i] <- "no change"
+}
+  i=i+1
+}
+table(norm_FC_df$RBBP6_sensitive)
+#insensitive   no change   sensitive 
+#        955        3735         981 
+
+
+#1.5 FC cutoff
+norm_FC_df$RBBP6_sensitive_1p5 <- "test"
+i=1
+while (i<=nrow(norm_FC_df)) {
+  if (is.na(norm_FC_df$OE_HS_d_ctl_HS[i]) ) {
+    norm_FC_df$RBBP6_sensitive_1p5[i] <- NA
+  } else if (norm_FC_df$OE_HS_d_ctl_HS[i] >= 1.5) {
+  norm_FC_df$RBBP6_sensitive_1p5[i] <- "insensitive"
+} else if (norm_FC_df$OE_HS_d_ctl_HS[i] <= 0.75) {
+    norm_FC_df$RBBP6_sensitive_1p5[i] <- "sensitive"
+} else{    
+  norm_FC_df$RBBP6_sensitive_1p5[i] <- "no change"
+}
+  i=i+1
+}
+
+
+#what about genes that have cleavage defects?
+t <- filter(norm_FC_df, norm_FC_df$ctl_uncleaved_cat == "increased")
+table(t$RBBP6_sensitive)
+#insensitive   no change   sensitive 
+#        154        1822         650 (25%)
+650/(2626)
+#cleavage defect genes have a decent proportion of RBBP6 sensitive genes
+
+
+write_delim(norm_FC_df, "04_analysis/uncleaved_reads/FC_uncleaved_reads_gene_norm.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+

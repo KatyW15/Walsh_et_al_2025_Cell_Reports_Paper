@@ -1,0 +1,97 @@
+---
+title: "06b_counting_reads_ds"
+author: "Katy Walsh"
+date: "12/13/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup }
+library(tidyverse)
+library(grid)
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+library(ggfortify)
+library(gtable)
+
+#wd: setwd("~/Desktop/Katy/HS_4sU-Seq_2021")
+```
+
+
+count accross ds regions
+(#bedtools coverage -a gnbd_isolated_genes.bed -b input_counts_sorted.bed > gnbd_input_count.bed)
+need to first make bed files for iso exp clean genes: gnbd and 20kb ds
+
+```{r make ds bed file}
+#read in all MANE genes bed file
+MANE_all_gnbd_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v095_whole_gene.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+colnames(MANE_all_gnbd_bed) <- c("chrom", "start", "end", "id", "score", "strand", c(colnames(MANE_all_gnbd_bed[7:12])))
+
+
+#make 20kb ds bed file
+ds_20kb_bed <- MANE_all_gnbd_bed
+i = 1
+while(i <= nrow(ds_20kb_bed)){
+  #if on + strand, start = TSS and end = TTS
+  #for 20kb ds: start = end & end = end + 20,000 bp
+  if(ds_20kb_bed$strand[i]=="+"){
+    ds_20kb_bed$start[i] = ds_20kb_bed$end[i]
+    ds_20kb_bed$end[i] = ds_20kb_bed$end[i] + 20000
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #for 20kb ds: end = start & start = start - 20,000 bp
+  else{
+    ds_20kb_bed$end[i] = ds_20kb_bed$start[i]
+    ds_20kb_bed$start[i] = ds_20kb_bed$start[i] - 20000
+  }
+  i = i+1
+}
+
+#remove annotations that go into the negative
+ds_20kb_bed <- filter(ds_20kb_bed, ds_20kb_bed$start >= 0)
+#didn't remove any genes, guess none of the 17,000 are close to the ends of the chromosomes
+
+#remove columns beyond the required first 6 because it causes issues down the road
+ds_20kb_bed <- ds_20kb_bed[1:6]
+
+#save 20kb ds bed file
+write_delim(ds_20kb_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v095_20kb_ds.bed", delim = "\t", col_names = FALSE)
+  #this is overwriting an exsisting file because the ID's were messed up and I'm couldn't fine where it was created (maybe downloaded ds regions from genome browser?)
+
+#also make all MANE genes file with col 1:6
+MANE_all_gnbd_bed_min_col <- MANE_all_gnbd_bed[1:6]
+#save
+write_delim(MANE_all_gnbd_bed_min_col, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v095_whole_gene_cols1to6.bed", delim = "\t", col_names = FALSE)
+
+```
+
+
+```{r filter bed files for iso exp clean genes}
+#read in iso exp clean genes
+ls_iso_exp_clean_genes <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/06_defining_gene_lists/FINAL_clean_genes_list_strandediso_exp_genes.txt", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+MANE_all_gnbd_bed_min_col <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v095_whole_gene_cols1to6.bed", header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+#filter bed files to make bed files for final gene list
+gnbd_final_gene_list_bed <- filter(MANE_all_gnbd_bed_min_col, MANE_all_gnbd_bed_min_col$V4 %in% ls_iso_exp_clean_genes$V1)
+#repeat for 20kb ds window bed file
+ds20kb_final_gene_list_bed <- filter(ds_20kb_bed, ds_20kb_bed$id %in% ls_iso_exp_clean_genes$V1)
+
+#check if any genes are less than 1kb
+gene_length <- data.frame(length = abs(gnbd_final_gene_list_bed$start - gnbd_final_gene_list_bed$end))
+summary(gene_length)
+no_1kb_genes_lengths <- filter(gene_length, gene_length > 1000) #35 genes less than 1kb (555 genes less than 5kb)
+#does having small genes in here matter? I'll leave them in for now
+
+#write out
+write_delim(gnbd_final_gene_list_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gene_annotation_bed_files/strandediso_exp_clean_genes_MANE_v095_whole_gene.bed", delim = "\t", col_names = FALSE)
+write_delim(ds20kb_final_gene_list_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gene_annotation_bed_files/strandediso_exp_clean_genes_MANE_v095_20kb_ds.bed", delim = "\t", col_names = FALSE)
+
+```
+
+use those bed files to count reads (counting reads on same strand as genes)
+#<Bed_Tools> bedtools coverage -s ....
+see bash script 07a
+
+

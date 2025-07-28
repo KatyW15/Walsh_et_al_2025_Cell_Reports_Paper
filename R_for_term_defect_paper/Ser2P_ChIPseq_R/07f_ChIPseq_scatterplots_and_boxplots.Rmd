@@ -1,0 +1,1834 @@
+---
+title: "07f_ChIPseq_Ser2PvsPolII"
+author: "Katy Walsh"
+date: "8/24/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(grid)
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+library(ggfortify)
+library(gtable)
+library(ggpmisc)
+
+#wd: 
+setwd("~/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis")
+
+```
+setup plot settings:
+```{r plotting setup}
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+library(ggpmisc)
+
+theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+    )
+
+###defining plot histogram function###
+#testing
+#hist_df <- Rpb1_hist_data
+#plot_title <- "Metagene Analysis of Pol II ocupancy at the TTS"
+
+    
+plot_hist_function <- function(hist_df, plot_title, subt = "isolated genes"){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line() +
+    labs(subtitle = subt, x= "distance from TTS", y="avg norm tag coverage") +
+    ggtitle(plot_title) +
+    scale_color_manual(values=c("black", "red", "grey"))
+}
+
+```
+
+
+
+
+1. Counting tags and processing data
+----------------------------------------------
+
+make TDs into bed files in prep for counting
+    
+    /Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/bash\ scripts/03b_TD_to_bed.sh
+
+
+
+make bed files of counting windows:
+
+gnbd bed file (+250bp to TTS):
+"/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/ChIP_analyzable_genes_MANE_v095_gnbd.bed"
+
+need to make 3' peak window bed file (TTS to 5kb ds):
+"/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/ChIP_analyzable_genes_MANE_v095_3Peak_window.bed"
+
+and ds window (6kb to 20kb and 20kb to 20kb):
+"/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/ChIP_analyzable_genes_MANE_v095_10to20kb_ds.bed" or "...6to20kb_ds.bed"
+
+```{r make bed files}
+#read-in old bed file with ChIP-analyzable genes
+TTS_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/ChIP_genes_TTS.bed", header = FALSE, sep="\t", stringsAsFactors = FALSE, quote = "")
+colnames(TTS_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+#read in MANE gnbd bed file
+MANE_whole_gnbd_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v095_whole_gene.bed", header = FALSE, sep="\t", stringsAsFactors = FALSE, quote = "")
+MANE_whole_gnbd_bed <- MANE_whole_gnbd_bed[1:6]
+colnames(MANE_whole_gnbd_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+#get whole gene for 4k list of ChIP analyzable genes
+ChIP_whole_genes_bed <- filter(MANE_whole_gnbd_bed, MANE_whole_gnbd_bed$id %in% TTS_bed$id)
+
+
+### 3'peak window bed file ###
+TTS_Peak_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/ds_5kb_window_unstranded_iso_exp_clean_genes.bed", header = FALSE, sep="\t", stringsAsFactors = FALSE, quote = "")
+colnames(TTSpeak_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+#filter to 4002 genes
+TTSpeak_bed <- filter(TTSpeak_bed, TTSpeak_bed$id %in% TTS_bed$id)
+#re-save
+write_delim(TTSpeak_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/ChIP_analyzable_genes_MANE_v095_3Peak_window.bed", delim = "\t", col_names = FALSE)
+
+
+### ds window bed files ###
+  ##6kb to 20kb##
+
+#make ds bed window 1
+ChIP_6kb_ds_bed <- ChIP_whole_genes_bed #so we don't accidentally overwrite the gnbd bed file
+
+i=1
+while(i <= nrow(ChIP_6kb_ds_bed)){
+  #if on + strand, start = TSS and end = TTS
+  #for downstream window: start = end + 6kb & end = end + 20kb
+  if(ChIP_6kb_ds_bed$strand[i]=="+"){
+    ChIP_6kb_ds_bed$start[i] = ChIP_6kb_ds_bed$end[i] + 6000
+    ChIP_6kb_ds_bed$end[i] = ChIP_6kb_ds_bed$end[i] + 20000
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #for downstream window: start = start - 20000 & end = start - 6000 (remeber to set end = start before changing start to not = TTS anymore)
+  else if(ChIP_6kb_ds_bed$strand[i]=="-"){
+    ChIP_6kb_ds_bed$end[i] = ChIP_6kb_ds_bed$start[i] - 6000
+    ChIP_6kb_ds_bed$start[i] = ChIP_6kb_ds_bed$start[i] - 20000
+    }
+  else{
+    print("no strand annotation!!")
+  }
+  i = i+1
+}
+#remove any negative values
+ChIP_6kb_ds_bed <- filter(ChIP_6kb_ds_bed, ChIP_6kb_ds_bed$start >= 0)
+ChIP_6kb_ds_bed <- filter(ChIP_6kb_ds_bed, ChIP_6kb_ds_bed$end >= 0) #nothing was removed
+#check window = 12kb
+stopifnot(abs(ChIP_6kb_ds_bed$start - ChIP_6kb_ds_bed$end) == 14000) #good
+
+
+#save
+write_delim(ChIP_6kb_ds_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/ChIP_analyzable_genes_MANE_v095_6to20kb_ds.bed", delim = "\t", col_names = FALSE)
+
+
+
+
+
+#make ds bed window 2
+ChIP_10kb_ds_bed <- ChIP_whole_genes_bed #so we don't accidentally overwrite the gnbd bed file
+
+i=1
+while(i <= nrow(ChIP_10kb_ds_bed)){
+  #if on + strand, start = TSS and end = TTS
+  #for downstream window: start = end + 6kb & end = end + 20kb
+  if(ChIP_10kb_ds_bed$strand[i]=="+"){
+    ChIP_10kb_ds_bed$start[i] = ChIP_10kb_ds_bed$end[i] + 10000
+    ChIP_10kb_ds_bed$end[i] = ChIP_10kb_ds_bed$end[i] + 20000
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #for downstream window: start = start - 20000 & end = start - 6000 (remeber to set end = start before changing start to not = TTS anymore)
+  else if(ChIP_10kb_ds_bed$strand[i]=="-"){
+    ChIP_10kb_ds_bed$end[i] = ChIP_10kb_ds_bed$start[i] - 10000
+    ChIP_10kb_ds_bed$start[i] = ChIP_10kb_ds_bed$start[i] - 20000
+    }
+  else{
+    print("no strand annotation!!")
+  }
+  i = i+1
+}
+#remove any negative values
+ChIP_10kb_ds_bed <- filter(ChIP_10kb_ds_bed, ChIP_10kb_ds_bed$start >= 0)
+ChIP_10kb_ds_bed <- filter(ChIP_10kb_ds_bed, ChIP_10kb_ds_bed$end >= 0) #nothing was removed
+#check window = 12kb
+stopifnot(abs(ChIP_10kb_ds_bed$start - ChIP_10kb_ds_bed$end) == 10000) #good
+
+
+#save
+write_delim(ChIP_10kb_ds_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/ChIP_analyzable_genes_MANE_v095_10to20kb_ds.bed", delim = "\t", col_names = FALSE)
+
+```
+
+
+
+run bedtools counting:
+    
+    /Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/bash\ scripts/07f_counting_by_region_for_figures.sh
+
+
+read in bed files and make into df's
+```{r read-in files}
+#gnbd
+fl_gnbd <- list.files("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/raw_counts_by_region/gnbd/", 
+                  pattern = "*.bed",
+                  full.names = TRUE)
+ls_bed_gnbd <- lapply(fl_gnbd, read.table, header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ls_bed_gnbd) <- gsub("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/raw_counts_by_region/gnbd//|_counts.bed", "", fl_gnbd)
+#TTS peak
+fl_TTS <- list.files("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/raw_counts_by_region/TTS_Peak/", 
+                  pattern = "*.bed",
+                  full.names = TRUE)
+ls_bed_TTS <- lapply(fl_TTS, read.table, header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ls_bed_TTS) <- gsub("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/raw_counts_by_region/TTS_Peak//|_counts.bed", "", fl_TTS)
+#6 to 20 kb ds
+fl_six <- list.files("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/raw_counts_by_region/Six_to_20kb_ds/", 
+                  pattern = "*.bed",
+                  full.names = TRUE)
+ls_bed_six <- lapply(fl_six, read.table, header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ls_bed_six) <- gsub("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/raw_counts_by_region/Six_to_20kb_ds//|_counts.bed", "", fl_six)
+#10 to 20kb ds
+fl_ten <- list.files("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/raw_counts_by_region/Ten_to_20kb_ds/", 
+                  pattern = "*.bed",
+                  full.names = TRUE)
+ls_bed_ten <- lapply(fl_ten, read.table, header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ls_bed_ten) <- gsub("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/raw_counts_by_region/Ten_to_20kb_ds//|_counts.bed", "", fl_ten)
+
+```
+
+```{r make dfs and normalize to 1E8 mapped reads}
+#read in mapped reads numbers
+reads_df <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/notes/mapped_reads_per_sample.tsv", header = FALSE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#removed pooled counts
+reads_df <- reads_df[1:9,]
+#calc factor (norm to 100 million reads)
+reads_df$V3 = 1E8 / reads_df$V2
+
+#now make df's
+counts_gnbd_df <- data.frame(input = ls_bed_gnbd$input$V7 * reads_df[1,3], 
+                             Rpb1_NHS_R6 = ls_bed_gnbd$NHS_Rpb1_R6$V7 * reads_df[2,3],
+                             Rpb1_NHS_R8 = ls_bed_gnbd$NHS_Rpb1_R8$V7 * reads_df[3,3],
+                             Rpb1_HS_R6 = ls_bed_gnbd$HS_Rpb1_R6$V7 * reads_df[4,3],
+                             Rpb1_HS_R8 = ls_bed_gnbd$HS_Rpb1_R8$V7 * reads_df[5,3],
+                             Ser2P_NHS_R6 = ls_bed_gnbd$NHS_Ser2P_R6$V7 * reads_df[6,3],
+                             Ser2P_NHS_R8 = ls_bed_gnbd$NHS_Ser2P_R8$V7 * reads_df[7,3],
+                             Ser2P_HS_R6 = ls_bed_gnbd$HS_Ser2P_R6$V7 * reads_df[8,3],
+                             Ser2P_HS_R8 = ls_bed_gnbd$HS_Ser2P_R8$V7 * reads_df[9,3]
+                  )
+rownames(counts_gnbd_df) <- ls_bed_gnbd$HS_Rpb1_R6$V4
+
+
+counts_TTS_df <- data.frame(input = ls_bed_TTS$input$V7 * reads_df[1,3], 
+                             Rpb1_NHS_R6 = ls_bed_TTS$NHS_Rpb1_R6$V7 * reads_df[2,3],
+                             Rpb1_NHS_R8 = ls_bed_TTS$NHS_Rpb1_R8$V7 * reads_df[3,3],
+                             Rpb1_HS_R6 = ls_bed_TTS$HS_Rpb1_R6$V7 * reads_df[4,3],
+                             Rpb1_HS_R8 = ls_bed_TTS$HS_Rpb1_R8$V7 * reads_df[5,3],
+                             Ser2P_NHS_R6 = ls_bed_TTS$NHS_Ser2P_R6$V7 * reads_df[6,3],
+                             Ser2P_NHS_R8 = ls_bed_TTS$NHS_Ser2P_R8$V7 * reads_df[7,3],
+                             Ser2P_HS_R6 = ls_bed_TTS$HS_Ser2P_R6$V7 * reads_df[8,3],
+                             Ser2P_HS_R8 = ls_bed_TTS$HS_Ser2P_R8$V7 * reads_df[9,3]
+                  )
+rownames(counts_TTS_df) <- ls_bed_TTS$HS_Rpb1_R6$V4
+
+counts_6to20kb_df <- data.frame(input = ls_bed_six$input$V7 * reads_df[1,3], 
+                             Rpb1_NHS_R6 = ls_bed_six$NHS_Rpb1_R6$V7 * reads_df[2,3],
+                             Rpb1_NHS_R8 = ls_bed_six$NHS_Rpb1_R8$V7 * reads_df[3,3],
+                             Rpb1_HS_R6 = ls_bed_six$HS_Rpb1_R6$V7 * reads_df[4,3],
+                             Rpb1_HS_R8 = ls_bed_six$HS_Rpb1_R8$V7 * reads_df[5,3],
+                             Ser2P_NHS_R6 = ls_bed_six$NHS_Ser2P_R6$V7 * reads_df[6,3],
+                             Ser2P_NHS_R8 = ls_bed_six$NHS_Ser2P_R8$V7 * reads_df[7,3],
+                             Ser2P_HS_R6 = ls_bed_six$HS_Ser2P_R6$V7 * reads_df[8,3],
+                             Ser2P_HS_R8 = ls_bed_six$HS_Ser2P_R8$V7 * reads_df[9,3]
+                  )
+rownames(counts_6to20kb_df) <- ls_bed_six$HS_Rpb1_R6$V4
+
+counts_10to20kb_df <- data.frame(input = ls_bed_ten$input$V7 * reads_df[1,3], 
+                             Rpb1_NHS_R6 = ls_bed_ten$NHS_Rpb1_R6$V7 * reads_df[2,3],
+                             Rpb1_NHS_R8 = ls_bed_ten$NHS_Rpb1_R8$V7 * reads_df[3,3],
+                             Rpb1_HS_R6 = ls_bed_ten$HS_Rpb1_R6$V7 * reads_df[4,3],
+                             Rpb1_HS_R8 = ls_bed_ten$HS_Rpb1_R8$V7 * reads_df[5,3],
+                             Ser2P_NHS_R6 = ls_bed_ten$NHS_Ser2P_R6$V7 * reads_df[6,3],
+                             Ser2P_NHS_R8 = ls_bed_ten$NHS_Ser2P_R8$V7 * reads_df[7,3],
+                             Ser2P_HS_R6 = ls_bed_ten$HS_Ser2P_R6$V7 * reads_df[8,3],
+                             Ser2P_HS_R8 = ls_bed_ten$HS_Ser2P_R8$V7 * reads_df[9,3]
+                  )
+rownames(counts_10to20kb_df) <- ls_bed_ten$HS_Rpb1_R6$V4
+
+#save dfs
+write_delim(rownames_to_column(counts_gnbd_df, var = "transcriptID"), "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/norm_counts_gnbd.tsv", delim = "\t", col_names = TRUE)
+write_delim(rownames_to_column(counts_TTS_df, var = "transcriptID"), "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/norm_counts_TTSto5kb_ds.tsv", delim = "\t", col_names = TRUE)
+write_delim(rownames_to_column(counts_6to20kb_df, var = "transcriptID"), "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/norm_counts_6kb_to_20kb_ds.tsv", delim = "\t", col_names = TRUE)
+write_delim(rownames_to_column(counts_10to20kb_df, var = "transcriptID"), "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/norm_counts_10kb_to_20kb_ds.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+RPK
+```{r calc RPK}
+#needed to remake RPK_gnbd_df
+#counts_gnbd_df <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/norm_counts_gnbd.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#counts_gnbd_df <- column_to_rownames(counts_gnbd_df, "transcriptID")
+
+RPK_gnbd_df <- counts_gnbd_df / (ls_bed_gnbd$HS_Rpb1_R6$V9 / 1000)
+RPK_TTS_df <- counts_TTS_df / 5
+RPK_6to20kbds_df <- counts_6to20kb_df / 14
+RPK_10to20kbds_df <- counts_10to20kb_df / 10
+
+
+#save dfs
+write_delim(rownames_to_column(RPK_gnbd_df, var = "transcriptID"), "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/RPK_gnbd.tsv", delim = "\t", col_names = TRUE)
+write_delim(rownames_to_column(RPK_TTS_df, var = "transcriptID"), "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/RPK_TTSto5kb_ds.tsv", delim = "\t", col_names = TRUE)
+write_delim(rownames_to_column(RPK_6to20kbds_df, var = "transcriptID"), "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/RPK_6kb_to_20kb_ds.tsv", delim = "\t", col_names = TRUE)
+write_delim(rownames_to_column(RPK_10to20kbds_df, var = "transcriptID"), "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/RPK_10kb_to_20kb_ds.tsv", delim = "\t", col_names = TRUE)
+
+
+
+```
+
+Fold change with HS
+```{r}
+FC_gnbd_df <- data.frame(transcriptID = rownames(counts_gnbd_df),
+                         Rpb1_R6 = counts_gnbd_df$Rpb1_HS_R6 / counts_gnbd_df$Rpb1_NHS_R6,
+                         Rpb1_R8 = counts_gnbd_df$Rpb1_HS_R8 / counts_gnbd_df$Rpb1_NHS_R8,
+                         Ser2P_R6 = counts_gnbd_df$Ser2P_HS_R6 / counts_gnbd_df$Ser2P_NHS_R6,
+                         Ser2P_R8 = counts_gnbd_df$Ser2P_HS_R8 / counts_gnbd_df$Ser2P_NHS_R8,
+                         Rpb1_avg = ((counts_gnbd_df$Rpb1_HS_R6 / counts_gnbd_df$Rpb1_NHS_R6) +
+                                             (counts_gnbd_df$Rpb1_HS_R8 / counts_gnbd_df$Rpb1_NHS_R8)) /2,
+                         Ser2P_avg = ((counts_gnbd_df$Ser2P_HS_R6 / counts_gnbd_df$Ser2P_NHS_R6) +
+                                             (counts_gnbd_df$Ser2P_HS_R8 / counts_gnbd_df$Ser2P_NHS_R8)) /2
+                         )
+
+FC_TTS_df <- data.frame(transcriptID = rownames(counts_TTS_df),
+                         Rpb1_R6 = counts_TTS_df$Rpb1_HS_R6 / counts_TTS_df$Rpb1_NHS_R6,
+                         Rpb1_R8 = counts_TTS_df$Rpb1_HS_R8 / counts_TTS_df$Rpb1_NHS_R8,
+                         Ser2P_R6 = counts_TTS_df$Ser2P_HS_R6 / counts_TTS_df$Ser2P_NHS_R6,
+                         Ser2P_R8 = counts_TTS_df$Ser2P_HS_R8 / counts_TTS_df$Ser2P_NHS_R8,
+                         Rpb1_avg = ((counts_TTS_df$Rpb1_HS_R6 / counts_TTS_df$Rpb1_NHS_R6) +
+                                             (counts_TTS_df$Rpb1_HS_R8 / counts_TTS_df$Rpb1_NHS_R8)) /2,
+                         Ser2P_avg = ((counts_TTS_df$Ser2P_HS_R6 / counts_TTS_df$Ser2P_NHS_R6) +
+                                             (counts_TTS_df$Ser2P_HS_R8 / counts_TTS_df$Ser2P_NHS_R8)) /2
+                         )
+
+FC_6to20kbds_df <- data.frame(transcriptID = rownames(counts_6to20kb_df),
+                         Rpb1_R6 = counts_6to20kb_df$Rpb1_HS_R6 / counts_6to20kb_df$Rpb1_NHS_R6,
+                         Rpb1_R8 = counts_6to20kb_df$Rpb1_HS_R8 / counts_6to20kb_df$Rpb1_NHS_R8,
+                         Ser2P_R6 = counts_6to20kb_df$Ser2P_HS_R6 / counts_6to20kb_df$Ser2P_NHS_R6,
+                         Ser2P_R8 = counts_6to20kb_df$Ser2P_HS_R8 / counts_6to20kb_df$Ser2P_NHS_R8,
+                         Rpb1_avg = ((counts_6to20kb_df$Rpb1_HS_R6 / counts_6to20kb_df$Rpb1_NHS_R6) +
+                                             (counts_6to20kb_df$Rpb1_HS_R8 / counts_6to20kb_df$Rpb1_NHS_R8)) /2,
+                         Ser2P_avg = ((counts_6to20kb_df$Ser2P_HS_R6 / counts_6to20kb_df$Ser2P_NHS_R6) +
+                                             (counts_6to20kb_df$Ser2P_HS_R8 / counts_6to20kb_df$Ser2P_NHS_R8)) /2
+                         )
+
+FC_10to20kbds_df <- data.frame(transcriptID = rownames(counts_10to20kb_df),
+                         Rpb1_R6 = counts_10to20kb_df$Rpb1_HS_R6 / counts_10to20kb_df$Rpb1_NHS_R6,
+                         Rpb1_R8 = counts_10to20kb_df$Rpb1_HS_R8 / counts_10to20kb_df$Rpb1_NHS_R8,
+                         Ser2P_R6 = counts_10to20kb_df$Ser2P_HS_R6 / counts_10to20kb_df$Ser2P_NHS_R6,
+                         Ser2P_R8 = counts_10to20kb_df$Ser2P_HS_R8 / counts_10to20kb_df$Ser2P_NHS_R8,
+                         Rpb1_avg = ((counts_10to20kb_df$Rpb1_HS_R6 / counts_10to20kb_df$Rpb1_NHS_R6) +
+                                             (counts_10to20kb_df$Rpb1_HS_R8 / counts_10to20kb_df$Rpb1_NHS_R8)) /2,
+                         Ser2P_avg = ((counts_10to20kb_df$Ser2P_HS_R6 / counts_10to20kb_df$Ser2P_NHS_R6) +
+                                             (counts_10to20kb_df$Ser2P_HS_R8 / counts_10to20kb_df$Ser2P_NHS_R8)) /2
+                         )
+
+#save dfs
+write_delim(FC_gnbd_df, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/FC_gnbd.tsv", delim = "\t", col_names = TRUE)
+write_delim(FC_TTS_df, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/FC_TTSto5kb_ds.tsv", delim = "\t", col_names = TRUE)
+write_delim(FC_6to20kbds_df, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/FC_6kb_to_20kb_ds.tsv", delim = "\t", col_names = TRUE)
+write_delim(FC_10to20kbds_df, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/FC_10kb_to_20kb_ds.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+Filter for expressed genes in ChIP-seq data
+  need to remove genes with low or zero signal before calculating FC so not dividing by super small numbers
+```{r above input filter}
+#filter
+exp_RPK_gnbd_df <- filter(RPK_gnbd_df, ((RPK_gnbd_df$Rpb1_NHS_R6 + RPK_gnbd_df$Rpb1_NHS_R8) /2) > 1.5*(mean(RPK_gnbd_df$input)) & 
+                                     ((RPK_gnbd_df$Rpb1_HS_R6 + RPK_gnbd_df$Rpb1_HS_R8) /2) > 1.5*(mean(RPK_gnbd_df$input)) &
+                                     ((RPK_gnbd_df$Ser2P_NHS_R6 + RPK_gnbd_df$Ser2P_NHS_R8) /2) > 1.5*(mean(RPK_gnbd_df$input)) &
+                                     ((RPK_gnbd_df$Ser2P_HS_R6 + RPK_gnbd_df$Ser2P_HS_R8) /2) > 1.5*(mean(RPK_gnbd_df$input)) 
+                        )
+#only 642 genes when both reps need to be above 1.5xinput in respective gene
+#2.4k genes when avg needs to be above 1.5xinput in respective gene
+#2.1k genes when avg needs to be above 1.5x avg input -> going to use this one
+
+exp_RPK_TTS_df <- filter(RPK_TTS_df, ((RPK_TTS_df$Rpb1_NHS_R6 + RPK_TTS_df$Rpb1_NHS_R8) /2) > 1.5*(mean(RPK_TTS_df$input)) & 
+                                     ((RPK_TTS_df$Rpb1_HS_R6 + RPK_TTS_df$Rpb1_HS_R8) /2) > 1.5*(mean(RPK_TTS_df$input)) &
+                                     ((RPK_TTS_df$Ser2P_NHS_R6 + RPK_TTS_df$Ser2P_NHS_R8) /2) > 1.5*(mean(RPK_TTS_df$input)) &
+                                     ((RPK_TTS_df$Ser2P_HS_R6 + RPK_TTS_df$Ser2P_HS_R8) /2) > 1.5*(mean(RPK_TTS_df$input)) 
+                        )
+#2717 genes
+
+exp_RPK_6to20kb_df <- filter(RPK_6to20kbds_df, ((RPK_6to20kbds_df$Rpb1_NHS_R6 + RPK_6to20kbds_df$Rpb1_NHS_R8) /2) > 1.5*(mean(RPK_6to20kbds_df$input)) & 
+                          ((RPK_6to20kbds_df$Rpb1_HS_R6 + RPK_6to20kbds_df$Rpb1_HS_R8) /2) > 1.5*(mean(RPK_6to20kbds_df$input)) &
+                          ((RPK_6to20kbds_df$Ser2P_NHS_R6 + RPK_6to20kbds_df$Ser2P_NHS_R8) /2) > 1.5*(mean(RPK_6to20kbds_df$input)) &
+                          ((RPK_6to20kbds_df$Ser2P_HS_R6 + RPK_6to20kbds_df$Ser2P_HS_R8) /2) > 1.5*(mean(RPK_6to20kbds_df$input)) 
+                        )
+#1343 genes
+
+exp_RPK_10to20kb_df <- filter(RPK_10to20kbds_df, ((RPK_10to20kbds_df$Rpb1_NHS_R6 + RPK_10to20kbds_df$Rpb1_NHS_R8) /2) > 1.5*(mean(RPK_10to20kbds_df$input)) & 
+                      ((RPK_10to20kbds_df$Rpb1_HS_R6 + RPK_10to20kbds_df$Rpb1_HS_R8) /2) > 1.5*(mean(RPK_10to20kbds_df$input)) &
+                      ((RPK_10to20kbds_df$Ser2P_NHS_R6 + RPK_10to20kbds_df$Ser2P_NHS_R8) /2) > 1.5*(mean(RPK_10to20kbds_df$input)) &
+                      ((RPK_10to20kbds_df$Ser2P_HS_R6 + RPK_10to20kbds_df$Ser2P_HS_R8) /2) > 1.5*(mean(RPK_10to20kbds_df$input)) 
+                        )
+#1059 genes
+
+
+#save dfs
+write_delim(rownames_to_column(exp_RPK_gnbd_df), "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/RPK_gnbd_expressed.tsv", delim = "\t", col_names = TRUE)
+write_delim(rownames_to_column(exp_RPK_TTS_df), "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/RPK_TTSto5kb_expressed.tsv", delim = "\t", col_names = TRUE)
+write_delim(rownames_to_column(exp_RPK_6to20kb_df), "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/RPK_6to20kbds_expressed.tsv", delim = "\t", col_names = TRUE)
+write_delim(rownames_to_column(exp_RPK_10to20kb_df), "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/RPK_10to20kbds_expressed.tsv", delim = "\t", col_names = TRUE)
+
+
+```
+
+
+Make FC df with exp genes so not getting inaccurate FC due to dividing by small numbers (or a 2 fold change due to 1 read vs 2 reads)
+```{r exp FC df}
+#filter FC dfs by exp df's
+exp_FC_gnbd_df <- filter(FC_gnbd_df, FC_gnbd_df$transcriptID %in% rownames(exp_RPK_gnbd_df) )
+exp_FC_TTS_df <- filter(FC_TTS_df, FC_TTS_df$transcriptID %in% rownames(exp_RPK_TTS_df) )
+exp_FC_6to20kbds_df <- filter(FC_6to20kbds_df, FC_6to20kbds_df$transcriptID %in% rownames(exp_RPK_6to20kb_df) )
+exp_FC_10to20kbds_df <- filter(FC_10to20kbds_df, FC_10to20kbds_df$transcriptID %in% rownames(exp_RPK_10to20kb_df) )
+
+#save dfs
+write_delim(exp_FC_gnbd_df, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/FC_gnbd_expressed.tsv", delim = "\t", col_names = TRUE)
+write_delim(exp_FC_TTS_df, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/FC_TTSto5kb_expressed.tsv", delim = "\t", col_names = TRUE)
+write_delim(exp_FC_6to20kbds_df, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/FC_6to20kbds_expressed.tsv", delim = "\t", col_names = TRUE)
+write_delim(exp_FC_10to20kbds_df, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/FC_10to20kbds_expressed.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+*need to think about and maybe redo*
+norm to gnbd RPK then calc FC then avg (using genes exp in both gnbd and TTS peak)
+```{r TTS peak norm to gnbd}
+#get genes that are exp in both
+both <- inner_join(rownames_to_column(exp_RPK_gnbd_df), rownames_to_column(exp_RPK_TTS_df), by = "rowname")  #1945 genes
+filtered_exp_RPK_gnbd_df <- filter(rownames_to_column(exp_RPK_gnbd_df), rowname %in% both$rowname)
+filtered_exp_RPK_TTS_df <- filter(rownames_to_column(exp_RPK_TTS_df), rowname %in% both$rowname)
+filtered_exp_RPK_gnbd_df <- column_to_rownames(filtered_exp_RPK_gnbd_df, var = "rowname")
+filtered_exp_RPK_TTS_df <- column_to_rownames(filtered_exp_RPK_TTS_df, var = "rowname")
+
+#norm TTS RPK by gnbd RPK
+norm_TTS_RPK <- filtered_exp_RPK_TTS_df / filtered_exp_RPK_gnbd_df
+  ## norm Rpb1 to Rpb1 and Ser2P to Ser2P
+      ## not sure if this is valid since 
+
+
+#calc FC
+norm_TTS_FC <- data.frame(Rpb1_R6 = norm_TTS_RPK$Rpb1_HS_R6 / norm_TTS_RPK$Rpb1_NHS_R6,
+                          Rpb1_R8 = norm_TTS_RPK$Rpb1_HS_R8 / norm_TTS_RPK$Rpb1_NHS_R8,
+                          Ser2P_R6 = norm_TTS_RPK$Ser2P_HS_R6 / norm_TTS_RPK$Ser2P_NHS_R6,
+                          Ser2P_R8 = norm_TTS_RPK$Ser2P_HS_R8 / norm_TTS_RPK$Ser2P_NHS_R8,
+                          Rpb1_avg = ((norm_TTS_RPK$Rpb1_HS_R6 / norm_TTS_RPK$Rpb1_NHS_R6) + 
+                                        (norm_TTS_RPK$Rpb1_HS_R8 / norm_TTS_RPK$Rpb1_NHS_R8)) /2,
+                          Ser2P_avg = ((norm_TTS_RPK$Ser2P_HS_R6 / norm_TTS_RPK$Ser2P_NHS_R6) + 
+                                        (norm_TTS_RPK$Ser2P_HS_R8 / norm_TTS_RPK$Ser2P_NHS_R8)) /2
+                          )
+rownames(norm_TTS_FC) <- rownames(norm_TTS_RPK)
+
+#save
+write_delim(rownames_to_column(norm_TTS_RPK), "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/RPK_TTS_norm_to_gnbd.tsv", delim = "\t", col_names = TRUE)
+write_delim(rownames_to_column(norm_TTS_FC), "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/FC_TTS_norm_to_gnbd.tsv", delim = "\t", col_names = TRUE)
+
+
+#technically should norm to 4sU FC but using Rpb1 FC for now
+norm_TTS_FC <- FC_gnbd_df
+```
+
+
+
+
+
+make master DF for all ChIP_analyzable genes
+```{r ChIP_genes_master_df}
+#read in master df with 4sU genes
+master_df <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/FINAL_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#read in ChIP gene IDs
+ChIP_genes <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/ChIP_genes_IDs.txt", header = FALSE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#filter to make ChIP_master_df
+ChIP_genes_master_df <- filter(master_df, master_df$transcriptID %in% ChIP_genes$V1) 
+
+#save
+write_delim(ChIP_genes_master_df, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/ChIP_analyzable_genes_master_df.tsv", delim = "\t", col_names = TRUE)
+
+write_delim(defect_bp_TTS_df, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/Ser2PdPolII_term_defect_cat_for_boxplots.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+----------------------------------------------
+(end 1)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+2. Scatterplots - Rpb1 vs Ser2P
+----------------------------
+```{r TTSto5kb ds Rpb1 vs Ser2P}
+#read-in exp_FC_TTS if needed
+exp_FC_TTS_df <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/FC_TTSto5kb_expressed.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#and master genes df
+ChIP_genes_master_df <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/ChIP_analyzable_genes_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+## 3' peak (done previously incorrectly)
+TTS_FC_exp_plotting_df_1 <- data.frame(transcriptID = exp_FC_TTS_df$transcriptID, Rpb1 = exp_FC_TTS_df$Rpb1_avg, Ser2P = exp_FC_TTS_df$Ser2P_avg)
+TTS_FC_exp_plotting_df <- left_join(TTS_FC_exp_plotting_df_1, ChIP_genes_master_df[c(1,14,18,20,21,25,26)], by = "transcriptID")
+#remove longRT genes
+TTS_FC_exp_plotting_df <- filter(TTS_FC_exp_plotting_df, TTS_FC_exp_plotting_df$longRT == FALSE) #120 long RT genes removed
+
+#save plotting df
+write_delim(TTS_FC_exp_plotting_df, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/TTS_scatterplots/TTS_Rpb1vsSer2P_plotting_DF.tsv", delim = "\t", col_names = TRUE)
+  #also save to data_tables folder
+write_delim(TTS_FC_exp_plotting_df, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/TTS_Rpb1vsSer2P_plotting_DF.tsv", delim = "\t", col_names = TRUE)
+
+
+
+p <- ggplot(TTS_FC_exp_plotting_df, aes(log2(Rpb1), log2(Ser2P), label = transcriptID) ) + 
+  geom_point(alpha=0.8, size=1, color = "#141414") + #696969 gray
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) #+  #draw quadrents
+ #geom_smooth(method='lm', color = "#262626") +
+  #stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+   #            formula = y ~ x, parse = TRUE, size = 4)
+  #geom_text(aes(label=ifelse((Rpb1>2.5 & Ser2P> 2.5) | (Rpb1< -2.5 & Ser2P< -2.5), as.character(transcriptID),'')), vjust="inward", hjust="inward", show.legend = FALSE)
+
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/TTS_scatterplots/log2FC_Rpb1_vs_Ser2P_scatterplot.png", 500, 500)
+print(p)
+dev.off()
+
+
+
+#color by act and rep
+p <- ggplot(filter(TTS_FC_exp_plotting_df, !(TTS_FC_exp_plotting_df$DESeq_2fold_cat == "no change") ), aes(log2(Rpb1), log2(Ser2P), color = DESeq_2fold_cat )) + 
+  geom_point(alpha=0.8, size=1, show.legend = FALSE) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  scale_colour_manual(values=c("#274bdb", "#db6b16")) + #"#696969", 
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diag line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)   #draw quadrents
+
+
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/log2FC_Rpb1_vs_Ser2P_scatterplot_act_rep_small.png", 300, 300)
+print(p)
+dev.off()
+
+table(TTS_FC_exp_plotting_df$DESeq_2fold_cat)
+#activated      no change       repressed 
+#   155           2133             309 
+
+
+
+#color by term defect
+#factor to set order
+TTS_FC_exp_plotting_df$defect_cat <- factor(TTS_FC_exp_plotting_df$defect_cat, levels = c("no defect", "moderate defect", "severe defect", "max defect") )
+
+p <- ggplot(filter(TTS_FC_exp_plotting_df, TTS_FC_exp_plotting_df$defect_cat == "no defect"), aes(log2(Rpb1), log2(Ser2P), color = defect_cat )) + 
+  geom_point(alpha=0.8, size=1, show.legend = FALSE) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  scale_colour_manual(values=c("#696969")) +  #"#696969", "#fa794d", "#f74e14", "#ab2d02"
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diag line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +  #draw quadrents
+  labs(title = "TTS to 5kb ds fold change", subtitle = "no termination defect") +
+  geom_smooth(method='lm', color = "#262626") + #reg line
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), #display reg line equation
+               formula = y ~ x, parse = TRUE, size = 4)
+
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/TTS_scatterplots/reg_line/log2FC_Rpb1_vs_Ser2P_scatterplot_reg_line_nd_defect.png", 500, 500)
+print(p)
+dev.off()
+
+table(TTS_FC_exp_plotting_df$defect_cat)
+#no defect          203
+#moderate defect    657 
+#severe defect      934 
+#max defect         803
+
+
+
+#color by NHS term profile
+p <- ggplot(filter(TTS_FC_exp_plotting_df, TTS_FC_exp_plotting_df$cat_NHS_term == "leaky"), aes(log2(Rpb1), log2(Ser2P), color = cat_NHS_term )) + 
+  geom_point(alpha=0.8, size=1, show.legend = FALSE) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  scale_colour_manual(values=c("#a1024e")) +  #"#02bdad", "#a1024e"
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diag line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +  #draw quadrents
+  labs(title = "TTS to 5kb ds fold change", subtitle = "Leaky NHS termination profile") +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/TTS_scatterplots/reg_line/log2FC_Rpb1_vs_Ser2P_scatterplot_reg_line_leaky.png", 500, 500)
+print(p)
+dev.off()
+
+table(TTS_FC_exp_plotting_df$cat_NHS_term)
+#   leaky    sharp 
+#   1906     691
+
+
+
+
+#color by cleavage
+t <- filter(TTS_FC_exp_plotting_df, !(TTS_FC_exp_plotting_df$cleaved_cat == '"NA"') ) #NAs would be due to value = inf so just removed the 37 NAs
+t$cleaved_cat <- factor(t$cleaved_cat, levels = c("increased", "no change","decreased")) 
+#remake for plotting just incr and decr
+t <- filter(t, t$cleaved_cat == "increased" | t$cleaved_cat == "decreased")
+t$cleaved_cat <- factor(t$cleaved_cat, levels = c("increased","decreased")) 
+t_sort <- t[c(order(t$cleaved_cat, decreasing = FALSE)),]
+?order()
+
+p <- ggplot(t_sort, aes(log2(Rpb1), log2(Ser2P), color = cleaved_cat )  ) + #
+  geom_point(alpha=0.8, size=1, show.legend = FALSE ) +  #, show.legend = FALSE
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  scale_colour_manual(values=c("#273ba3","#b52d0e")) + #"#b52d0e","#e3bc68", "#273ba3"
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diag line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) #+  #draw quadrents
+  #labs(title = "TTS to 5kb ds fold change", subtitle = "decrease in uncleaved 4sU RNA reads") #+
+  #geom_smooth(method='lm', color = "#262626") +
+  #stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+  #             formula = y ~ x, parse = TRUE, size = 4)
+
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/TTS_scatterplots/log2FC_Rpb1_vs_Ser2P_scatterplot_cleavage_inc_dec_small.png", 300, 300)
+print(p)
+dev.off()
+
+table(TTS_FC_exp_plotting_df$cleaved_cat)
+#     "NA"    decreased     increased     no change 
+#      37       120            1124          1316 
+
+
+#enhanced cleavage seems to have increased Ser2P (above diagonal) and impaired cleavage (inc) enriched for loss of Ser2P
+  #same pattern with act/rep - how much overlap?
+
+#how many repressed genes have decrease in uncleaved reads?
+rep_genes <- filter(TTS_FC_exp_plotting_df, TTS_FC_exp_plotting_df$DESeq_2fold_cat == "repressed") #309 genes
+act_genes <- filter(TTS_FC_exp_plotting_df, TTS_FC_exp_plotting_df$DESeq_2fold_cat == "activated") #155 genes
+table(rep_genes$cleaved_cat)
+#     "NA" decreased increased no change 
+#        7        77        38       187 
+table(act_genes$cleaved_cat)
+#increased no change 
+#      144        11 
+
+#cleavage tables
+enhanced_cleavage_genes <- filter(TTS_FC_exp_plotting_df, TTS_FC_exp_plotting_df$cleaved_cat == "decreased")
+table(enhanced_cleavage_genes$DESeq_2fold_cat)
+#activated     no change   repressed 
+#        3       107          10 
+#       2.5%     89%          8.3%
+lost_cleavage_genes <- filter(TTS_FC_exp_plotting_df, TTS_FC_exp_plotting_df$cleaved_cat == "increased")
+table(lost_cleavage_genes$DESeq_2fold_cat)
+#activated     no change    repressed 
+#       90       880          154 
+#    8%          78%          14%
+
+```
+
+
+
+
+
+
+*need to think about and maybe redo*
+TTS norm to gnbd
+```{r norm TTSto5kb ds Rpb1 vs Ser2P}
+## 3' peak norm to gnbd (see above for norm)
+#norm_TTS_FC <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/FC_TTS_norm_to_gnbd.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+norm_TTS_FC$transcriptID <- rownames(norm_TTS_RPK)
+
+
+norm_plotting_df_1 <- data.frame(transcriptID = norm_TTS_FC$transcriptID, Rpb1 = norm_TTS_FC$Rpb1_avg, Ser2P = norm_TTS_FC$Ser2P_avg)
+norm_TTS_plotting_df <- left_join(norm_plotting_df_1, ChIP_genes_master_df[c(1,14,18,20,21,25,26)], by = "transcriptID")
+#remove longRT genes
+norm_TTS_plotting_df <- filter(norm_TTS_plotting_df, norm_TTS_plotting_df$longRT == FALSE) #82 long RT genes removed
+
+
+p <- ggplot(norm_TTS_plotting_df, aes(log2(Rpb1), log2(Ser2P)) ) + 
+  geom_point(alpha=0.8, size=1) + #, color = "#696969"
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  labs(title = "TTS to 5kb ds normalized to gnbd", subtitle = "norm RPK, then calc FC, then avg reps")+
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) #+  #draw quadrents
+  #geom_smooth(method='lm', color = "#262626") +
+  #stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+  #             formula = y ~ x, parse = TRUE, size = 4)
+  #geom_text(aes(label=ifelse((Rpb1>2.5 & Ser2P> 2.5) | (Rpb1< -2.5 & Ser2P< -2.5), as.character(transcriptID),'')), vjust="inward", hjust="inward", show.legend = FALSE)
+
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/TTS_scatterplots/norm_to_gnbd/log2FC_Rpb1_vs_Ser2P_scatterplot.png", 500, 500)
+print(p)
+dev.off()
+
+
+
+#check activated and rep.
+p <- ggplot(filter(norm_TTS_plotting_df, !(norm_TTS_plotting_df$DESeq_2fold_cat == "no change")), aes(log2(Rpb1), log2(Ser2P), color = DESeq_2fold_cat )) + 
+  geom_point(alpha=0.8, size=1) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  scale_colour_manual(values=c("#274bdb","#db6b16")) + #"#696969", 
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diag line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)   #draw quadrents
+
+
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/TTS_scatterplots/norm_to_gnbd/log2FC_Rpb1_vs_Ser2P_scatterplot_act_rep_only.png", 500, 500)
+print(p)
+dev.off()
+
+table(norm_TTS_plotting_df$DESeq_2fold_cat)
+#activated    no change    repressed 
+#     127        1515        221 
+
+```
+  
+
+
+  Scatterplots - other regions
+  10-20kb ds scatterplots
+```{r 10 to 20kb ds Rpb1 vs Ser2P}
+## far ds (not sure how valid these fold changes are when NHS was close to 0)
+ds_FC_exp_plotting_df_1 <- data.frame(transcriptID = exp_FC_10to20kbds_df$transcriptID, Rpb1 = exp_FC_10to20kbds_df$Rpb1_avg, Ser2P = exp_FC_10to20kbds_df$Ser2P_avg)
+ds_FC_exp_plotting_df <- left_join(ds_FC_exp_plotting_df_1, ChIP_genes_master_df[c(1,14,18,20,21,25,26)], by = "transcriptID")
+#remove longRT genes
+ds_FC_exp_plotting_df <- filter(ds_FC_exp_plotting_df, ds_FC_exp_plotting_df$longRT == FALSE) #120 long RT genes removed
+
+
+p <- ggplot(ds_FC_exp_plotting_df, aes(log2(Rpb1), log2(Ser2P)) ) + 
+  geom_point(alpha=0.8, size=1) + #, color = "#696969"
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  labs(title = "10kb-20kb ds fold change") + 
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +  #draw quadrents
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+
+
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/ten_to_20kb_ds_scatterplots/log2FC_Rpb1_vs_Ser2P_scatterplot_reg_line.png", 500, 500)
+print(p)
+dev.off()
+
+
+
+#color by act and rep
+p <- ggplot(filter(ds_FC_exp_plotting_df, !(ds_FC_exp_plotting_df$DESeq_2fold_cat == "no change") ), aes(log2(Rpb1), log2(Ser2P), color = DESeq_2fold_cat )) + 
+  geom_point(alpha=0.8, size=1) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  labs(title = "10kb-20kb ds fold change") + 
+  scale_colour_manual(values=c("#274bdb", "#db6b16")) + 
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diag line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)   #draw quadrents
+
+
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/ten_to_20kb_ds_scatterplots/log2FC_Rpb1_vs_Ser2P_scatterplot_act_rep.png", 500, 500)
+print(p)
+dev.off()
+
+table(ds_FC_exp_plotting_df$DESeq_2fold_cat)
+#activated      no change       repressed 
+#    37           778             114 
+
+```
+  
+gnbd scatterplot
+```{r GNBD}
+## far ds (not sure how valid these fold changes are when NHS was close to 0)
+gnbd_FC_exp_plotting_df_1 <- data.frame(transcriptID = exp_FC_gnbd_df$transcriptID, Rpb1 = exp_FC_gnbd_df$Rpb1_avg, Ser2P = exp_FC_gnbd_df$Ser2P_avg)
+gnbd_FC_exp_plotting_df <- left_join(gnbd_FC_exp_plotting_df_1, ChIP_genes_master_df[c(1,14,18,20,21,25,26)], by = "transcriptID")
+#remove longRT genes
+gnbd_FC_exp_plotting_df <- filter(gnbd_FC_exp_plotting_df, gnbd_FC_exp_plotting_df$longRT == FALSE) #96 long RT genes removed
+
+
+p <- ggplot(gnbd_FC_exp_plotting_df, aes(log2(Rpb1), log2(Ser2P)) ) + 
+  geom_point(alpha=0.8, size=1) + #, color = "#696969"
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  labs(title = "Gene body (+250 to TTS) fold change") + 
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) #+  #draw quadrents
+  #geom_smooth(method='lm', color = "#262626") +
+  #stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+  #             formula = y ~ x, parse = TRUE, size = 4)
+
+
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/gnbd_scatterplots/log2FC_Rpb1_vs_Ser2P_scatterplot.png", 500, 500)
+print(p)
+dev.off()
+
+
+
+#color by act and rep
+p <- ggplot(filter(gnbd_FC_exp_plotting_df, !(gnbd_FC_exp_plotting_df$DESeq_2fold_cat == "no change") ), aes(log2(Rpb1), log2(Ser2P), color = DESeq_2fold_cat )) + 
+  geom_point(alpha=0.8, size=1) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  labs(title = "10kb-20kb ds fold change") + 
+  scale_colour_manual(values=c("#274bdb", "#db6b16")) + 
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) + #draw diag line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)   #draw quadrents
+
+
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/gnbd_scatterplots/log2FC_Rpb1_vs_Ser2P_scatterplot_act_rep.png", 500, 500)
+print(p)
+dev.off()
+
+table(gnbd_FC_exp_plotting_df$DESeq_2fold_cat)
+#activated      no change       repressed 
+#    141           1623             283 
+```
+
+
+
+
+
+Scatterplots - 2 stdev from trendline
+```{r 2SD}
+#dfs needed:
+TTS_FC_exp_plotting_df <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/TTS_Rpb1vsSer2P_plotting_DF.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+#make df to calc residuals
+SD_TTS_df <- TTS_FC_exp_plotting_df[1:3]
+SD_TTS_df$log2Rpb1 <- log2(SD_TTS_df$Rpb1)
+SD_TTS_df$log2Ser2P <- log2(SD_TTS_df$Ser2P)
+
+
+#plot log2 data and get trendline
+ggplot(SD_TTS_df, aes(log2Rpb1, log2Ser2P )) + 
+  geom_point(alpha=0.8, size=1)  +
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+#trendline: y = 0.739x + 0.0332    (R^2 = 0.80)
+
+#calc expected y given trendline and X (Rpb1)
+SD_TTS_df$expected_Y <- (0.739*SD_TTS_df$log2Rpb1) + 0.0332
+
+#calc residual (actual - theoretical)
+SD_TTS_df$residual <- SD_TTS_df$log2Ser2P - SD_TTS_df$expected_Y
+
+#calc residual squared
+SD_TTS_df$residual_sq <- SD_TTS_df$residual^2
+
+#sum, count and RMSE
+res_sum <- sum(SD_TTS_df$residual_sq)
+num_count <- nrow(SD_TTS_df)
+RMSE <- (res_sum / num_count )^0.5
+
+#+2SD = expected_Y + (2*RMSE)
+SD_TTS_df$pos_2SD <- SD_TTS_df$expected_Y + (2*RMSE)
+#-2SD = expected_Y - (2*RMSE)
+SD_TTS_df$neg_2SD <- SD_TTS_df$expected_Y - (2*RMSE)
+
+#plot 2SD lines and get equations
+pos <- ggplot(SD_TTS_df, aes(log2Rpb1, pos_2SD )) + 
+  geom_point(alpha=0.8, size=1)  +
+  #xlim(c(0,35)) + ylim(c(0,35)) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+#y=0.715+0.739x R^2=1.0
+
+neg <- ggplot(SD_TTS_df, aes(log2Rpb1, neg_2SD )) + 
+  geom_point(alpha=0.8, size=1)  +
+  #xlim(c(0,35)) + ylim(c(0,35)) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+#y=-0.648+0.739x R^2=1.0
+
+
+#calc points above and below 2SD lines
+  #+2SD line: y=0.715+0.739x
+  #-2SD line: y=-0.648+0.739x
+#calc points outside of 2SDs
+SD_TTS_df$over_2SD <- SD_TTS_df$log2Ser2P > (0.739*SD_TTS_df$log2Rpb1 + 0.715) | SD_TTS_df$log2Ser2P < (0.739*SD_TTS_df$log2Rpb1 - 0.648)
+table(SD_TTS_df$over_2SD) #137 genes over 2SD out of ~2600
+
+#plot, color by outlier
+p <- ggplot(SD_TTS_df, aes(log2Rpb1, log2Ser2P, color = over_2SD, label = transcriptID) ) +
+  geom_point(alpha=0.8, size=1, show.legend = FALSE) + 
+  labs(title = "FC ChIP-seq reads TTS-5kb ds", x="log2 Pol II Fold Change in 5kb ds of TTS", y="log2 Ser2P Fold Change in 5kb ds of TTS")+
+  xlim(-5,5) + ylim(-5,5) +
+  scale_colour_manual(values=c("#666666", "#850f09")) +
+  geom_abline(color="gray40", lty=2, slope =  0.739, intercept =  0.715) + # +2SD line
+  geom_abline(color="gray40", lty=2, slope =  0.739, intercept =  -0.648) +  # -2SD line
+  geom_abline(color="black", slope =  0.739, intercept =  0.0332) + #fit line
+  annotation_custom(grobTree(textGrob("y = 0.739x + 0.0332    (R^2 = 0.80)", x=0.1,  y=0.9, hjust=0.15))) +
+  geom_abline(color="gray30",  slope =  1, intercept =  0) + #draw diag line
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)   #draw quadrents
+
+
+
+#save
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/TTS_scatterplots/2SD/trendline_2SD/log2_2SD_lines_Ser2P_vs_PolII_FC_scatterplot_plus_null_line.png", 500, 500)
+print(p)
+dev.off()
+
+
+
+#save 2SD df
+write_delim(SD_TTS_df, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/2SD_calc_df.tsv", delim = "\t", col_names = TRUE)
+
+```
+```{r investigating 2SD genes}
+#master df
+ChIP_genes_master_df <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/ChIP_analyzable_genes_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#select 2SD genes
+sig_genes <- filter(SD_TTS_df, SD_TTS_df$over_2SD == TRUE)
+#add if they're hyper Ser2P (above 2SD) or hypo Ser2P (below 2SD)
+hypo_ser2P_sig_genes <- filter(sig_genes, sig_genes$log2Ser2P < (0.739*sig_genes$log2Rpb1 - 0.648)) #92 genes
+hyper_ser2P_sig_genes <- filter(sig_genes, sig_genes$log2Ser2P > (0.739*sig_genes$log2Rpb1 + 0.715)) #45 genes
+92+45 == 137 #yep all genes
+
+temp_Ser2P_ls <- vector()
+i=1
+while (i<=nrow(sig_genes)) {
+  if (sig_genes$transcriptID[i] %in% hyper_ser2P_sig_genes$transcriptID == TRUE) {
+    temp_Ser2P_ls <- append(temp_Ser2P_ls, "hyper")
+  }
+  if (sig_genes$transcriptID[i] %in% hypo_ser2P_sig_genes$transcriptID == TRUE) {
+    temp_Ser2P_ls <- append(temp_Ser2P_ls, "hypo")
+  }
+  i=i+1
+}
+
+sig_genes$ser2P_cat <- temp_Ser2P_ls #looks like it worked spot checking that hypo genes log2Ser are below expected y and opposite for hyper
+
+#add other master_df info
+sig_genes <- left_join(sig_genes, ChIP_genes_master_df[c(1,14,17:26)], by = "transcriptID")
+
+#save sig_genes df
+write_delim(sig_genes, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/2SD_sig_genes_df.tsv", delim = "\t", col_names = TRUE)
+
+
+
+## ANALYSIS 
+
+###  1) term defect differences? ###
+#are genes outside 2SD more likely to be term defect genes?
+table(sig_genes$term_defect_final) #8 (5.8%) nd, 129 (94.2%) defect
+#vs all ChIP genes
+table(ChIP_genes_master_df$term_defect_final) #677 (16.9%) nd, 3325 (83.1%)  d
+## so sig_genes are somewhat enriched for defect genes
+
+#what about defect cat?
+table(sig_genes$defect_cat) 
+  #8 (5.8%) nd, 35 (25.5%) mod, 54 (39.4%) severe, 40 (29.2%) max
+#vs all ChIP genes
+table(ChIP_genes_master_df$defect_cat) 
+  #677 (16.9%) nd, 1014 (25.3%)  mod, 1189 (29.7%) sev, 1122 (28%) max
+## so the nd genes are shifted to severe for the sig_genes
+
+#plot % bar graphs
+#rows = term_defect_cat; cols = sig vs all
+num_plotting_df <- data.frame(cats = c("no defect", "moderate defect", "severe defect", "max defect"),all_genes = c(677, 1014, 1189, 1122), sig_genes = c(8, 35, 54, 40))
+#perc_plotting_df <- data.frame(all_genes = c(16.9, 25.3, 29.7, 28), sig_genes = c(5.8, 25.5, 39.4, 29.2))
+rownames(num_plotting_df) <- c("no defect", "moderate defect", "severe defect", "max defect")
+#need below format for ggplot
+perc_bar_plot_df <- data.frame(cat = c("no defect", "moderate defect", "severe defect", "max defect", 
+                   "no defect", "moderate defect", "severe defect", "max defect"), 
+           gene_list = c("all_genes","all_genes","all_genes","all_genes",
+                         "sig_genes", "sig_genes","sig_genes","sig_genes"), 
+           value = c(677, 1014, 1189, 1122,
+                     8, 35, 54, 40))
+perc_bar_plot_df$cat <- factor(perc_bar_plot_df$cat, levels = c("max defect", "severe defect", "moderate defect", "no defect"))
+
+ggplot(perc_bar_plot_df, aes(fill = cat, y=value, x=gene_list)) + 
+    geom_bar(position="fill", stat="identity")
+#saved from quartz
+
+#what about just hypo or just hyper Ser2P
+table(hypo_ser2P_sig_genes$defect_cat) #     max defect moderate defect       no defect   severe defect 
+                                       #             37              18               2              35  
+table(hyper_ser2P_sig_genes$defect_cat) #max defect moderate defect       no defect   severe defect 
+                                        #         3              17               6              19 
+table(ChIP_genes_master_df$defect_cat) #max defect moderate defect       no defect   severe defect 
+                                       #      1122            1014             677            1189 
+
+
+
+
+###  2) cleavage differences? ###
+table(sig_genes$cleaved_cat) #decreased   increased     no change 
+                             # 2 (1.5%)    50 (36.5%)    85 (62%)
+#vs all ChIP genes
+table(ChIP_genes_master_df$cleaved_cat) # NA              decreased       increased        no change 
+                                        # 100 (2.5%)      270 (6.7%)      1678 (41.9%)     1954 (48.8%)
+
+#plotting
+perc_bar_plot_df <- data.frame(cat = c("NA", "decreased", "increased", "no change", 
+                                       "NA", "decreased", "increased", "no change"), 
+                               gene_list = c("all_genes","all_genes","all_genes","all_genes",
+                                             "sig_genes", "sig_genes","sig_genes","sig_genes"), 
+                               value = c(100, 270, 1678, 1954,
+                                         0, 2, 50, 85))
+perc_bar_plot_df$cat <- factor(perc_bar_plot_df$cat, levels = c("increased", "no change", "decreased", "NA"))
+
+ggplot(perc_bar_plot_df, aes(fill = cat, y=value, x=gene_list)) + 
+    geom_bar(position="fill", stat="identity")
+
+#what about just hypo or just hyper Ser2P
+table(hypo_ser2P_sig_genes$cleaved_cat) #increased no change 
+                                        #    30        62 
+table(hyper_ser2P_sig_genes$cleaved_cat) #decreased increased no change 
+                                         #    2        20 (44%)       23 
+table(ChIP_genes_master_df$cleaved_cat) #"""NA""" decreased increased no change 
+                                        #   100      270(41%)      1678      1954 
+
+
+table(hypo_ser2P_sig_genes$DESeq_2fold_cat) 
+#activated no change repressed 
+#     16        73         3 
+table(hyper_ser2P_sig_genes$DESeq_2fold_cat)
+#activated no change repressed 
+    #11        27         7 
+table(ChIP_genes_master_df$DESeq_2fold_cat)
+#activated no change repressed 
+#      208      3059       735 
+##hyper ser2P has more act and more rep than hypo Ser2P genes
+
+
+## sig genes not really enriched for uncleaved genes or "enhanced" cleavage genes
+```
+
+What about 2SD from the null hypothesis line (slope of 1)
+```{r null 2SD}
+#dfs needed:
+TTS_FC_exp_plotting_df <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/TTS_Rpb1vsSer2P_plotting_DF.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+#make df to calc residuals
+null_SD_TTS_df <- TTS_FC_exp_plotting_df[1:3]
+null_SD_TTS_df$log2Rpb1 <- log2(null_SD_TTS_df$Rpb1)
+null_SD_TTS_df$log2Ser2P <- log2(null_SD_TTS_df$Ser2P)
+
+
+
+#null hypothesis line: y = 1x +0   (y=x)
+
+#calc expected y given trendline and X (Rpb1)
+null_SD_TTS_df$expected_Y <- (null_SD_TTS_df$log2Rpb1)
+
+#calc residual (actual - theoretical)
+null_SD_TTS_df$residual <- null_SD_TTS_df$log2Ser2P - null_SD_TTS_df$expected_Y
+
+#calc residual squared
+null_SD_TTS_df$residual_sq <- null_SD_TTS_df$residual^2
+
+#sum, count and RMSE
+res_sum <- sum(null_SD_TTS_df$residual_sq)
+num_count <- nrow(null_SD_TTS_df)
+RMSE <- (res_sum / num_count )^0.5
+
+#+2SD = expected_Y + (2*RMSE)
+null_SD_TTS_df$pos_2SD <- null_SD_TTS_df$expected_Y + (2*RMSE)
+#-2SD = expected_Y - (2*RMSE)
+null_SD_TTS_df$neg_2SD <- null_SD_TTS_df$expected_Y - (2*RMSE)
+
+#plot 2SD lines and get equations
+pos <- ggplot(null_SD_TTS_df, aes(log2Rpb1, pos_2SD )) + 
+  geom_point(alpha=0.8, size=1)  +
+  #xlim(c(0,35)) + ylim(c(0,35)) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+#y=0.926 + 1x R^2=1.0
+
+neg <- ggplot(null_SD_TTS_df, aes(log2Rpb1, neg_2SD )) + 
+  geom_point(alpha=0.8, size=1)  +
+  #xlim(c(0,35)) + ylim(c(0,35)) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+#y=-0.926 + 1x R^2=1.0
+
+
+#calc points above and below 2SD lines
+  #+2SD line: y=0.926 + 1x
+  #-2SD line: y=-0.926 + 1x
+#calc points outside of 2SDs
+null_SD_TTS_df$over_2SD <- null_SD_TTS_df$log2Ser2P > (1*null_SD_TTS_df$log2Rpb1 + 0.926) | null_SD_TTS_df$log2Ser2P < (1*null_SD_TTS_df$log2Rpb1 - 0.926)
+table(null_SD_TTS_df$over_2SD) #89 genes over 2SD out of ~2600
+
+#plot, color by outlier
+p <- ggplot(null_SD_TTS_df, aes(log2Rpb1, log2Ser2P, color = over_2SD, label = transcriptID) ) +
+  geom_point(alpha=0.8, size=1, show.legend = FALSE) + 
+  labs(title = "FC ChIP-seq reads TTS-5kb ds", x="log2 Pol II Fold Change in 5kb ds of TTS", y="log2 Ser2P Fold Change in 5kb ds of TTS")+
+  xlim(-5,5) + ylim(-5,5) +
+  scale_colour_manual(values=c("#666666", "#850f09")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0.926) + # +2SD line
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  -0.926) +  # -2SD line
+  geom_abline(color="black", slope =  1, intercept =  0) + #fit line
+  annotation_custom(grobTree(textGrob("y = x", x=0.1,  y=0.9, hjust=0.15))) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)   #draw quadrents
+
+
+
+#save
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/TTS_scatterplots/2SD/null_hypothesis_2SD/log2_null_2SD_lines_Ser2P_vs_PolII_FC_scatterplot.png", 500, 500)
+print(p)
+dev.off()
+
+
+
+#save 2SD df
+write_delim(null_SD_TTS_df, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/null_2SD_calc_df.tsv", delim = "\t", col_names = TRUE)
+
+```
+```{r investigating null 2SD genes}
+#select 2SD genes
+null_sig_genes <- filter(null_SD_TTS_df, null_SD_TTS_df$over_2SD == TRUE) #89 genes
+#add if they're hyper Ser2P (above 2SD) or hypo Ser2P (below 2SD)
+null_hypo_ser2P_sig_genes <- filter(null_sig_genes, null_sig_genes$log2Ser2P < (1*null_sig_genes$log2Rpb1 - 0.926)) #39 genes
+null_hyper_ser2P_sig_genes <- filter(null_sig_genes, null_sig_genes$log2Ser2P > (1*null_sig_genes$log2Rpb1 + 0.926) ) #50 genes
+50+39 == 89 #yep all genes
+
+temp_Ser2P_ls <- vector()
+i=1
+while (i<=nrow(null_sig_genes)) {
+  if (null_sig_genes$transcriptID[i] %in% null_hyper_ser2P_sig_genes$transcriptID == TRUE) {
+    temp_Ser2P_ls <- append(temp_Ser2P_ls, "hyper")
+  }
+  if (null_sig_genes$transcriptID[i] %in% null_hypo_ser2P_sig_genes$transcriptID == TRUE) {
+    temp_Ser2P_ls <- append(temp_Ser2P_ls, "hypo")
+  }
+  i=i+1
+}
+
+null_sig_genes$ser2P_cat <- temp_Ser2P_ls #looks like it worked spot checking that hypo genes log2Ser are below expected y and opposite for hyper
+
+#add other master_df info
+null_sig_genes <- left_join(null_sig_genes, ChIP_genes_master_df[c(1,14,17:26)], by = "transcriptID")
+
+#save sig_genes df
+write_delim(null_sig_genes, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/null_2SD_sig_genes_df.tsv", delim = "\t", col_names = TRUE)
+
+
+### ANALYSIS ###
+##term defect cat
+table(null_hypo_ser2P_sig_genes$defect_cat) 
+#     max defect moderate defect       no defect   severe defect 
+#              8              11               1              19 
+table(null_hyper_ser2P_sig_genes$defect_cat)
+#     max defect moderate defect       no defect   severe defect 
+#             11              14               7              18 
+table(ChIP_genes_master_df$defect_cat)
+#     max defect moderate defect       no defect   severe defect 
+#           1122            1014             677            1189 
+
+## cleavage cat
+table(null_hypo_ser2P_sig_genes$cleaved_cat) 
+#increased no change 
+#       20        19 
+table(null_hyper_ser2P_sig_genes$cleaved_cat)
+# """NA""" decreased increased no change 
+#        1         4        21        24 
+table(ChIP_genes_master_df$cleaved_cat)
+# """NA""" decreased increased no change 
+#      100       270      1678      1954 
+
+## act/rep
+table(null_hypo_ser2P_sig_genes$DESeq_2fold_cat) 
+#activated no change repressed 
+#     24        15         0 
+table(null_hyper_ser2P_sig_genes$DESeq_2fold_cat)
+#activated no change repressed 
+    #0        32         18 
+table(ChIP_genes_master_df$DESeq_2fold_cat)
+#activated no change repressed 
+#      208      3059       735 
+
+#  **see excel sheet for graphs and further analysis**
+#    "07f/figures/tts_scatterplots/2SD/investigating_2SD_genes_from_Ser2PvPolIIscatterplot"
+```
+What about 1SD?
+```{r 1SD from null hypothesis (x=y)}
+#use same table as 2SD just add 1SD col
+
+#+1SD = expected_Y + (1*RMSE)
+null_SD_TTS_df$pos_1SD <- null_SD_TTS_df$expected_Y + (1*RMSE)
+#-1SD = expected_Y - (1*RMSE)
+null_SD_TTS_df$neg_1SD <- null_SD_TTS_df$expected_Y - (1*RMSE)
+
+#plot 1SD lines and get equations
+pos <- ggplot(null_SD_TTS_df, aes(log2Rpb1, pos_1SD )) + 
+  geom_point(alpha=0.8, size=1)  +
+  #xlim(c(0,35)) + ylim(c(0,35)) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+#y=0.463 + 1x R^2=1.0
+
+neg <- ggplot(null_SD_TTS_df, aes(log2Rpb1, neg_1SD )) + 
+  geom_point(alpha=0.8, size=1)  +
+  #xlim(c(0,35)) + ylim(c(0,35)) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+#y=-0.463 + 1x R^2=1.0
+
+
+#calc points above and below 1SD lines
+  #+1SD line: y=0.463 + 1x
+  #-1SD line: y=-0.463 + 1x
+#calc points outside of 1SD
+null_SD_TTS_df$over_1SD <- null_SD_TTS_df$log2Ser2P > (1*null_SD_TTS_df$log2Rpb1 + 0.463) | null_SD_TTS_df$log2Ser2P < (1*null_SD_TTS_df$log2Rpb1 - 0.463)
+table(null_SD_TTS_df$over_1SD) #858 genes over 2SD out of ~2600
+
+#plot, color by outlier
+p <- ggplot(null_SD_TTS_df, aes(log2Rpb1, log2Ser2P, color = over_1SD, label = transcriptID) ) +
+  geom_point(alpha=0.8, size=1, show.legend = FALSE) + 
+  labs(title = "FC ChIP-seq reads TTS-5kb ds", x="log2 Pol II Fold Change in 5kb ds of TTS", y="log2 Ser2P Fold Change in 5kb ds of TTS")+
+  xlim(-5,5) + ylim(-5,5) +
+  scale_colour_manual(values=c("#666666", "#850f09")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0.463) + # +2SD line
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  -0.463) +  # -2SD line
+  geom_abline(color="black", slope =  1, intercept =  0) + #fit line
+  annotation_custom(grobTree(textGrob("y = x", x=0.1,  y=0.9, hjust=0.15))) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)   #draw quadrents
+
+
+
+#save
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/TTS_scatterplots/1SD/null_hypothesis/log2_null_1SD_lines_Ser2P_vs_PolII_FC_scatterplot.png", 500, 500)
+print(p)
+dev.off()
+
+
+
+#save 2SD/1SD df
+write_delim(null_SD_TTS_df, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/null_2SD_calc_df.tsv", delim = "\t", col_names = TRUE)
+
+
+```
+
+what about 1.5?
+```{r 1.5SD from null hypothesis (x=y)}
+#use same table as 2SD just add 1.5SD col
+
+#+1SD = expected_Y + (1*RMSE)
+null_SD_TTS_df$pos_15SD <- null_SD_TTS_df$expected_Y + (1.5*RMSE)
+#-1SD = expected_Y - (1*RMSE)
+null_SD_TTS_df$neg_15SD <- null_SD_TTS_df$expected_Y - (1.5*RMSE)
+
+#plot 1SD lines and get equations
+pos <- ggplot(null_SD_TTS_df, aes(log2Rpb1, pos_15SD )) + 
+  geom_point(alpha=0.8, size=1)  +
+  #xlim(c(0,35)) + ylim(c(0,35)) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+#y=0.694 + 1x R^2=1.0
+
+neg <- ggplot(null_SD_TTS_df, aes(log2Rpb1, neg_15SD )) + 
+  geom_point(alpha=0.8, size=1)  +
+  #xlim(c(0,35)) + ylim(c(0,35)) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+#y=-0.694 + 1x R^2=1.0
+
+
+#calc points above and below 1SD lines
+  #+1.5SD line: y=0.694 + 1x
+  #-1.5SD line: y=-0.694 + 1x
+#calc points outside of 1SD
+null_SD_TTS_df$over_15SD <- null_SD_TTS_df$log2Ser2P > (1*null_SD_TTS_df$log2Rpb1 + 0.694) | null_SD_TTS_df$log2Ser2P < (1*null_SD_TTS_df$log2Rpb1 - 0.694)
+table(null_SD_TTS_df$over_15SD) #327 genes over 1.5 SD out of ~2600 (2SD 89 (3%), 1.5 SD 327 (12%), 1SD 858 (33%) genes)
+
+#plot, color by outlier
+p <- ggplot(null_SD_TTS_df, aes(log2Rpb1, log2Ser2P, color = over_15SD, label = transcriptID) ) + 
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) + #draw quadrents
+  geom_point(alpha=0.8, size=1, show.legend = FALSE) +
+  labs(title = "FC ChIP-seq reads TTS-5kb ds", x="log2 Pol II Fold Change in 5kb ds of TTS", y="log2 Ser2P Fold Change in 5kb ds of TTS")+
+  xlim(-5,5) + ylim(-5,5) +
+  scale_colour_manual(values=c("#666666", "#850f09")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0.463) + # +2SD line
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  -0.463) +  # -2SD line
+  geom_abline(color="black", slope =  1, intercept =  0) + #fit line
+  annotation_custom(grobTree(textGrob("y = x", x=0.1,  y=0.9, hjust=0.15))) 
+
+  
+
+
+
+#save
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/TTS_scatterplots/1p5SD/log2_null_1p5SD_lines_Ser2P_vs_PolII_FC_scatterplot_fun_size.png", 500, 500)
+print(p)
+dev.off()
+
+
+
+#save null SD df
+write_delim(null_SD_TTS_df, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/null_all_SD_calc_df.tsv", delim = "\t", col_names = TRUE)
+
+```
+investigating 1.5 SD genes
+  **using 1.5 SD moving forward since it gives around top 10% and enough genes to analyze more confidently**
+```{r analyzing 1.5SD genes}
+#data table for SD genes
+null_SD_TTS_df
+
+#make DF for just sig genes and the rest
+null_sig_genes_15SD_TTS <- filter(null_SD_TTS_df, null_SD_TTS_df$over_15SD == TRUE)
+rest_not_sig_genes <- filter(null_SD_TTS_df, !(null_SD_TTS_df$over_15SD == TRUE) )
+
+#make hypo and hyper sig genes
+null_hypo_ser2P_sig_genes_1p5 <- filter(null_SD_TTS_df, null_SD_TTS_df$log2Ser2P < (1*null_SD_TTS_df$log2Rpb1 - 0.694)) # genes
+null_hyper_ser2P_sig_genes_1p5 <- filter(null_SD_TTS_df, null_SD_TTS_df$log2Ser2P > (1*null_SD_TTS_df$log2Rpb1 + 0.694) ) # genes
+
+
+#now pull data I actually need for plotting
+  #geneID, defect length, defect cat, NHS.1kb RT length, NHS term cat, gnbd log2 FC, gnbd DESeq 2-fold cat, uncleaved reads cat (don't have uncleaved reads numbers so will pull from another df)
+#master_df[c(1,17,14,10,20,22,25,26)]
+investigating_null_sig_genes_15SD <- left_join(null_sig_genes_15SD_TTS[c(1:5,17)], master_df[c(1,17,14,10,20,22,25,26)], by = "transcriptID")
+investigating_null_rest_genes_15SD <- left_join(rest_not_sig_genes[c(1:5,17)], master_df[c(1,17,14,10,20,22,25,26)], by = "transcriptID")
+investigating_null_hypo_ser2P_15SD <- left_join(null_hypo_ser2P_sig_genes_1p5[c(1:5,17)], master_df[c(1,17,14,10,20,22,25,26)], by = "transcriptID")
+investigating_null_hyper_ser2P_15SD<- left_join(null_hyper_ser2P_sig_genes_1p5[c(1:5,17)], master_df[c(1,17,14,10,20,22,25,26)], by = "transcriptID")
+
+#pull uncleaved reads numbers...
+  #this is uncleaved reads norm to exon RPK for each rep, not by FC
+  #uncleaved_d_exon <- read.table("/Users/goodrichlab/Desktop/Katy/investigating_leaky_term_genes/01_cleavage_dfs/uncleaved_count_div_exon_RPK.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#using this one where uncleaved read FC norm to gnbd FC from DESeq
+uncleaved_reads_FC_norm <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/exp_avg_norm_uncleaved_counts.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+j_df <- uncleaved_reads_FC_norm[c(1,5)]
+colnames(j_df) <- c("transcriptID", "uncleaved_reads_FC_norm")
+
+investigating_null_sig_genes_15SD <- left_join(investigating_null_sig_genes_15SD, j_df)
+investigating_null_rest_genes_15SD <- left_join(investigating_null_rest_genes_15SD, j_df)
+investigating_null_hypo_ser2P_15SD <- left_join(investigating_null_hypo_ser2P_15SD, j_df)
+investigating_null_hyper_ser2P_15SD <- left_join(investigating_null_hyper_ser2P_15SD, j_df)
+
+#save DFs
+write_delim(investigating_null_sig_genes_15SD, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/SD_dfs/1p5_SD_null_sig_genes_info.tsv", delim = "\t", col_names = TRUE)
+write_delim(investigating_null_rest_genes_15SD, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/SD_dfs/1p5_SD_null_rest_genes_info.tsv", delim = "\t", col_names = TRUE)
+write_delim(investigating_null_hypo_ser2P_15SD, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/SD_dfs/1p5_SD_null_hypo_sig_genes_info.tsv", delim = "\t", col_names = TRUE)
+write_delim(investigating_null_hyper_ser2P_15SD, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/SD_dfs/1p5_SD_null_hyper_sig_genes_info.tsv", delim = "\t", col_names = TRUE)
+
+
+
+#now have DFs, lets look into patterns
+  #boxplot defect length for each cat
+#need to make df with all values then col with hyper, hypo, not sig
+
+
+b <- ggplot(act_rep_bp_TTS_df, aes(y=Ser2PdPolII, x=DESeq_2fold_cat, color = DESeq_2fold_cat ) ) +
+  geom_boxplot(width=0.5, outlier.shape = 16) + 
+  #coord_cartesian(ylim = c(sts[2]/2,max(sts)*1.05)) +
+  ylab("Fold change in Ser2P Pol II / total Pol II") + 
+  ggtitle("Ser2P / Pol II by RNA expression category") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13), legend.position="none", axis.text.x = element_text(angle = -45, vjust=1, hjust = 0)) +
+  scale_colour_manual(values=c("#db6b16", "#696969", "#274bdb"))  
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+scatterplots - FC uncleaved vs FC Ser2P / PolII
+```{r uncleaved vs Ser2P/PolII}
+#pull Ser2P / Pol II from "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/plotting_dfs/boxplot_TTS_df.tsv"
+  #don't need to norm to gnbd change in txn because should just be seeing Ser2P change
+bp_TTS_df <- read.table("Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/plotting_dfs/boxplot_TTS_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#pull FC in uncleaved reads from "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/categories_exp_avg_norm_uncleaved_counts.tsv"
+  #already norm to gnbd change
+uncleaved_4sU_TTS_reads <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/categories_exp_avg_norm_uncleaved_counts.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+colnames(uncleaved_4sU_TTS_reads) <- c( "transcriptID", colnames(uncleaved_4sU_TTS_reads[2:10]))
+
+
+
+#make plotting df
+plotting_df <- left_join(bp_TTS_df[1:2], uncleaved_4sU_TTS_reads[c(1,5)], by = "transcriptID")
+plotting_df <- left_join(plotting_df, ChIP_genes_master_df[c(1,26)], by = "transcriptID")
+
+
+#scatterplot, color by uncleaved cats
+p <- ggplot(plotting_df, aes(log2(Ser2PdPolII), log2(gnbd_norm_FC), color = cleaved_cat  )) + 
+  geom_point(alpha=0.8, size=1 ) +  #show.legend = FALSE
+  #xlim(c(-5,5)) + ylim(c(-5,5)) +
+  #scale_colour_manual(values=c("#b52d0e","#e3bc68", "#273ba3")) + #"#b52d0e","#e3bc68", "#273ba3"
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +  #draw quadrents
+  labs(title = "TTS to 5kb ds fold change", subtitle = "no change in uncleaved 4sU RNA reads") +
+  xlab("Ser2P / Pol II") + ylab("log2 FC uncleaved 4sU reads accross TTS")
+  #geom_smooth(method='lm', color = "#262626") +
+  #stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+  #             formula = y ~ x, parse = TRUE, size = 4)
+
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/TTS_scatterplots/Ser2PdPolII_vs_FC_uncleaved_reads.png", 500, 500)
+print(p)
+dev.off()
+
+
+
+
+```
+
+
+Ser2P / Pol II FC vs gene length
+```{r}
+#using exp_FC_TTS_df$Ser2PdPolII_avg made in start of section 3 because I'm running this after making boxplots
+#fold change in Ser2P / PolII
+this_scatterplot_df <- left_join(exp_FC_TTS_df[c(1,10)], ChIP_genes_master_df[c(1,19)], by = "transcriptID")
+this_scatterplot_df <- column_to_rownames(this_scatterplot_df, var = "transcriptID")
+
+#scatterplot, color by uncleaved cats
+p <- ggplot(this_scatterplot_df, aes(log2(Ser2PdPolII_avg), gene_length  )) + 
+  geom_point(alpha=0.8, size=1 ) +  #show.legend = FALSE
+  xlab("Ser2P / Pol II") + ylab("gene length")
+  
+  #xlim(c(-5,5)) + ylim(c(-5,5)) +
+  #scale_colour_manual(values=c("#b52d0e","#e3bc68", "#273ba3")) + #"#b52d0e","#e3bc68", "#273ba3"
+  #labs(title = "TTS to 5kb ds fold change", subtitle = "no change in uncleaved 4sU RNA reads") +
+  #geom_smooth(method='lm', color = "#262626") +
+  #stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+  #             formula = y ~ x, parse = TRUE, size = 4)
+
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/gene_length_scatterplots/FC_log2_Ser2PdPolII_vs_gene_length.png", 500, 500)
+print(p)
+dev.off()
+
+#what about just do longer genes have more Ser2P in NHS?
+  #need RPK for Ser2P and Rpb1 (calc Ser2P RPK norm to Rpb1 RPK and just Ser2P RPK)
+  #using TTS df to see if more Ser2P accumulates by the end of the gene, ideally would use last 1kb of the gene or something but that would require re-counting
+new_RPK_TTS_df <- rownames_to_column(exp_RPK_TTS_df) 
+colnames(new_RPK_TTS_df) <- c("transcriptID", colnames(new_RPK_TTS_df[2:10]))
+new_this_df <- left_join(new_RPK_TTS_df[c(1,2,3,4,7,8)], ChIP_genes_master_df[c(1,19)], by = "transcriptID")
+new_this_df$Ser2P_NHS_RPK_avg <- rowMeans(new_this_df[c(5,6)])
+new_this_df$Ser2PdPolII_NHS_RPK_avg <- (new_this_df$Ser2P_NHS_R6 / new_this_df$Rpb1_NHS_R6) + 
+                                (new_this_df$Ser2P_NHS_R8 / new_this_df$Rpb1_NHS_R8) /2
+
+p <- ggplot(new_this_df, aes(gene_length, Ser2P_NHS_RPK_avg  )) + 
+  geom_point(alpha=0.8, size=1 ) +  #show.legend = FALSE
+  ylab("TTS NHS Ser2P RPK") + xlab("gene length") +
+  labs(title = "NHS Ser2P 0-5kb ds RPK", subtitle = "longer genes don't accumulate more Ser2P by the TTS window")
+
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/gene_length_scatterplots/Ser2P_NHS_RPK_TTS_window.png", 500, 500)
+print(p)
+dev.off()
+
+p <- ggplot(new_this_df, aes(gene_length, Ser2PdPolII_NHS_RPK_avg  )) + 
+  geom_point(alpha=0.8, size=1 ) +  #show.legend = FALSE
+  ylab("TTS NHS Ser2P / PolII RPK") + xlab("gene length") +
+  labs(title = "Ser2P norm to Pol II - NHS 0-5kb ds RPK", subtitle = "longer genes don't accumulate more Ser2P by the TTS window")
+  
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/gene_length_scatterplots/Ser2PdPolII_NHS_RPK_TTS_window.png", 500, 500)
+print(p)
+dev.off()
+
+#input
+p <- ggplot(new_this_df, aes(gene_length, input  )) + 
+  geom_point(alpha=0.8, size=1 ) +  #show.legend = FALSE
+  ylab("input RPK") + xlab("gene length") +
+  labs(title = "input 0-5kb ds RPK")
+
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/gene_length_scatterplots/input_RPK_TTS_window.png", 500, 500)
+print(p)
+dev.off()
+
+```
+
+
+----------------------------
+(end 2)
+
+
+
+
+
+3. Box plots 
+----------------------------------
+
+boxplot of Ser2P / Pol II ratio - TTS to 5kb ds
+```{r Ser2P / Pol II}
+#R6 Ser2P / R6 Pol II, repeat for R8, then avg
+exp_FC_TTS_df$Ser2PdPolII_R6 <- exp_FC_TTS_df$Ser2P_R6 / exp_FC_TTS_df$Rpb1_R6 
+exp_FC_TTS_df$Ser2PdPolII_R8 <- exp_FC_TTS_df$Ser2P_R8 / exp_FC_TTS_df$Rpb1_R8
+exp_FC_TTS_df$Ser2PdPolII_avg <- (exp_FC_TTS_df$Ser2PdPolII_R6 + exp_FC_TTS_df$Ser2PdPolII_R8) /2
+#is this different than Ser2P avg / PolII avg?
+exp_FC_TTS_df$test_avg_order <- exp_FC_TTS_df$Ser2P_avg / exp_FC_TTS_df$Rpb1_avg
+#yes but fairly similar
+
+bp_TTS_df <- data.frame(transcriptID = exp_FC_TTS_df$transcriptID,
+                    Ser2PdPolII = exp_FC_TTS_df$Ser2PdPolII_avg )
+
+
+#add categories
+bp_TTS_df <- left_join(bp_TTS_df, ChIP_genes_master_df[c(1,14,18,20,21,25,26)], by = "transcriptID") #2717 genes
+#remove longRT genes
+bp_TTS_df <- filter(bp_TTS_df, bp_TTS_df$longRT == FALSE) #120 long RT genes removed
+#bp_TTS_df <- column_to_rownames(bp_TTS_df, var = "transcriptID")
+
+#save bp_TTS_df
+write_delim(bp_TTS_df, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/plotting_dfs/boxplot_TTS_df.tsv", delim = "\t", col_names = TRUE)
+bp_TTS_df <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/plotting_dfs/boxplot_TTS_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+
+#how many genes have increased Ser2P / Pol II (<1.5)?
+nrow( filter(bp_TTS_df, bp_TTS_df$Ser2PdPolII > 1.5) ) #570 / 2597 = ~20%
+nrow( filter(bp_TTS_df, bp_TTS_df$Ser2PdPolII > 1.25) ) #1278 / 2597 = ~50%
+
+#less than 0.5?
+nrow( filter(bp_TTS_df, bp_TTS_df$Ser2PdPolII <0.5) ) #28 / 2597 = ~1%
+nrow( filter(bp_TTS_df, bp_TTS_df$Ser2PdPolII <0.75) ) #160 / 2597 = ~6%
+
+
+#select categories for plotting
+  ###act and rep
+act_rep_bp_TTS_df <- bp_TTS_df[c(2,7)]
+
+#factor for order
+act_rep_bp_TTS_df$DESeq_2fold_cat <- factor(act_rep_bp_TTS_df$DESeq_2fold_cat, c("repressed", "no change", "activated") )
+
+
+#make boxplots
+b <- ggplot(act_rep_bp_TTS_df, aes(y=Ser2PdPolII, x=DESeq_2fold_cat, color = DESeq_2fold_cat ) ) +
+  geom_boxplot(width=0.5, outlier.shape = 16) + 
+  #coord_cartesian(ylim = c(sts[2]/2,max(sts)*1.05)) +
+  ylab("Fold change in Ser2P Pol II / total Pol II") + 
+  ggtitle("Ser2P / Pol II by RNA expression category") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13), legend.position="none", axis.text.x = element_text(angle = -45, vjust=1, hjust = 0)) +
+  scale_colour_manual(values=c("#db6b16", "#696969", "#274bdb"))  
+
+#save
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/TTS_boxplots/Ser2PdPolII_act_nc_rep_boxplot.png", 500, 500)
+print(b)
+dev.off()
+
+#stats
+act_stats <- filter(act_rep_bp_TTS_df, DESeq_2fold_cat == "activated")
+ar_nc_stats = filter(act_rep_bp_TTS_df, DESeq_2fold_cat == "no change")
+rep_stats = filter(act_rep_bp_TTS_df, DESeq_2fold_cat == "repressed")
+
+#act vs rep
+res <- wilcox.test(as.numeric(act_stats[,1]), as.numeric(rep_stats[,1]) )
+res$p.value #4.541979e-52
+#act vs nc
+res <- wilcox.test(as.numeric(act_stats[,1]), as.numeric(ar_nc_stats[,1]) )
+res$p.value #2.067828e-45
+#rep vs nc
+res <- wilcox.test(as.numeric(ar_nc_stats[,1]), as.numeric(rep_stats[,1]) )
+res$p.value #2.483966e-27
+
+
+
+
+  ###cleaved or uncleaved
+cleavage_bp_TTS_df <- bp_TTS_df[c(2,8)]
+#factor for order
+cleavage_bp_TTS_df$cleaved_cat <- factor(cleavage_bp_TTS_df$cleaved_cat, c('"NA"', "decreased","no change", "increased") )
+
+#for inc and dec only
+cleavage_bp_TTS_df_filtered <- filter(cleavage_bp_TTS_df, cleavage_bp_TTS_df$cleaved_cat == "decreased" | cleavage_bp_TTS_df$cleaved_cat == "increased")
+
+#make boxplots
+b <- ggplot(cleavage_bp_TTS_df, aes(y=Ser2PdPolII, x=cleaved_cat, color = cleaved_cat ) ) +
+  geom_boxplot(width=0.5, outlier.shape = 16) + 
+  coord_cartesian(ylim = c(0,3)) +
+  ylab("Fold change in Ser2P Pol II / total Pol II") + 
+  ggtitle("Ser2P / Pol II by category of RNA uncleaved reads across TTS") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13), legend.position="none", axis.text.x = element_text(angle = -45, vjust=1, hjust = 0)) +
+  scale_colour_manual(values=c("#696969","#b52d0e","#e3bc68", "#273ba3")) #"#696969","#b52d0e","#e3bc68", "#273ba3"
+
+#save
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/TTS_boxplots/Ser2PdPolII_all_cleavage_boxplot.png", 500, 500)
+print(b)
+dev.off()
+
+
+#stats
+inc_stats <- filter(cleavage_bp_TTS_df, cleaved_cat == "increased")
+nc_stats = filter(cleavage_bp_TTS_df, cleaved_cat == "no change")
+dec_stats = filter(cleavage_bp_TTS_df, cleaved_cat == "decreased")
+
+#inc vs dec
+res <- wilcox.test(as.numeric(inc_stats[,1]), as.numeric(dec_stats[,1]) )
+res$p.value #3.315133e-37
+#inc vs nc
+res <- wilcox.test(as.numeric(inc_stats[,1]), as.numeric(nc_stats[,1]) )
+res$p.value #1.525021e-44
+#dec vs nc
+res <- wilcox.test(as.numeric(nc_stats[,1]), as.numeric(dec_stats[,1]) )
+res$p.value #7.392588e-07
+
+
+
+
+  ###sharp vs leaky
+nhs_term_bp_TTS_df <- bp_TTS_df[c(2,5)]
+#factor for order
+#nhs_term_bp_TTS_df$cat_NHS_term <- factor(nhs_term_bp_TTS_df$cat_NHS_term, c("sharp","leaky") )
+
+
+#make boxplots
+b <- ggplot(nhs_term_bp_TTS_df, aes(y=Ser2PdPolII, x=cat_NHS_term, color = cat_NHS_term ) ) +
+  geom_boxplot(width=0.5, outlier.shape = 16) + 
+  coord_cartesian(ylim = c(0,3)) +
+  ylab("Fold change in Ser2P Pol II / total Pol II") + 
+  ggtitle("Ser2P / Pol II by category of RNA uncleaved reads across TTS") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13), legend.position="none", axis.text.x = element_text(angle = -45, vjust=1, hjust = 0)) +
+  scale_colour_manual(values=c("#a1024e", "#02bdad")) 
+
+#save
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/TTS_boxplots/Ser2PdPolII_sharp_leaky_boxplot.png", 400, 500)
+print(b)
+dev.off()
+
+
+#stats
+leaky_stats <- filter(nhs_term_bp_TTS_df, cat_NHS_term == "leaky")
+sharp_stats = filter(nhs_term_bp_TTS_df, cat_NHS_term == "sharp")
+
+
+#leaky vs sharp
+res <- wilcox.test(as.numeric(leaky_stats[,1]), as.numeric(sharp_stats[,1]) )
+res$p.value #1.529672e-50
+
+
+
+
+
+  ###defect cat
+defect_bp_TTS_df <- bp_TTS_df[c(2,6)]
+#factor for order
+defect_bp_TTS_df$defect_cat <- factor(defect_bp_TTS_df$defect_cat, c("no defect", "moderate defect","severe defect", "max defect") )
+
+
+#make boxplots
+b <- ggplot(defect_bp_TTS_df, aes(y=Ser2PdPolII, x=defect_cat, color = defect_cat ) ) +
+  geom_boxplot(width=0.75, outlier.shape = 16) + 
+  coord_cartesian(ylim = c(0,3.5)) +
+  ylab("Fold change in Ser2P Pol II / total Pol II") + 
+  ggtitle("Ser2P / Pol II by category of RNA uncleaved reads across TTS") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13), legend.position="none", axis.text.x = element_text(angle = -45, vjust=1, hjust = 0)) +
+  scale_colour_manual(values=c("#696969", "#fa794d", "#f74e14", "#ab2d02")) 
+
+#save
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/TTS_boxplots/Ser2PdPolII_term_defect_cat_boxplot.png", 400, 500)
+print(b)
+dev.off()
+
+
+#stats
+nd_stats <- filter(defect_bp_TTS_df, defect_cat == "no defect")
+md_stats = filter(defect_bp_TTS_df, defect_cat == "moderate defect")
+sd_stats = filter(defect_bp_TTS_df, defect_cat == "severe defect")
+xd_stats = filter(defect_bp_TTS_df, defect_cat == "max defect")
+all_d_stats = filter(defect_bp_TTS_df, !(defect_cat == "no defect") )
+
+#nd vs mod
+res <- wilcox.test(as.numeric(nd_stats[,1]), as.numeric(md_stats[,1]) )
+res$p.value #0.0009451932
+#nd vs severe
+res <- wilcox.test(as.numeric(nd_stats[,1]), as.numeric(sd_stats[,1]) )
+res$p.value #9.845443e-05
+#nd vs max
+res <- wilcox.test(as.numeric(nd_stats[,1]), as.numeric(xd_stats[,1]) )
+res$p.value #0.008587171
+#mod vs severe
+res <- wilcox.test(as.numeric(md_stats[,1]), as.numeric(sd_stats[,1]) )
+res$p.value #0.5971525
+#mod vs max
+res <- wilcox.test(as.numeric(md_stats[,1]), as.numeric(xd_stats[,1]) )
+res$p.value #0.1352938
+#max vs severe
+res <- wilcox.test(as.numeric(sd_stats[,1]), as.numeric(xd_stats[,1]) )
+res$p.value #0.02605046
+#nd vs all defect genes
+res <- wilcox.test(as.numeric(nd_stats[,1]), as.numeric(all_d_stats[,1]) )
+res$p.value #0.0003783582
+
+
+library(stats)
+library(ggpubr)
+pairwise.wilcox.test(defect_bp_TTS_df$Ser2PdPolII, defect_bp_TTS_df$defect_cat, p.adjust.method = "bonferroni")
+?pairwise.wilcox.test
+```
+
+rpk - gnbd vs TTS vs far ds - NHS and HS - Ser2P / Pol II
+```{r RPK Ser2P d Pol II gnbd vs TTS vs ds}
+
+
+```
+
+
+
+Ser2P / Pol II categories
+  then plot FC cleavage on y axis
+```{r cleavage FC boxplot}
+#read-in FC in cleavage df
+cat_exp_avg_uncleaved_counts_df <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07h_counting_4sU_reads_over_cleavage_site/uncleaved_reads_data_analysis/categories_exp_avg_norm_uncleaved_counts.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#filter for ChIP genes in TTS df
+uncleaved_counts_df <- filter(cat_exp_avg_uncleaved_counts_df[,c(1,5)], cat_exp_avg_uncleaved_counts_df$gene_IDs %in% exp_FC_TTS_df$transcriptID) #USE GNBD NORM FC
+colnames(uncleaved_counts_df) <- c("transcriptID", "uncleaved_reads_FC")
+
+uncleaved_counts_df <- left_join(uncleaved_counts_df, exp_FC_TTS_df[c(1,10)]) #add Ser2PdPolII_avg to uncleaved counts df
+
+#cat Ser2P FC (1.5-fold cuttoff, *2-fold only had 30 decreased and 50 increased) 
+uncleaved_counts_df$cat_Ser2P <- "test"
+i=1
+while (i<=nrow(uncleaved_counts_df)) {
+  if (is.na(uncleaved_counts_df$Ser2PdPolII_avg[i]) ) {
+    uncleaved_counts_df$cat_Ser2P[i] <- NA
+  } else if (uncleaved_counts_df$Ser2PdPolII_avg[i] >= 1.5) {
+  uncleaved_counts_df$cat_Ser2P[i] <- "increased"
+} else if (uncleaved_counts_df$Ser2PdPolII_avg[i] <= 0.75) {
+    uncleaved_counts_df$cat_Ser2P[i] <- "decreased"
+} else{    
+  uncleaved_counts_df$cat_Ser2P[i] <- "no change"
+}
+  i=i+1
+}
+table(uncleaved_counts_df$cat_Ser2P)
+#   decreased   increased   no change 
+#      164         615        1938 
+write_delim(uncleaved_counts_df, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/plotting_dfs/uncleaved_FC_and_Ser2PdPolII_cat.tsv", delim = "\t", col_names = TRUE)
+
+
+
+#boxplot with Ser2P cat on the x and FC uncleaved reads on y
+Ser2P_cleavage_plotting_df <- data.frame(uncleaved_reads_FC = uncleaved_counts_df$uncleaved_reads_FC, 
+                                         cat_Ser2P = uncleaved_counts_df$cat_Ser2P)
+Ser2P_cleavage_plotting_df$cat_Ser2P <- factor(Ser2P_cleavage_plotting_df$cat_Ser2P, levels = c("decreased", "no change", "increased"))
+
+b <- ggplot(Ser2P_cleavage_plotting_df, aes(y=log2(uncleaved_reads_FC), x=cat_Ser2P, color = cat_Ser2P ) ) +
+  geom_boxplot(width=0.5, outlier.shape = 16) + 
+  #coord_cartesian(ylim = c(sts[2]/2,max(sts)*1.05)) +
+  ylab("Fold change in uncleaved reads across the TTS norm to gnbd FC (log2)") + 
+  ggtitle("FC in uncleaved RNA reads accross the TTS by change in Ser2P/PolII") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13), legend.position="none", axis.text.x = element_text(angle = -45, vjust=1, hjust = 0)) +
+  scale_colour_manual(values=c("#886d99", "#696969", "#51127a"))  
+
+#save
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/TTS_boxplots/FC_uncleaved_reads_by_Ser2PdPolII_cat_boxplot_log2.png", 500, 500)
+print(b)
+dev.off()
+
+```
+
+
+
+Do all genes lose 3'Peak?
+  Rpb1 FC TTS boxplot
+```{r TTS Rpb1 FC boxplot}
+#TTS Rpb1 df
+exp_FC_TTS_df
+#norm to gnbd FC
+exp_FC_gnbd_df
+
+#different number of genes so need to inner join before normalizing
+joined_df <- inner_join(x = exp_FC_gnbd_df, y = exp_FC_TTS_df , by = "transcriptID") #1945 genes in common
+
+TTS_norm2gnbd_FC <- data.frame(transcriptID = joined_df$transcriptID,
+                               Rpb1_R6 = joined_df$Rpb1_R6.y / joined_df$Rpb1_R6.x,
+                               Rpb1_R8 = joined_df$Rpb1_R6.y / joined_df$Rpb1_R6.x)
+TTS_norm2gnbd_FC$Rpb1_avg <- (TTS_norm2gnbd_FC$Rpb1_R6 + TTS_norm2gnbd_FC$Rpb1_R8) /2
+
+
+
+#pull out data for plotting
+gnbd_norm_plotting_df <- TTS_norm2gnbd_FC[4]
+
+#make hist instead of boxplot
+hist( log2(TTS_norm2gnbd_FC$Rpb1_avg), breaks = 200 )
+#save
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/loss_of_3Peak/FC_TTS_norm2gnbd_log2_hist.png", 1000, 500)
+print(hist( log2(TTS_norm2gnbd_FC$Rpb1_avg), breaks = 200 ) )
+dev.off()
+
+nrow(filter(TTS_norm2gnbd_FC, log2(TTS_norm2gnbd_FC$Rpb1_avg) <= 0) ) #1606 genes with decreased FC in TTS (norm to gnbd)
+nrow(filter(TTS_norm2gnbd_FC, log2(TTS_norm2gnbd_FC$Rpb1_avg) >= 0) ) #339 genes with decreased FC in TTS (norm to gnbd)
+
+```
+yes, 1606 decrease TTS peak while 339 increase (also see hist)
+  do those genes without losing 3'Peak corrolate with no defect genes or no loss of cleavage?
+```{r plotting Rpb1 TTS fc}
+#separate and hist nd and defect genes
+TTS_norm2gnbd_FC <- left_join(TTS_norm2gnbd_FC, ChIP_genes_master_df[c(1,14,26)])
+TTS_norm2gnbd_FC$log2_Rpb1_avg <- log2(TTS_norm2gnbd_FC$Rpb1_avg)
+
+#how many defect and nd are there?
+table(TTS_norm2gnbd_FC$term_defect_final)
+#FALSE  TRUE 
+#  218  1727 
+
+#density plot
+ggplot(TTS_norm2gnbd_FC, aes(x=log2_Rpb1_avg, color = term_defect_final, fill = term_defect_final)) + 
+  geom_density(alpha = 0.5)
+#overlapping hist
+  #*something's off with the counts. there should be way fewer nd than def but that's not what's shown
+ggplot(TTS_norm2gnbd_FC, aes(x=log2_Rpb1_avg, color = term_defect_final, fill = term_defect_final)) + 
+  geom_histogram(alpha = 0.5)
+
+#boxplot instead to see range
+b<-ggplot(TTS_norm2gnbd_FC, aes(y=log2_Rpb1_avg, x=term_defect_final, color = term_defect_final)) + 
+  geom_boxplot(width=0.5, outlier.shape = 16) + 
+  #coord_cartesian(ylim = c(sts[2]/2,max(sts)*1.05)) +
+  #ylab("Fold change in uncleaved reads across the TTS (log2)") + 
+  #ggtitle("FC in uncleaved RNA reads accross the TTS by change in Ser2P/PolII") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13), legend.position="none", axis.text.x = element_text(angle = -45, vjust=1, hjust = 0)) +
+  scale_colour_manual(values=c("#696969", "#9e0b0b")) 
+
+
+#save
+png("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/figures/loss_of_3Peak/Rpb1_FC_TTS_norm2gnbd_boxplot_log2_defect.png", 400, 500)
+print(b)
+dev.off()
+
+```
+so nd genes still usually lose the 3'peak but to a lesser extent than defect genes
+
+
+----------------------------------
+(end 3)
+
+
+
+
+
+

@@ -1,0 +1,224 @@
+---
+title: "06c_assessing_termination_defects"
+author: "Katy Walsh"
+date: "12/13/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup }
+library(tidyverse)
+library(grid)
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+library(ggfortify)
+library(gtable)
+
+#wd: setwd("~/Desktop/Katy/HS_4sU-Seq_2021")
+
+```
+
+import, normalize and make df
+(reads from list with stranded isolated genes)
+```{r import}
+fl_gnbd <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gnbd_counts_final_gene_list", 
+                  pattern = "*_counts.bed",
+                  full.names = TRUE)
+gnbd_counts <- lapply(fl_gnbd, read.table, header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(gnbd_counts) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/gnbd_counts_final_gene_list/|_counts.bed", "", fl_gnbd)
+
+
+fl_20kbds <- list.files("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/20kb_ds_counts_final_gene_list", 
+                  pattern = "*_counts.bed",
+                  full.names = TRUE)
+ds_20kb_counts <- lapply(fl_20kbds, read.table, header = FALSE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ds_20kb_counts) <- gsub("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07a_gene_and_ds_counts/20kb_ds_counts_final_gene_list/|_counts.bed", "", fl_20kbds)
+```
+After each interval in A, bedtools coverage will report:
+V13: The number of features in B that overlapped (by at least one base pair) the A interval.
+V14: The number of bases in A that had non-zero coverage from features in B.
+V15: The length of the entry in A.
+V16: The fraction of bases in A that had non-zero coverage from features in B.
+(A = gnbd or 20kb ds bed file, B = reads bed file)
+
+
+USING TOTAL NUM OF READS IN GNBD OR 20KB DS 
+-------------------------------------------
+extract and normalize reads
+```{r make df and normalize for num reads}
+#geneID, gnbd_counts, 20kb_ds_counts
+#   "The number of features in B that overlapped (by at least one base pair) the A interval" = reads in gnbd or 20kb ds
+all_counts_df <- data.frame(geneID = gnbd_counts$rep1_NHS_gnbd$V4,
+                             gnbd_NHS_rep1 = gnbd_counts$rep1_NHS_gnbd$V13,
+                             gnbd_NHS_rep2 = gnbd_counts$rep2_NHS_gnbd$V13,
+                             gnbd_NHS_rep3 = gnbd_counts$rep3_NHS_gnbd$V13,
+                             gnbd_HS_rep1 = gnbd_counts$rep1_HS_gnbd$V13,
+                             gnbd_HS_rep2 = gnbd_counts$rep2_HS_gnbd$V13,
+                             gnbd_HS_rep3 = gnbd_counts$rep3_HS_gnbd$V13,
+                             ds_20kb_NHS_rep1 = ds_20kb_counts$rep1_NHS_20kbds$V13,
+                             ds_20kb_NHS_rep2 = ds_20kb_counts$rep2_NHS_20kbds$V13,
+                             ds_20kb_NHS_rep3 = ds_20kb_counts$rep3_NHS_20kbds$V13,
+                             ds_20kb_HS_rep1 = ds_20kb_counts$rep1_HS_20kbds$V13,
+                             ds_20kb_HS_rep2 = ds_20kb_counts$rep2_HS_20kbds$V13,
+                             ds_20kb_HS_rep3 = ds_20kb_counts$rep3_HS_20kbds$V13
+                             )
+
+
+#norm for num mapped reads
+#import num reads per sample
+mapped_reads <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/mapping_numbers.txt", header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+
+
+#normalize
+norm_all_counts_df <- all_counts_df
+#NHS_gnbd reps 1-3
+norm_all_counts_df$gnbd_NHS_rep1 <- norm_all_counts_df$gnbd_NHS_rep1 * mapped_reads[1,7]
+norm_all_counts_df$gnbd_NHS_rep2 <- norm_all_counts_df$gnbd_NHS_rep2 * mapped_reads[3,7]
+norm_all_counts_df$gnbd_NHS_rep3 <- norm_all_counts_df$gnbd_NHS_rep3 * mapped_reads[5,7]
+#NHS 20kb ds
+norm_all_counts_df$ds_20kb_NHS_rep1 <- norm_all_counts_df$ds_20kb_NHS_rep1 * mapped_reads[1,7]
+norm_all_counts_df$ds_20kb_NHS_rep2 <- norm_all_counts_df$ds_20kb_NHS_rep2 * mapped_reads[3,7]
+norm_all_counts_df$ds_20kb_NHS_rep3 <- norm_all_counts_df$ds_20kb_NHS_rep3 * mapped_reads[5,7]
+
+#HS_gnbd reps 1-3
+norm_all_counts_df$gnbd_HS_rep1 <- norm_all_counts_df$gnbd_HS_rep1 * mapped_reads[2,7]
+norm_all_counts_df$gnbd_HS_rep2 <- norm_all_counts_df$gnbd_HS_rep2 * mapped_reads[4,7]
+norm_all_counts_df$gnbd_HS_rep3 <- norm_all_counts_df$gnbd_HS_rep3 * mapped_reads[6,7]
+#HS 20kb ds
+norm_all_counts_df$ds_20kb_HS_rep1 <- norm_all_counts_df$ds_20kb_HS_rep1 * mapped_reads[2,7]
+norm_all_counts_df$ds_20kb_HS_rep2 <- norm_all_counts_df$ds_20kb_HS_rep2 * mapped_reads[4,7]
+norm_all_counts_df$ds_20kb_HS_rep3 <- norm_all_counts_df$ds_20kb_HS_rep3 * mapped_reads[6,7]
+
+
+#calc avg
+norm_all_counts_df$gnbd_NHS_avg <- round((norm_all_counts_df$gnbd_NHS_rep1 + norm_all_counts_df$gnbd_NHS_rep2 + norm_all_counts_df$gnbd_NHS_rep3) /3, digits = 2)
+norm_all_counts_df$gnbd_HS_avg <- round((norm_all_counts_df$gnbd_HS_rep1 + norm_all_counts_df$gnbd_HS_rep2 + norm_all_counts_df$gnbd_HS_rep3) /3, digits = 2)
+norm_all_counts_df$ds_20kb_NHS_avg <- round((norm_all_counts_df$ds_20kb_NHS_rep1 + norm_all_counts_df$ds_20kb_NHS_rep2 + norm_all_counts_df$ds_20kb_NHS_rep3) /3, digits = 2)
+norm_all_counts_df$ds_20kb_HS_avg <- round((norm_all_counts_df$ds_20kb_HS_rep1 + norm_all_counts_df$ds_20kb_HS_rep2 + norm_all_counts_df$ds_20kb_HS_rep3) /3, digits = 2)
+
+```
+
+
+
+calc. term defect ratios (HS/NHS)
+```{r calc ratios}
+#calc ratios and add ratio columns
+term_defect_ratio_df <- data.frame(geneID = norm_all_counts_df$geneID)
+#HS/NHS fold change
+term_defect_ratio_df$ds_HS_div_NHS <- round(norm_all_counts_df$ds_20kb_HS_avg / norm_all_counts_df$ds_20kb_NHS_avg, digits = 3)
+term_defect_ratio_df$gnbd_HS_div_NHS <- round(norm_all_counts_df$gnbd_HS_avg / norm_all_counts_df$gnbd_NHS_avg, digits = 3)
+
+# ds / gnbd
+term_defect_ratio_df$HS_div_NHS_ds_div_gnbd <- round(term_defect_ratio_df$ds_HS_div_NHS / term_defect_ratio_df$gnbd_HS_div_NHS, digits = 3)
+
+```
+
+define genes with and without defects
+```{r define genes with term defects}
+term_defect_genes <- filter(term_defect_ratio_df, term_defect_ratio_df$ds_HS_div_NHS > 2)
+
+no_defect_genes <- filter(term_defect_ratio_df, term_defect_ratio_df$ds_HS_div_NHS <= 2)
+
+nrow(term_defect_genes) / nrow(term_defect_ratio_df) #70%
+nrow(no_defect_genes) / nrow(term_defect_ratio_df) #30%
+
+
+
+
+```
+-------------------------------------------
+
+
+
+REPEAT USING FRACTION OF BASES WITH COVERAGE 
+---------------------------------------------
+(instead of total reads)
+
+repeat using V16: The fraction of bases in A that had non-zero coverage from features in B.
+  (instead of number of reads)
+```{r make df and normalize for num reads (fraction of bases)}
+#geneID, gnbd_counts, 20kb_ds_counts
+#   V16: The fraction of bases in A that had non-zero coverage from features in B.
+frac_bases_df <- data.frame(geneID = gnbd_counts$rep1_NHS_gnbd$V4,
+                             gnbd_NHS_rep1 = gnbd_counts$rep1_NHS_gnbd$V16,
+                             gnbd_NHS_rep2 = gnbd_counts$rep2_NHS_gnbd$V16,
+                             gnbd_NHS_rep3 = gnbd_counts$rep3_NHS_gnbd$V16,
+                             gnbd_HS_rep1 = gnbd_counts$rep1_HS_gnbd$V16,
+                             gnbd_HS_rep2 = gnbd_counts$rep2_HS_gnbd$V16,
+                             gnbd_HS_rep3 = gnbd_counts$rep3_HS_gnbd$V16,
+                             ds_20kb_NHS_rep1 = ds_20kb_counts$rep1_NHS_20kbds$V16,
+                             ds_20kb_NHS_rep2 = ds_20kb_counts$rep2_NHS_20kbds$V16,
+                             ds_20kb_NHS_rep3 = ds_20kb_counts$rep3_NHS_20kbds$V16,
+                             ds_20kb_HS_rep1 = ds_20kb_counts$rep1_HS_20kbds$V16,
+                             ds_20kb_HS_rep2 = ds_20kb_counts$rep2_HS_20kbds$V16,
+                             ds_20kb_HS_rep3 = ds_20kb_counts$rep3_HS_20kbds$V16
+                             )
+
+
+#can't really normalize since this is number of bases and can't assume that more reads = more bases with coverage in these windows
+#     is it ok to not normalize? the num of reads are so similar it probably wouldn't change much
+#     Do I need to avg or pool reps first then re-run with bed file of avg/pooled reads?
+# ^^^^^ yes I think this is the technically right way to do that if we use this going forward
+
+
+
+#calc avg
+frac_bases_df$gnbd_NHS_avg <- round((frac_bases_df$gnbd_NHS_rep1 + frac_bases_df$gnbd_NHS_rep2 + frac_bases_df$gnbd_NHS_rep3) /3, digits = 4)
+frac_bases_df$gnbd_HS_avg <- round((frac_bases_df$gnbd_HS_rep1 + frac_bases_df$gnbd_HS_rep2 + frac_bases_df$gnbd_HS_rep3) /3, digits = 4)
+frac_bases_df$ds_20kb_NHS_avg <- round((frac_bases_df$ds_20kb_NHS_rep1 + frac_bases_df$ds_20kb_NHS_rep2 + frac_bases_df$ds_20kb_NHS_rep3) /3, digits = 4)
+frac_bases_df$ds_20kb_HS_avg <- round((frac_bases_df$ds_20kb_HS_rep1 + frac_bases_df$ds_20kb_HS_rep2 + frac_bases_df$ds_20kb_HS_rep3) /3, digits = 4)
+
+```
+
+
+```{r frac of bases with reads that are due to HS}
+term_defect_frac_bases_df <- data.frame(geneID = frac_bases_df$geneID,
+                                        ds_HS_bases = (frac_bases_df$ds_20kb_HS_avg - frac_bases_df$ds_20kb_NHS_avg),
+                                        gnbd_NHS_avg = frac_bases_df$gnbd_NHS_avg,
+                                        gnbd_HS_avg = frac_bases_df$gnbd_HS_avg,
+                                        ds_20kb_NHS_avg = frac_bases_df$ds_20kb_NHS_avg,
+                                        ds_20kb_HS_avg = frac_bases_df$ds_20kb_HS_avg
+                                        )
+```
+
+define genes with and without defects
+```{r define genes with term defects}
+frac_term_defect_genes <- filter(term_defect_frac_bases_df, term_defect_frac_bases_df$ds_HS_bases > 0.05) #100 bp
+frac_no_defect_genes <- filter(term_defect_frac_bases_df, term_defect_frac_bases_df$ds_HS_bases <= 0.05)
+maybe_reverse_defect <- filter(term_defect_frac_bases_df, term_defect_frac_bases_df$ds_HS_bases <= 0)
+
+nrow(frac_term_defect_genes) / nrow(term_defect_frac_bases_df) #85%
+nrow(frac_no_defect_genes) / nrow(term_defect_frac_bases_df) #15%
+
+#just num bases and just signal both don't seem to fully define a term defect alone - maybe hybrid?
+
+
+```
+---------------------------------------------
+
+
+export tables
+```{r export df's}
+write_delim(term_defect_norm_df, "07_analysis/isoloated_genes_norm_counts_gnbd_5kb_20kb.tsv", delim = "\t", col_names = TRUE)
+write_delim(term_defect_ratio_df, "07_analysis/isoloated_genes_norm_counts_5kb_20kb_div_gnbd.tsv", delim = "\t", col_names = TRUE)
+write_delim(fold_change_term_ratio_df, "07_analysis/isoloated_genes_HSdNHS_5kb_20kb.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+
+
+Setting definion for what qualifies as terminaion defects
+
+```{r defining term defects}
+#merge dfs of reads change and frac bases
+merged_df <- merge(term_defect_frac_bases_df, term_defect_ratio_df)
+
+Both_term_defect_genes <- filter(merged_df, merged_df$ds_HS_bases > 0.05 & merged_df$ds_HS_div_NHS > 2) 
+Both_no_defect_genes <- filter(merged_df, merged_df$ds_HS_bases <= 0.05 & merged_df$ds_HS_div_NHS < 2)
+
+
+```
+

@@ -1,0 +1,411 @@
+---
+title: "06c_Tyr1P_at_the_PPP"
+author: "Katy Walsh"
+date: "4/11/2024"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(grid)
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+library(ggfortify)
+library(gtable)
+library(ggpmisc)
+#install.packages("VennDiagram")
+library(VennDiagram)
+
+#wd: 
+setwd("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/06_analysis/PPP")
+
+```
+setup plot settings:
+```{r plotting setup}
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+library(ggpmisc)
+
+theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+    )
+
+###defining plot histogram function###
+#testing
+#hist_df <- Rpb1_hist_data
+#plot_title <- "Metagene Analysis of Pol II ocupancy at the TTS"
+
+    
+plot_hist_function <- function(hist_df, plot_title, subt = ""){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance, y=value, group=name, color=name))+
+    geom_line() +
+    labs(subtitle = subt, x= "distance from TSS", y="avg norm tag coverage") +
+    ggtitle(plot_title) +
+    scale_color_manual(values=c("black", "red", "grey"))
+}
+
+```
+
+
+
+Need to count Tyr1P tags accross the PPP (TSS to +250bp)
+  whole gene bed file: /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v095_whole_gene_cols1to6.bed
+  filter for all ChIP_analyzable genes
+  filter for common genes
+```{r make bed files for PPP}
+common_genes_MASTER_df <- read.table("../ChIP_common_TTS5kbds_genes_MASTER_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+ChIP_analyzable_genes_df <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/all_possible_4k_ChIP_genes_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+ChIP_analyzable_genes_gnbd_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/ChIP_analyzable_genes_MANE_v095_gnbd.bed", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+MANE_v095_whole_gene_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v095_whole_gene_cols1to6.bed", header = FALSE, sep="\t", stringsAsFactors = FALSE, quote = "")
+colnames(MANE_v095_whole_gene_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+
+#make TSS bed file
+MANE_TSS_bed <- MANE_v095_whole_gene_bed #so we don't accidentally overwrite the original bed file
+
+i=1
+while(i <= nrow(MANE_TSS_bed)){
+  #if on + strand, start = TSS and end = TTS
+  if(MANE_TSS_bed$strand[i]=="+"){
+    MANE_TSS_bed$end[i] = MANE_TSS_bed$start[i]
+  } 
+  #if on - strand, end = TSS and start = TTS
+  else if(MANE_TSS_bed$strand[i]=="-"){
+    MANE_TSS_bed$start[i] = MANE_TSS_bed$end[i]
+    }
+  else{
+    print("no strand annotation!!")
+  }
+  i = i+1
+}
+#remove any negative values
+MANE_TSS_bed <- filter(MANE_TSS_bed, MANE_TSS_bed$start >= 0)
+MANE_TSS_bed <- filter(MANE_TSS_bed, MANE_TSS_bed$end >= 0) #nothing was removed
+#check window = 12kb
+stopifnot(MANE_TSS_bed$start == MANE_TSS_bed$end) #good, and by visual check start and end look the same
+
+
+#save (to 4sU documentation since that's where most of the MANE annotation files are)
+write_delim(MANE_TSS_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v095_TSS.bed", delim = "\t", col_names = FALSE)
+
+
+
+
+#make TSS +250bp bed file
+MANE_PPP_bed <- MANE_TSS_bed #so we don't accidentally overwrite the original bed file
+
+i=1
+while(i <= nrow(MANE_PPP_bed)){
+  #if on + strand, start = TSS and end = TTS
+  if(MANE_PPP_bed$strand[i]=="+"){
+    MANE_PPP_bed$end[i] = MANE_PPP_bed$start[i] +250
+  } 
+  #if on - strand, end = TSS and start = TTS
+  else if(MANE_PPP_bed$strand[i]=="-"){
+    MANE_PPP_bed$start[i] = MANE_PPP_bed$end[i] -250
+    }
+  else{
+    print("no strand annotation!!")
+  }
+  i = i+1
+}
+#remove any negative values
+MANE_PPP_bed <- filter(MANE_PPP_bed, MANE_PPP_bed$start >= 0)
+MANE_PPP_bed <- filter(MANE_PPP_bed, MANE_PPP_bed$end >= 0) #nothing was removed
+#check window = 12kb
+stopifnot(abs(MANE_PPP_bed$start - MANE_PPP_bed$end) == 250) #good, and by visual check looks good
+
+
+#save (to 4sU documentation since that's where most of the MANE annotation files are)
+write_delim(MANE_PPP_bed, "/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v095_TSS_to_250bp.bed", delim = "\t", col_names = FALSE)
+
+
+#filter for ChIP_analyzable genes
+ChIP_MANE_TSS_bed <- filter(MANE_TSS_bed, MANE_TSS_bed$id %in% ChIP_analyzable_genes_df$transcriptID)
+ChIP_MANE_PPP_bed <- filter(MANE_PPP_bed, MANE_PPP_bed$id %in% ChIP_analyzable_genes_df$transcriptID)
+
+#filter for common genes
+common_MANE_TSS_bed <- filter(MANE_TSS_bed, MANE_TSS_bed$id %in% common_genes_MASTER_df$transcriptID)
+common_MANE_PPP_bed <- filter(MANE_PPP_bed, MANE_PPP_bed$id %in% common_genes_MASTER_df$transcriptID)
+
+#save bed files
+write_delim(ChIP_MANE_TSS_bed, "../../documentation/MANE_gene_annotation_bed_files/ChIP_analyzable_genes_TSS.bed", delim = "\t", col_names = FALSE)
+write_delim(ChIP_MANE_PPP_bed, "../../documentation/MANE_gene_annotation_bed_files/ChIP_analyzable_genes_TSS_to_250bp.bed", delim = "\t", col_names = FALSE)
+write_delim(common_MANE_TSS_bed, "../../documentation/MANE_gene_annotation_bed_files/common_ChIP_genes_TSS.bed", delim = "\t", col_names = FALSE)
+write_delim(common_MANE_PPP_bed, "../../documentation/MANE_gene_annotation_bed_files/common_ChIP_genes_TSS_to_250bp.bed", delim = "\t", col_names = FALSE)
+
+```
+
+
+run homer analyze peaks command
+#annotatePeaks.pl <gene list TSS bed file> hg38 -size -2000,2000 -hist 100 -norm 1E8 -d <tag directory> > <output.tsv> 
+(Rpb1s = Rpb1 from Ser2P ChIP)
+
+
+
+Now make Hist plots
+```{r read-in data}
+#read all data into list of df's
+fl <- list.files("PPP_homer_outputs", 
+                  full.names = TRUE)
+ls <- lapply(fl, read.table, header=TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ls) <- gsub("PPP_homer_outputs/|_pooled_PPP.tsv", "", fl)
+
+#rename obnoxiously long homer default col names
+i=1
+while(i<=length(ls)){
+  names(ls[[i]]) <- c("distance_from_center", "coverage", "sense_tags", "antisense_tags")
+  i=i+1
+}
+
+```
+  
+```{r make plotting df}
+#Rpb1
+Rpb1_plotting_df <- data.frame(distance = ls$Rpb1_NHS$distance_from_center,
+                                     NHS = ls$Rpb1_NHS$coverage,
+                                     HS = ls$Rpb1_HS$coverage,
+                                     input = ls$input_PPP.tsv$coverage
+                                     )
+
+#pivot longer so R can plot it
+Rpb1_plotting_df <- pivot_longer(Rpb1_plotting_df, cols =2:4)
+Rpb1_plotting_df$name <- factor(Rpb1_plotting_df$name, levels = c('NHS', 'HS', 'input'))
+
+
+
+#Tyr1P
+Tyr1P_plotting_df <- data.frame(distance = ls$Tyr1P_NHS$distance_from_center,
+                                     NHS = ls$Tyr1P_NHS$coverage,
+                                     HS = ls$Tyr1P_HS$coverage,
+                                     input = ls$input_PPP.tsv$coverage
+                                     )
+
+#pivot longer so R can plot it
+Tyr1P_plotting_df <- pivot_longer(Tyr1P_plotting_df, cols =2:4)
+Tyr1P_plotting_df$name <- factor(Tyr1P_plotting_df$name, levels = c('NHS', 'HS', 'input'))
+
+
+
+#Rpb1s
+Rpb1s_plotting_df <- data.frame(distance = ls$Rpb1s_NHS$distance_from_center,
+                                     NHS = ls$Rpb1s_NHS$coverage,
+                                     HS = ls$Rpb1s_HS$coverage,
+                                     input = ls$input_PPP.tsv$coverage
+                                     )
+
+#pivot longer so R can plot it
+Rpb1s_plotting_df <- pivot_longer(Rpb1s_plotting_df, cols =2:4)
+Rpb1s_plotting_df$name <- factor(Rpb1s_plotting_df$name, levels = c('NHS', 'HS', 'input'))
+
+
+
+#Ser2P
+Ser2P_plotting_df <- data.frame(distance = ls$Ser2P_NHS$distance_from_center,
+                                     NHS = ls$Ser2P_NHS$coverage,
+                                     HS = ls$Ser2P_HS$coverage,
+                                     input = ls$input_PPP.tsv$coverage
+                                     )
+
+#pivot longer so R can plot it
+Ser2P_plotting_df <- pivot_longer(Ser2P_plotting_df, cols =2:4)
+Ser2P_plotting_df$name <- factor(Ser2P_plotting_df$name, levels = c('NHS', 'HS', 'input'))
+
+```
+
+
+
+```{r plotting}
+R <- plot_hist_function(Rpb1_plotting_df, "Metagene Analysis of Total RNA Pol II occupancy at the TSS", "from Tyr1P ChIP (R7 and R8 pooled)") 
+R
+
+Ty <- plot_hist_function(Tyr1P_plotting_df, "Metagene Analysis of Tyr1P RNA Pol II occupancy at the TSS") 
+Ty
+
+Rs <- plot_hist_function(Rpb1s_plotting_df, "Metagene Analysis of Total RNA Pol II occupancy at the TSS", "From Ser2P ChIP (R6 and R8 pooled)") 
+Rs
+
+S <- plot_hist_function(Ser2P_plotting_df, "Metagene Analysis of Ser2P RNA Pol II occupancy at the TSS") 
+S
+
+#plot all together
+ggarrange(R, Ty)
+ggarrange(Rs, S)
+ggarrange(R, Rs)
+
+```
+
+
+
+plot separate reps
+-------------------
+```{r read-in data}
+#read all data into list of df's
+fl <- list.files("PPP_homer_outputs", 
+                  full.names = TRUE)
+ls <- lapply(fl, read.table, header=TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ls) <- gsub("PPP_homer_outputs/|_pooled_PPP.tsv", "", fl)
+
+#rename obnoxiously long homer default col names
+i=1
+while(i<=length(ls)){
+  names(ls[[i]]) <- c("distance_from_center", "coverage", "sense_tags", "antisense_tags")
+  i=i+1
+}
+
+```
+  
+```{r make plotting df}
+#Rpb1
+Rpb1_NHS_plotting_df <- data.frame(distance = ls$Rpb1_NHS$distance_from_center,
+                                     R6_NHS = ls$Rpb1s_NHS_R6_PPP.tsv$coverage,
+                                     R7_NHS = ls$Rpb1_NHS_R7_PPP.tsv$coverage,
+                                     R8_NHS = ls$Rpb1s_NHS_R8_PPP.tsv$coverage,
+                                     input = ls$input_PPP.tsv$coverage
+                                     )
+Rpb1_HS_plotting_df <- data.frame(distance = ls$Rpb1_NHS$distance_from_center,
+                                     R6_HS = ls$Rpb1s_HS_R6_PPP.tsv$coverage,
+                                     R7_HS = ls$Rpb1_HS_R7_PPP.tsv$coverage,
+                                     R8_HS = ls$Rpb1s_HS_R8_PPP.tsv$coverage,
+                                     input = ls$input_PPP.tsv$coverage
+                                     )
+
+#pivot longer so R can plot it
+Rpb1_NHS_plotting_df <- pivot_longer(Rpb1_NHS_plotting_df, cols =2:5)
+Rpb1_NHS_plotting_df$name <- factor(Rpb1_NHS_plotting_df$name, levels = c('R6_NHS', 'R7_NHS', 'R8_NHS', 'input'))
+Rpb1_HS_plotting_df <- pivot_longer(Rpb1_HS_plotting_df, cols =2:5)
+Rpb1_HS_plotting_df$name <- factor(Rpb1_HS_plotting_df$name, levels = c( 'R6_HS', 'R7_HS', 'R8_HS','input'))
+
+
+
+#Tyr1P
+Tyr1P_NHS_plotting_df <- data.frame(distance = ls$Tyr1P_NHS$distance_from_center,
+                                     R7_NHS = ls$Tyr1P_NHS_R7_PPP.tsv$coverage,
+                                     R8_NHS = ls$Tyr1P_NHS_R8_PPP.tsv$coverage,
+                                     input = ls$input_PPP.tsv$coverage
+                                     )
+Tyr1P_HS_plotting_df <- data.frame(distance = ls$Tyr1P_NHS$distance_from_center,
+                                     R7_HS = ls$Tyr1P_HS_R7_PPP.tsv$coverage,
+                                     R8_HS = ls$Tyr1P_HS_R8_PPP.tsv$coverage,
+                                     input = ls$input_PPP.tsv$coverage
+                                     )
+
+#pivot longer so R can plot it
+Tyr1P_NHS_plotting_df <- pivot_longer(Tyr1P_NHS_plotting_df, cols =2:4)
+Tyr1P_NHS_plotting_df$name <- factor(Tyr1P_NHS_plotting_df$name, levels = c('R7_NHS', 'R8_NHS', 'input'))
+Tyr1P_HS_plotting_df <- pivot_longer(Tyr1P_HS_plotting_df, cols =2:4)
+Tyr1P_HS_plotting_df$name <- factor(Tyr1P_HS_plotting_df$name, levels = c('R7_HS', 'R8_HS','input'))
+
+
+#Ser2P
+Ser2P_NHS_plotting_df <- data.frame(distance = ls$Ser2P_NHS$distance_from_center,
+                                     R6_NHS = ls$Ser2P_NHS_R6_PPP.tsv$coverage,
+                                     R8_NHS = ls$Ser2P_NHS_R8_PPP.tsv$coverage,
+                                     input = ls$input_PPP.tsv$coverage
+                                     )
+Ser2P_HS_plotting_df <- data.frame(distance = ls$Ser2P_NHS$distance_from_center,
+                                     R6_HS = ls$Ser2P_HS_R6_PPP.tsv$coverage,
+                                     R8_HS = ls$Ser2P_HS_R8_PPP.tsv$coverage,
+                                     input = ls$input_PPP.tsv$coverage
+                                     )
+
+#pivot longer so R can plot it
+Ser2P_NHS_plotting_df <- pivot_longer(Ser2P_NHS_plotting_df, cols =2:4)
+Ser2P_NHS_plotting_df$name <- factor(Ser2P_NHS_plotting_df$name, levels = c('R6_NHS', 'R8_NHS', 'input'))
+Ser2P_HS_plotting_df <- pivot_longer(Ser2P_HS_plotting_df, cols =2:4)
+Ser2P_HS_plotting_df$name <- factor(Ser2P_HS_plotting_df$name, levels = c( 'R6_HS', 'R8_HS','input'))
+
+```
+
+
+
+```{r plotting}
+#can't use hist function so separate parts here
+#set theme for all plots
+theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+
+
+R_NHS <- ggplot(data = Rpb1_NHS_plotting_df, aes(x=distance, y=value, group=name, color=name))+
+    geom_line(size=1) +
+    labs(x= "distance from TSS", y="avg norm tag coverage") +
+    ggtitle("Total Pol II - NHS reps") +
+    scale_color_manual(values=c("#b9b4a7", "#737b6f", "#292929",  "black")) +
+    ylim(c(0,450))
+
+R_HS <- ggplot(data = Rpb1_HS_plotting_df, aes(x=distance, y=value, group=name, color=name))+
+    geom_line(size=1) +
+    labs(x= "distance from TSS", y="avg norm tag coverage") +
+    ggtitle("Total Pol II - HS reps") +
+    scale_color_manual(values=c("#ff7676", "#9f3434", "#510000", "black")) +
+    ylim(c(0,450))
+
+ggarrange(R_NHS, R_HS)
+
+
+
+Ty_NHS <- ggplot(data = Tyr1P_NHS_plotting_df, aes(x=distance, y=value, group=name, color=name))+
+    geom_line(size = 1) +
+    labs( x= "distance from TSS", y="avg norm tag coverage") +
+    ggtitle("Tyr1P NHS reps") +
+    scale_color_manual(values=c("#b9b4a7", "#292929", "black"))+
+    ylim(c(0,400))
+
+Ty_HS <- ggplot(data = Tyr1P_HS_plotting_df, aes(x=distance, y=value, group=name, color=name))+
+    geom_line(size = 1) +
+    labs( x= "distance from TSS", y="avg norm tag coverage") +
+    ggtitle("Tyr1P HS reps") +
+    scale_color_manual(values=c("#ff7676", "#510000", "black"))+
+    ylim(c(0,400))
+
+ggarrange(Ty_NHS, Ty_HS)
+
+
+
+S_NHS <- ggplot(data = Ser2P_NHS_plotting_df, aes(x=distance, y=value, group=name, color=name))+
+    geom_line(size = 1) +
+    labs( x= "distance from TSS", y="avg norm tag coverage") +
+    ggtitle("Ser2P NHS reps") +
+    scale_color_manual(values=c("#b9b4a7", "#292929", "black"))+
+    ylim(c(0,50))
+
+S_HS <- ggplot(data = Ser2P_HS_plotting_df, aes(x=distance, y=value, group=name, color=name))+
+    geom_line(size = 1) +
+    labs( x= "distance from TSS", y="avg norm tag coverage") +
+    ggtitle("Ser2P HS reps") +
+    scale_color_manual(values=c("#ff7676", "#510000", "black"))+
+    ylim(c(0,50))
+
+ggarrange(S_NHS, S_HS)
+
+
+
+```
+
+
+

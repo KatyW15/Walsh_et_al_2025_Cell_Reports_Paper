@@ -1,0 +1,1139 @@
+---
+title: "05_testing_average_methods"
+author: "Katy Walsh"
+date: "4/15/2024"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+testing if it matters which way we average replicates
+  *comes after 06d_hist RMDs where I saw the replicates looked different on the metaplots at the TSS and TTS
+  Why do the replicates look different? are the metaplots just driven by a few highly transcribed genes?
+  Does averaging the replicates then doing calculations change the answer?
+
+
+```{r libraries}
+library(tidyverse)
+library(grid)
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+library(ggfortify)
+library(gtable)
+library(ggpmisc)
+#install.packages("VennDiagram")
+library(VennDiagram)
+
+#wd: 
+setwd("~/Desktop/Katy/Tyr1P_ChIPseq_2024/05_evaluating_replicates/testing_avg_methods")
+```
+setup plot settings:
+```{r plotting setup}
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+library(ggpmisc)
+
+theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+    )
+
+###defining plot histogram function###
+#testing
+#hist_df <- Rpb1_hist_data
+#plot_title <- "Metagene Analysis of Pol II ocupancy at the TTS"
+
+    
+plot_hist_function <- function(hist_df, plot_title, subt = "isolated genes"){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line() +
+    labs(subtitle = subt, x= "distance from TTS", y="avg norm tag coverage") +
+    ggtitle(plot_title) +
+    scale_color_manual(values=c("black", "red", "grey"))
+}
+
+```
+
+
+
+1. avg first or last? (scatterplots)
+R1 HS/NHS FC, R2 HS/NHS FC -> avg
+vs
+avg reps -> avg HS / avg NHS
+```{r make dfs}
+#read-in Tyr1P dfs
+exp_FC_5kbds_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/06_analysis/scatterplots/FC_5kbds_exp.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+exp_FC_gnbd_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/06_analysis/scatterplots/FC_gnbd_exp.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+exp_RPK_gnbd_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/06_analysis/scatterplots/RPK_gnbd_expressed.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+exp_RPK_5kbds_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/06_analysis/scatterplots/RPK_TTSto5kb_expressed.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#and Ser2P dfs
+Ser2P_exp_gnbd_RPK <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/RPK_gnbd_expressed.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+Ser2P_exp_5kbds_RPK <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/RPK_TTSto5kb_expressed.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+Ser2P_exp_FC_5kbds_df <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/FC_TTSto5kb_expressed.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+#and master genes df
+ChIP_genes_master_df <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/ChIP_analyzable_genes_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+#add other average col
+  #avg reps 
+exp_RPK_5kbds_df$Rpb1_NHS_avg <- (exp_RPK_5kbds_df$NHS_Rpb1_R7 + exp_RPK_5kbds_df$NHS_Rpb1_R8) /2
+exp_RPK_5kbds_df$Rpb1_HS_avg <- (exp_RPK_5kbds_df$HS_Rpb1_R7 + exp_RPK_5kbds_df$HS_Rpb1_R8) /2
+exp_RPK_5kbds_df$Tyr1P_NHS_avg <- (exp_RPK_5kbds_df$NHS_Tyr1P_R7 + exp_RPK_5kbds_df$NHS_Tyr1P_R8) /2
+exp_RPK_5kbds_df$Tyr1P_HS_avg <- (exp_RPK_5kbds_df$HS_Tyr1P_R7 + exp_RPK_5kbds_df$HS_Tyr1P_R8) /2
+  #then FC
+exp_FC_5kbds_df$Rpb1_avg_then_FC <- exp_RPK_5kbds_df$Rpb1_HS_avg / exp_RPK_5kbds_df$Rpb1_NHS_avg 
+exp_FC_5kbds_df$Tyr1P_avg_then_FC <- exp_RPK_5kbds_df$Tyr1P_HS_avg / exp_RPK_5kbds_df$Tyr1P_NHS_avg
+
+#same for Ser2P 5kb ds
+  #avg reps 
+Ser2P_exp_5kbds_RPK$Rpb1_NHS_avg <- (Ser2P_exp_5kbds_RPK$Rpb1_NHS_R6 + Ser2P_exp_5kbds_RPK$Rpb1_NHS_R8) /2
+Ser2P_exp_5kbds_RPK$Rpb1_HS_avg <- (Ser2P_exp_5kbds_RPK$Rpb1_HS_R6 + Ser2P_exp_5kbds_RPK$Rpb1_HS_R8) /2
+Ser2P_exp_5kbds_RPK$Ser2P_NHS_avg <- (Ser2P_exp_5kbds_RPK$Ser2P_NHS_R6 + Ser2P_exp_5kbds_RPK$Ser2P_NHS_R8) /2
+Ser2P_exp_5kbds_RPK$Ser2P_HS_avg <- (Ser2P_exp_5kbds_RPK$Ser2P_HS_R6 + Ser2P_exp_5kbds_RPK$Ser2P_HS_R8) /2
+  #then FC
+Ser2P_exp_FC_5kbds_df$Rpb1_avg_then_FC <- Ser2P_exp_5kbds_RPK$Rpb1_HS_avg / Ser2P_exp_5kbds_RPK$Rpb1_NHS_avg 
+Ser2P_exp_FC_5kbds_df$Ser2P_avg_then_FC <- Ser2P_exp_5kbds_RPK$Ser2P_HS_avg / Ser2P_exp_5kbds_RPK$Ser2P_NHS_R6
+
+#save
+write_delim(exp_FC_5kbds_df, "Tyr1P_5kbds_FC_df.tsv", delim = "\t", col_names = TRUE)
+write_delim(Ser2P_exp_FC_5kbds_df, "Ser2P_5kbds_FC_df.tsv", delim = "\t", col_names = TRUE)
+
+```
+```{r AVG then FC: plotting scatterplots}
+#(not using common genes)
+#now make plotting DFs
+Tyr1P_plotting_df_1 <- data.frame(transcriptID = exp_FC_5kbds_df$transcriptID, Rpb1_avg_then_FC = exp_FC_5kbds_df$Rpb1_avg_then_FC, Tyr1P_avg_then_FC = exp_FC_5kbds_df$Tyr1P_avg_then_FC)
+Tyr1P_plotting_df <- left_join(Tyr1P_plotting_df_1, ChIP_genes_master_df[c(1,14,18,20,21,25,26)], by = "transcriptID")
+#remove longRT genes
+Tyr1P_plotting_df <- filter(Tyr1P_plotting_df, Tyr1P_plotting_df$longRT == FALSE) 
+#save plotting df
+write_delim(Tyr1P_plotting_df, "Tyr1P_5kbds_avgThenFC_plotting_DF.tsv", delim = "\t", col_names = TRUE)
+
+Ser2P_plotting_df_1 <- data.frame(transcriptID = Ser2P_exp_FC_5kbds_df$transcriptID, Rpb1_avg_then_FC = Ser2P_exp_FC_5kbds_df$Rpb1_avg_then_FC, Ser2P_avg_then_FC = Ser2P_exp_FC_5kbds_df$Ser2P_avg_then_FC)
+Ser2P_plotting_df <- left_join(Ser2P_plotting_df_1, ChIP_genes_master_df[c(1,14,18,20,21,25,26)], by = "transcriptID")
+#remove longRT genes
+Ser2P_plotting_df <- filter(Ser2P_plotting_df, Ser2P_plotting_df$longRT == FALSE) 
+#save plotting df
+write_delim(Ser2P_plotting_df, "Ser2P_5kbds_avgThenFC_plotting_DF.tsv", delim = "\t", col_names = TRUE)
+
+
+
+#plot
+t <- ggplot(Tyr1P_plotting_df, aes(log2(Rpb1_avg_then_FC), log2(Tyr1P_avg_then_FC), label = transcriptID) ) + 
+  geom_point(alpha=0.8, size=1, color = "#141414") + #696969 gray
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)           #draw quadrents
+  
+
+png("figures/Tyr1PvRpb1_log2_AVG_then_FC_5kbds_scatterplot.png", 500, 500)
+print(t)
+dev.off()
+
+
+
+s <- ggplot(Ser2P_plotting_df, aes(log2(Rpb1_avg_then_FC), log2(Ser2P_avg_then_FC), label = transcriptID) ) + 
+  geom_point(alpha=0.8, size=1, color = "#141414") + #696969 gray
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)            #draw quadrents
+
+
+
+png("figures/Ser2PvRpb1_log2_AVG_then_FC_5kbds_scatterplot.png", 500, 500)
+print(s)
+dev.off()
+
+```
+```{r FC each rep then AVG: plotting scatterplots}
+#(not using common genes)
+#now make plotting DFs
+Tyr1P_plotting_df_1 <- data.frame(transcriptID = exp_FC_5kbds_df$transcriptID, Rpb1_FC_then_AVG = exp_FC_5kbds_df$Rpb1_avg, Tyr1P_FC_then_AVG = exp_FC_5kbds_df$Tyr1P_avg)
+Tyr1P_plotting_df <- left_join(Tyr1P_plotting_df_1, ChIP_genes_master_df[c(1,14,18,20,21,25,26)], by = "transcriptID")
+#remove longRT genes
+Tyr1P_plotting_df <- filter(Tyr1P_plotting_df, Tyr1P_plotting_df$longRT == FALSE) 
+#save plotting df
+write_delim(Tyr1P_plotting_df, "Tyr1P_5kbds_FCThenAVG_plotting_DF.tsv", delim = "\t", col_names = TRUE)
+
+Ser2P_plotting_df_1 <- data.frame(transcriptID = Ser2P_exp_FC_5kbds_df$transcriptID, Rpb1_FC_then_AVG = Ser2P_exp_FC_5kbds_df$Rpb1_avg, Ser2P_FC_then_AVG = Ser2P_exp_FC_5kbds_df$Ser2P_avg)
+Ser2P_plotting_df <- left_join(Ser2P_plotting_df_1, ChIP_genes_master_df[c(1,14,18,20,21,25,26)], by = "transcriptID")
+#remove longRT genes
+Ser2P_plotting_df <- filter(Ser2P_plotting_df, Ser2P_plotting_df$longRT == FALSE) 
+#save plotting df
+write_delim(Ser2P_plotting_df, "Ser2P_5kbds_FCThenAVG_plotting_DF.tsv", delim = "\t", col_names = TRUE)
+
+
+
+#plot
+t <- ggplot(Tyr1P_plotting_df, aes(log2(Rpb1_FC_then_AVG), log2(Tyr1P_FC_then_AVG), label = transcriptID) ) + 
+  geom_point(alpha=0.8, size=1, color = "#141414") + #696969 gray
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)           #draw quadrents
+  
+
+png("figures/Tyr1PvRpb1_log2_FC_then_AVG_5kbds_scatterplot.png", 500, 500)
+print(t)
+dev.off()
+
+
+
+s <- ggplot(Ser2P_plotting_df, aes(log2(Rpb1_FC_then_AVG), log2(Ser2P_FC_then_AVG), label = transcriptID) ) + 
+  geom_point(alpha=0.8, size=1, color = "#141414") + #696969 gray
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)            #draw quadrents
+
+
+
+png("figures/Ser2PvRpb1_log2_FC_then_AVG_5kbds_scatterplot.png", 500, 500)
+print(s)
+dev.off()
+
+```
+```{r individual replicates}
+#(not using common genes)
+#now make plotting DFs
+Tyr1P_reps_plotting_df_1 <- data.frame(transcriptID = exp_FC_5kbds_df$transcriptID, 
+                                  Rpb1_R7 = exp_FC_5kbds_df$Rpb1_R7, 
+                                  Tyr1P_R7 = exp_FC_5kbds_df$Tyr1P_R7, 
+                                  Rpb1_R8 = exp_FC_5kbds_df$Rpb1_R8, 
+                                  Tyr1P_R8 = exp_FC_5kbds_df$Tyr1P_R8)
+Tyr1P_reps_plotting_df <- left_join(Tyr1P_reps_plotting_df_1, ChIP_genes_master_df[c(1,14,18,20,21,25,26)], by = "transcriptID")
+#remove longRT genes
+Tyr1P_reps_plotting_df <- filter(Tyr1P_reps_plotting_df, Tyr1P_reps_plotting_df$longRT == FALSE) 
+#save plotting df
+write_delim(Tyr1P_reps_plotting_df, "Tyr1P_5kbds_reps_plotting_DF.tsv", delim = "\t", col_names = TRUE)
+
+#Ser2P
+Ser2P_reps_plotting_df_1 <- data.frame(transcriptID = Ser2P_exp_FC_5kbds_df$transcriptID, 
+                                  Rpb1_R6 = Ser2P_exp_FC_5kbds_df$Rpb1_R6, 
+                                  Ser2P_R6 = Ser2P_exp_FC_5kbds_df$Ser2P_R6, 
+                                  Rpb1_R8 = Ser2P_exp_FC_5kbds_df$Rpb1_R8, 
+                                  Ser2P_R8 = Ser2P_exp_FC_5kbds_df$Ser2P_R8)
+Ser2P_reps_plotting_df <- left_join(Ser2P_reps_plotting_df_1, ChIP_genes_master_df[c(1,14,18,20,21,25,26)], by = "transcriptID")
+#remove longRT genes
+Ser2P_reps_plotting_df <- filter(Ser2P_reps_plotting_df, Ser2P_reps_plotting_df$longRT == FALSE) 
+#save plotting df
+write_delim(Ser2P_reps_plotting_df, "Ser2P_5kbds_reps_plotting_DF.tsv", delim = "\t", col_names = TRUE)
+
+
+
+#plot
+t7 <- ggplot(Tyr1P_reps_plotting_df, aes(log2(Rpb1_R7), log2(Tyr1P_R7), label = transcriptID) ) + 
+  geom_point(alpha=0.8, size=1, color = "#141414") + #696969 gray
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)           #draw quadrents
+  
+
+png("figures/Tyr1PvRpb1_log2_R7_5kbds_scatterplot.png", 500, 500)
+print(t7)
+dev.off()
+
+t8 <- ggplot(Tyr1P_reps_plotting_df, aes(log2(Rpb1_R8), log2(Tyr1P_R8), label = transcriptID) ) + 
+  geom_point(alpha=0.8, size=1, color = "#141414") + #696969 gray
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)           #draw quadrents
+  
+
+png("figures/Tyr1PvRpb1_log2_R8_5kbds_scatterplot.png", 500, 500)
+print(t8)
+dev.off()
+
+
+
+s6 <- ggplot(Ser2P_reps_plotting_df, aes(log2(Rpb1_R6), log2(Ser2P_R6), label = transcriptID) ) + 
+  geom_point(alpha=0.8, size=1, color = "#141414") + #696969 gray
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)            #draw quadrents
+
+
+
+png("figures/Ser2PvRpb1_log2_R6_5kbds_scatterplot.png", 500, 500)
+print(s6)
+dev.off()
+
+s8 <- ggplot(Ser2P_reps_plotting_df, aes(log2(Rpb1_R8), log2(Ser2P_R8), label = transcriptID) ) + 
+  geom_point(alpha=0.8, size=1, color = "#141414") + #696969 gray
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)            #draw quadrents
+
+
+
+png("figures/Ser2PvRpb1_log2_R8_5kbds_scatterplot.png", 500, 500)
+print(s8)
+dev.off()
+
+```
+
+
+boxplot each axis
+```{r comparing numbers between two average methods}
+summary(exp_FC_5kbds_df$Rpb1_avg)
+#   Min.  1st Qu.   Median    Mean    3rd Qu.    Max. 
+# 0.1084  0.4111    0.5869    0.8921  0.8995     29.3410 
+summary(exp_FC_5kbds_df$Rpb1_avg_then_FC)
+#    Min.  1st Qu.   Median     Mean      3rd Qu.     Max. 
+# 0.09628  0.39169   0.55792    0.84890   0.83105     30.13021 
+
+summary(exp_FC_5kbds_df$Tyr1P_avg)
+#   Min.  1st Qu.  Median    Mean    3rd Qu.    Max. 
+# 0.1452  0.5804   0.7638    0.9097  0.9868     19.1845 
+summary(exp_FC_5kbds_df$Tyr1P_avg_then_FC)
+#   Min.  1st Qu.  Median    Mean    3rd Qu.    Max. 
+# 0.1415  0.5289   0.7235    0.8624  0.9563     18.6706 
+
+summary(Ser2P_exp_FC_5kbds_df$Rpb1_avg)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.1092  0.4284  0.5964  0.8572  0.8754 25.2487 
+summary(Ser2P_exp_FC_5kbds_df$Rpb1_avg_then_FC)
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+# 0.09905  0.39351  0.55684  0.79287  0.82718 22.20862 
+
+summary(Ser2P_exp_FC_5kbds_df$Ser2P_avg)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.1536  0.5428  0.7307  0.8849  0.9830 16.5641 
+summary(Ser2P_exp_FC_5kbds_df$Ser2P_avg_then_FC)
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+# 0.09652  0.41492  0.56456  0.65979  0.74147 14.90054 
+
+
+#show this as boxplots
+bp_plotting_df <- exp_FC_5kbds_df[6:9]
+colnames(bp_plotting_df) <- c( "Rpb1_FC_then_avg", "Tyr1P_FC_then_avg", "Rpb1_avg_then_FC", "Tyr1P_avg_then_FC")
+bp_plotting_df <- pivot_longer(bp_plotting_df, cols = 1:4)
+
+tb <- ggplot(bp_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = 16) + 
+  #coord_cartesian(ylim = c(0,2)) +
+  ylab("Fold change after HS") + 
+  #ggtitle("3' Ser2P / Pol II by termination defect category") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13), legend.position="none", axis.text.x = element_text(angle = -70, vjust=1, hjust = 0)) +
+  theme(plot.title = element_text(size = 13, face = "bold"))  #change size of title
+
+
+#save
+png("figures/Tyr1P_and_PolII_avg_methods_boxplot.png", 350, 450)
+print(tb)
+dev.off()
+
+
+
+
+#Ser2P
+bp_plotting_df_2 <- Ser2P_exp_FC_5kbds_df[6:9]
+colnames(bp_plotting_df_2) <- c( "Rpb1_FC_then_avg", "Ser2P_FC_then_avg", "Rpb1_avg_then_FC", "Ser2P_avg_then_FC")
+bp_plotting_df_2 <- pivot_longer(bp_plotting_df_2, cols = 1:4)
+
+sb <- ggplot(bp_plotting_df_2, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = 16) + 
+  coord_cartesian(ylim = c(0,2)) +
+  ylab("Fold change after HS") + 
+  #ggtitle("3' Ser2P / Pol II by termination defect category") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13), legend.position="none", axis.text.x = element_text(angle = -70, vjust=1, hjust = 0)) +
+  theme(plot.title = element_text(size = 13, face = "bold"))  #change size of title
+
+
+#save
+png("figures/Ser2P_and_PolII_avg_methods_zoom_boxplot.png", 350, 450)
+print(sb)
+dev.off()
+
+
+```
+
+
+
+1.5 standard deviation plots
+  calc from null hypothesis (line with slope 1)
+  *previously only had 1.5 SD for common genes for scatterplots in 06 Rmd
+```{r }
+#using plotting dfs with all exp genes in Tyr1P or Ser2P data sets
+Tyr1P_FC_then_AVG_plotting_df <- read.table("Tyr1P_5kbds_FCThenAVG_plotting_DF.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+Tyr1P_AVG_then_FC_plotting_df <- read.table("Tyr1P_5kbds_avgThenFC_plotting_DF.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+Ser2P_FC_then_AVG_plotting_df <- read.table("Ser2P_5kbds_FCThenAVG_plotting_DF.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+Ser2P_AVG_then_FC_plotting_df <- read.table("Ser2P_5kbds_avgThenFC_plotting_DF.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+#make df to calc residuals
+SD_Tyr1P_FC_then_AVG_plotting_df <- Tyr1P_FC_then_AVG_plotting_df[1:3] #just data, remove extra master df columns
+SD_Tyr1P_FC_then_AVG_plotting_df$log2Rpb1 <- log2(SD_Tyr1P_FC_then_AVG_plotting_df$Rpb1_FC_then_AVG)
+SD_Tyr1P_FC_then_AVG_plotting_df$log2Tyr1P <- log2(SD_Tyr1P_FC_then_AVG_plotting_df$Tyr1P_FC_then_AVG)
+
+SD_Tyr1P_AVG_then_FC_plotting_df <- Tyr1P_AVG_then_FC_plotting_df[1:3] #just data, remove extra master df columns
+SD_Tyr1P_AVG_then_FC_plotting_df$log2Rpb1 <- log2(SD_Tyr1P_AVG_then_FC_plotting_df$Rpb1_avg_then_FC)
+SD_Tyr1P_AVG_then_FC_plotting_df$log2Tyr1P <- log2(SD_Tyr1P_AVG_then_FC_plotting_df$Tyr1P_avg_then_FC)
+#repeat for Ser2P
+SD_Ser2P_FC_then_AVG_plotting_df <- Ser2P_FC_then_AVG_plotting_df[1:3]
+SD_Ser2P_FC_then_AVG_plotting_df$log2Rpb1 <- log2(SD_Ser2P_FC_then_AVG_plotting_df$Rpb1_FC_then_AVG)
+SD_Ser2P_FC_then_AVG_plotting_df$log2Ser2P <- log2(SD_Ser2P_FC_then_AVG_plotting_df$Ser2P_FC_then_AVG)
+
+SD_Ser2P_AVG_then_FC_plotting_df <- Ser2P_AVG_then_FC_plotting_df[1:3]
+SD_Ser2P_AVG_then_FC_plotting_df$log2Rpb1 <- log2(SD_Ser2P_AVG_then_FC_plotting_df$Rpb1_avg_then_FC)
+SD_Ser2P_AVG_then_FC_plotting_df$log2Ser2P <- log2(SD_Ser2P_AVG_then_FC_plotting_df$Ser2P_avg_then_FC)
+
+
+#null hypothesis line: y = 1x +0   (y=x)
+
+#calc expected y given trendline and X (expected y = Rpb1 because y=x+0 is the null trendline)
+SD_Tyr1P_FC_then_AVG_plotting_df$expected_Y <- (SD_Tyr1P_FC_then_AVG_plotting_df$log2Rpb1)
+SD_Tyr1P_AVG_then_FC_plotting_df$expected_Y <- (SD_Tyr1P_AVG_then_FC_plotting_df$log2Rpb1)
+SD_Ser2P_FC_then_AVG_plotting_df$expected_Y <- (SD_Ser2P_FC_then_AVG_plotting_df$log2Rpb1)
+SD_Ser2P_AVG_then_FC_plotting_df$expected_Y <- (SD_Ser2P_AVG_then_FC_plotting_df$log2Rpb1)
+
+
+#calc residual (actual - theoretical)
+SD_Tyr1P_FC_then_AVG_plotting_df$residual <- SD_Tyr1P_FC_then_AVG_plotting_df$log2Tyr1P - SD_Tyr1P_FC_then_AVG_plotting_df$expected_Y
+SD_Tyr1P_AVG_then_FC_plotting_df$residual <- SD_Tyr1P_AVG_then_FC_plotting_df$log2Tyr1P - SD_Tyr1P_AVG_then_FC_plotting_df$expected_Y
+SD_Ser2P_FC_then_AVG_plotting_df$residual <- SD_Ser2P_FC_then_AVG_plotting_df$log2Ser2P - SD_Ser2P_FC_then_AVG_plotting_df$expected_Y
+SD_Ser2P_AVG_then_FC_plotting_df$residual <- SD_Ser2P_AVG_then_FC_plotting_df$log2Ser2P - SD_Ser2P_AVG_then_FC_plotting_df$expected_Y
+
+
+#calc residual squared
+SD_Tyr1P_FC_then_AVG_plotting_df$residual_sq <- SD_Tyr1P_FC_then_AVG_plotting_df$residual^2
+SD_Tyr1P_AVG_then_FC_plotting_df$residual_sq <- SD_Tyr1P_AVG_then_FC_plotting_df$residual^2
+SD_Ser2P_FC_then_AVG_plotting_df$residual_sq <- SD_Ser2P_FC_then_AVG_plotting_df$residual^2
+SD_Ser2P_AVG_then_FC_plotting_df$residual_sq <- SD_Ser2P_AVG_then_FC_plotting_df$residual^2
+
+
+#sum, count and RMSE
+res_sum_Tyr1P_FtA <- sum(SD_Tyr1P_FC_then_AVG_plotting_df$residual_sq)
+num_count <- nrow(SD_Tyr1P_FC_then_AVG_plotting_df)
+RMSE_Tyr1P_FtA <- (res_sum_Tyr1P_FtA / num_count )^0.5
+
+res_sum_Tyr1P_AtF <- sum(SD_Tyr1P_AVG_then_FC_plotting_df$residual_sq)
+num_count <- nrow(null_SD_Tyr1P_df)
+RMSE_Tyr1P_AtF <- (res_sum_Tyr1P_AtF / num_count )^0.5
+
+res_sum_Ser2P_FtA <- sum(SD_Ser2P_FC_then_AVG_plotting_df$residual_sq)
+num_count <- nrow(SD_Ser2P_FC_then_AVG_plotting_df)
+RMSE_Ser2P_FtA <- (res_sum_Ser2P_FtA / num_count )^0.5
+
+res_sum_Ser2P_AtF <- sum(SD_Ser2P_AVG_then_FC_plotting_df$residual_sq)
+num_count <- nrow(SD_Ser2P_AVG_then_FC_plotting_df)
+RMSE_Ser2P_AtF <- (res_sum_Ser2P_AtF / num_count )^0.5
+
+
+
+#+1.5 SD = expected_Y + (1.5*RMSE)
+SD_Tyr1P_FC_then_AVG_plotting_df$pos_1p5_SD <- SD_Tyr1P_FC_then_AVG_plotting_df$expected_Y + (1.5*RMSE_Tyr1P_FtA)
+SD_Tyr1P_AVG_then_FC_plotting_df$pos_1p5_SD <- SD_Tyr1P_AVG_then_FC_plotting_df$expected_Y + (1.5*RMSE_Tyr1P_AtF)
+SD_Ser2P_FC_then_AVG_plotting_df$pos_1p5_SD <- SD_Ser2P_FC_then_AVG_plotting_df$expected_Y + (1.5*RMSE_Ser2P_FtA)
+SD_Ser2P_AVG_then_FC_plotting_df$pos_1p5_SD <- SD_Ser2P_AVG_then_FC_plotting_df$expected_Y + (1.5*RMSE_Ser2P_AtF)
+
+
+
+
+#plot SD lines and get equations
+ggplot(SD_Ser2P_AVG_then_FC_plotting_df, aes(log2Rpb1, pos_1p5_SD )) + 
+  geom_point(alpha=0.8, size=1)  +
+  #xlim(c(0,35)) + ylim(c(0,35)) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+#Tyr1P FtA: y=0.945 + 1x R^2=1.0    SD_Tyr1P_FC_then_AVG_plotting_df
+#Tyr1P AtF: y=0.946 + 1x R^2=1.0    SD_Tyr1P_AVG_then_FC_plotting_df
+
+#Ser2P FtA: y=0.694 + 1x R^2=1.0    SD_Ser2P_FC_then_AVG_plotting_df
+#Ser2P AtF: y=0.728 + 1x R^2=1.0    SD_Ser2P_AVG_then_FC_plotting_df
+##same number for both pos and neg
+
+
+
+#calc points above and below 1.5 SD lines
+#Tyr1P FC then Avg
+  # y = 1x + 0.945 
+  # y = 1x - 0.945 
+#calc points outside of 1.5 SDs
+SD_Tyr1P_FC_then_AVG_plotting_df$over_1p5_SD <- SD_Tyr1P_FC_then_AVG_plotting_df$log2Tyr1P > (1*SD_Tyr1P_FC_then_AVG_plotting_df$log2Rpb1 + 0.945) | SD_Tyr1P_FC_then_AVG_plotting_df$log2Tyr1P < (1*SD_Tyr1P_FC_then_AVG_plotting_df$log2Rpb1 - 0.945)
+table(SD_Tyr1P_FC_then_AVG_plotting_df$over_1p5_SD) #234 genes over 1.5 SD out of ~1750
+
+234 / 1748 # = ~13%
+
+#Tyr1P Avg then FC
+  # y = 1x + 0.946 
+  # y = 1x - 0.946 
+#calc points outside of 1.5 SDs
+SD_Tyr1P_AVG_then_FC_plotting_df$over_1p5_SD <- SD_Tyr1P_AVG_then_FC_plotting_df$log2Tyr1P > (1*SD_Tyr1P_AVG_then_FC_plotting_df$log2Rpb1 + 0.946) | SD_Tyr1P_AVG_then_FC_plotting_df$log2Tyr1P < (1*SD_Tyr1P_AVG_then_FC_plotting_df$log2Rpb1 - 0.946)
+table(SD_Tyr1P_AVG_then_FC_plotting_df$over_1p5_SD) #252 genes over 1.5 SD out of ~1750
+
+252 / 1748 # = ~14%
+
+
+
+#Ser2P FC then Avg
+  # y = 1x + 0.694 
+  # y = 1x - 0.694 
+#calc points outside of 1.5 SDs
+SD_Ser2P_FC_then_AVG_plotting_df$over_1p5_SD <- SD_Ser2P_FC_then_AVG_plotting_df$log2Ser2P > (1*SD_Ser2P_FC_then_AVG_plotting_df$log2Rpb1 + 0.694) | SD_Ser2P_FC_then_AVG_plotting_df$log2Ser2P < (1*SD_Ser2P_FC_then_AVG_plotting_df$log2Rpb1 - 0.694)
+table(SD_Ser2P_FC_then_AVG_plotting_df$over_1p5_SD) #327 genes out of ~2600
+
+327 / 2597 # = ~12.5%
+
+
+#Ser2P Avg then FC
+  # y = 1x + 0.728 
+  # y = 1x - 0.728 
+#calc points outside of 1.5 SDs
+SD_Ser2P_AVG_then_FC_plotting_df$over_1p5_SD <- SD_Ser2P_AVG_then_FC_plotting_df$log2Ser2P > (1*SD_Ser2P_AVG_then_FC_plotting_df$log2Rpb1 + 0.728) | SD_Ser2P_AVG_then_FC_plotting_df$log2Ser2P < (1*SD_Ser2P_AVG_then_FC_plotting_df$log2Rpb1 - 0.728)
+table(SD_Ser2P_AVG_then_FC_plotting_df$over_1p5_SD) #277 genes out of ~2600
+
+277 / 2597 # = ~10%
+
+
+#save SD df
+write_delim(SD_Tyr1P_FC_then_AVG_plotting_df, "1p5_SD_Tyr1P_FC_then_AVG_df.tsv", delim = "\t", col_names = TRUE)
+write_delim(SD_Tyr1P_AVG_then_FC_plotting_df, "1p5_SD_Tyr1P_AVG_then_FC_df.tsv", delim = "\t", col_names = TRUE)
+write_delim(SD_Ser2P_FC_then_AVG_plotting_df, "1p5_SD_Ser2P_FC_then_AVG_df.tsv", delim = "\t", col_names = TRUE)
+write_delim(SD_Ser2P_AVG_then_FC_plotting_df, "1p5_SD_Ser2P_AVG_then_FC_df.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+
+Make list of genes outside of 1.5 SD
+```{r outside 1.5 SD gene lists}
+#make lists of genes outside
+SD_Tyr1P_FC_then_AVG_plotting_df$over <- SD_Tyr1P_FC_then_AVG_plotting_df$log2Tyr1P > (1*SD_Tyr1P_FC_then_AVG_plotting_df$log2Rpb1 + 0.945) 
+SD_Tyr1P_FC_then_AVG_plotting_df$under <- SD_Tyr1P_FC_then_AVG_plotting_df$log2Tyr1P < (1*SD_Tyr1P_FC_then_AVG_plotting_df$log2Rpb1 - 0.945) 
+
+SD_Tyr1P_AVG_then_FC_plotting_df$over <- SD_Tyr1P_AVG_then_FC_plotting_df$log2Tyr1P > (1*SD_Tyr1P_AVG_then_FC_plotting_df$log2Rpb1 + 0.946) 
+SD_Tyr1P_AVG_then_FC_plotting_df$under <- SD_Tyr1P_AVG_then_FC_plotting_df$log2Tyr1P < (1*SD_Tyr1P_AVG_then_FC_plotting_df$log2Rpb1 - 0.946) 
+
+SD_Ser2P_FC_then_AVG_plotting_df$over <- SD_Ser2P_FC_then_AVG_plotting_df$log2Ser2P > (1*SD_Ser2P_FC_then_AVG_plotting_df$log2Rpb1 + 0.694) 
+SD_Ser2P_FC_then_AVG_plotting_df$under <- SD_Ser2P_FC_then_AVG_plotting_df$log2Ser2P < (1*SD_Ser2P_FC_then_AVG_plotting_df$log2Rpb1 - 0.694) 
+
+SD_Ser2P_AVG_then_FC_plotting_df$over <- SD_Ser2P_AVG_then_FC_plotting_df$log2Ser2P > (1*SD_Ser2P_AVG_then_FC_plotting_df$log2Rpb1 + 0.694) 
+SD_Ser2P_AVG_then_FC_plotting_df$under <- SD_Ser2P_AVG_then_FC_plotting_df$log2Ser2P < (1*SD_Ser2P_AVG_then_FC_plotting_df$log2Rpb1 - 0.694) 
+
+
+#now compress to one col for if outside 1.5 SD (one per df)
+#SD_Tyr1P_FC_then_AVG_plotting_df
+temp <- vector()
+i=1
+while (i<=nrow(SD_Tyr1P_FC_then_AVG_plotting_df)) {
+  if (SD_Tyr1P_FC_then_AVG_plotting_df$over[i] == TRUE) {
+    temp <- append(temp, "over")
+  } else if (SD_Tyr1P_FC_then_AVG_plotting_df$under[i] == TRUE) {
+    temp <- append(temp, "under")
+  } else {
+    temp <- append(temp, "not_sig")
+  }
+  i=i+1
+} 
+#add temp as col
+SD_Tyr1P_FC_then_AVG_plotting_df$outside_1p5_SD <- temp
+
+#SD_Tyr1P_AVG_then_FC_plotting_df
+temp <- vector()
+i=1
+while (i<=nrow(SD_Tyr1P_AVG_then_FC_plotting_df)) {
+  if (SD_Tyr1P_AVG_then_FC_plotting_df$over[i] == TRUE) {
+    temp <- append(temp, "over")
+  } else if (SD_Tyr1P_AVG_then_FC_plotting_df$under[i] == TRUE) {
+    temp <- append(temp, "under")
+  } else {
+    temp <- append(temp, "not_sig")
+  }
+  i=i+1
+} 
+#add temp as col
+SD_Tyr1P_AVG_then_FC_plotting_df$outside_1p5_SD <- temp
+
+
+
+#repeat for Ser2P
+#SD_Ser2P_FC_then_AVG_plotting_df
+temp <- vector()
+i=1
+while (i<=nrow(SD_Ser2P_FC_then_AVG_plotting_df)) {
+  if (SD_Ser2P_FC_then_AVG_plotting_df$over[i] == TRUE) {
+    temp <- append(temp, "over")
+  } else if (SD_Ser2P_FC_then_AVG_plotting_df$under[i] == TRUE) {
+    temp <- append(temp, "under")
+  } else {
+    temp <- append(temp, "not_sig")
+  }
+  i=i+1
+} 
+#add temp as col
+SD_Ser2P_FC_then_AVG_plotting_df$outside_1p5_SD <- temp
+
+#SD_Ser2P_FC_then_AVG_plotting_df
+temp <- vector()
+i=1
+while (i<=nrow(SD_Ser2P_AVG_then_FC_plotting_df)) {
+  if (SD_Ser2P_AVG_then_FC_plotting_df$over[i] == TRUE) {
+    temp <- append(temp, "over")
+  } else if (SD_Ser2P_AVG_then_FC_plotting_df$under[i] == TRUE) {
+    temp <- append(temp, "under")
+  } else {
+    temp <- append(temp, "not_sig")
+  }
+  i=i+1
+} 
+#add temp as col
+SD_Ser2P_AVG_then_FC_plotting_df$outside_1p5_SD <- temp
+
+
+
+
+#re-save SD df
+write_delim(SD_Tyr1P_FC_then_AVG_plotting_df, "1p5_SD_Tyr1P_FC_then_AVG_df.tsv", delim = "\t", col_names = TRUE)
+write_delim(SD_Tyr1P_AVG_then_FC_plotting_df, "1p5_SD_Tyr1P_AVG_then_FC_df.tsv", delim = "\t", col_names = TRUE)
+write_delim(SD_Ser2P_FC_then_AVG_plotting_df, "1p5_SD_Ser2P_FC_then_AVG_df.tsv", delim = "\t", col_names = TRUE)
+write_delim(SD_Ser2P_AVG_then_FC_plotting_df, "1p5_SD_Ser2P_AVG_then_FC_df.tsv", delim = "\t", col_names = TRUE)
+```
+
+venn diagram gene lists to compare differences in avg methods
+```{r venn diagrams for 1.5 SD genes comparison}
+#read in dfs
+SD_Tyr1P_FC_then_AVG_plotting_df <- read.table("1p5_SD_Tyr1P_FC_then_AVG_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+SD_Tyr1P_AVG_then_FC_plotting_df <- read.table("1p5_SD_Tyr1P_AVG_then_FC_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+SD_Ser2P_FC_then_AVG_plotting_df <- read.table("1p5_SD_Ser2P_FC_then_AVG_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+SD_Ser2P_AVG_then_FC_plotting_df <- read.table("1p5_SD_Ser2P_AVG_then_FC_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#put into good format for venn.diagram()
+FtA_Ty_over_SD_df <- filter(SD_Tyr1P_FC_then_AVG_plotting_df, SD_Tyr1P_FC_then_AVG_plotting_df$over_1p5_SD == TRUE)
+AtF_Ty_over_SD_df <- filter(SD_Tyr1P_AVG_then_FC_plotting_df, SD_Tyr1P_AVG_then_FC_plotting_df$over_1p5_SD == TRUE)
+x <- list(as.character(FtA_Ty_over_SD_df$transcriptID), as.character(AtF_Ty_over_SD_df$transcriptID))
+
+FtA_Sr_over_SD_df <- filter(SD_Ser2P_FC_then_AVG_plotting_df, SD_Ser2P_FC_then_AVG_plotting_df$over_1p5_SD == TRUE)
+AtF_Sr_over_SD_df <- filter(SD_Ser2P_AVG_then_FC_plotting_df, SD_Ser2P_AVG_then_FC_plotting_df$over_1p5_SD == TRUE)
+y <- list(as.character(FtA_Sr_over_SD_df$transcriptID), as.character(AtF_Sr_over_SD_df$transcriptID))
+
+
+#venn diagram with gene IDs
+#library(RColorBrewer)
+myCol <- brewer.pal(8, "Pastel2")[c(1, 2)]
+
+venn.diagram(x, 
+            category.names = c("FC_then_AVG", "AVG_then_FC"),
+            filename = "figures/TTS_5kb_ds/Venn_diagram_Tyr1P_genes_outside_1p5_SD.png",
+            output=T,
+            fill=myCol,
+            #cat.dist = c(0.1, 0.1), 
+            cat.pos = c(-30, 30),
+            main = "Tyr1P"
+            )
+
+venn.diagram(y, 
+            category.names = c("FC_then_AVG", "AVG_then_FC"),
+            filename = "figures/TTS_5kb_ds/Venn_diagram_Ser2P_genes_outside_1p5_SD.png",
+            output=T,
+            fill=myCol,
+            cat.pos = c(-20, 20),
+            main = "Ser2P"
+            )
+
+
+```
+
+
+
+
+```{r plot scatterplots with SD lines (haven't done yet)}
+#read in dfs
+SD_Tyr1P_FC_then_AVG_plotting_df <- read.table("1p5_SD_Tyr1P_FC_then_AVG_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+SD_Tyr1P_AVG_then_FC_plotting_df <- read.table("1p5_SD_Tyr1P_AVG_then_FC_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+SD_Ser2P_FC_then_AVG_plotting_df <- read.table("1p5_SD_Ser2P_FC_then_AVG_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+SD_Ser2P_AVG_then_FC_plotting_df <- read.table("1p5_SD_Ser2P_AVG_then_FC_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+#plot, color by outlier
+TY_FtA <- ggplot(SD_Tyr1P_FC_then_AVG_plotting_df, aes(log2Rpb1, log2Tyr1P, color = over_1p5_SD, label = transcriptID) ) +
+  geom_point(alpha=0.8, size=1, show.legend = FALSE) + 
+  labs(title = "FC Tyr1P ChIP-seq reads TTS-5kb ds", subtitle = "Fold Change then Average", x="log2 Pol II Fold Change in 5kb ds of TTS", y="log2 Tyr1P Fold Change in 5kb ds of TTS")+
+  xlim(-5,5) + ylim(-5,5) +
+  scale_colour_manual(values=c("#666666", "#850f09")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0.945) + # +1.5 SD line
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  -0.945) +  # -1.5 SD line
+  geom_abline(color="black", slope =  1, intercept =  0) + #fit line
+  #annotation_custom(grobTree(textGrob("y = x", x=0.1,  y=0.9, hjust=0.15))) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)   #draw quadrents
+
+TY_AtF <- ggplot(SD_Tyr1P_AVG_then_FC_plotting_df, aes(log2Rpb1, log2Tyr1P, color = over_1p5_SD, label = transcriptID) ) +
+  geom_point(alpha=0.8, size=1, show.legend = FALSE) + 
+  labs(title = "FC Tyr1P ChIP-seq reads TTS-5kb ds", subtitle = "Average then Fold Change", x="log2 Pol II Fold Change in 5kb ds of TTS", y="log2 Tyr1P Fold Change in 5kb ds of TTS")+
+  xlim(-5,5) + ylim(-5,5) +
+  scale_colour_manual(values=c("#666666", "#850f09")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0.946) + # +1.5 SD line
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  -0.946) +  # -1.5 SD line
+  geom_abline(color="black", slope =  1, intercept =  0) + #fit line
+  #annotation_custom(grobTree(textGrob("y = x", x=0.1,  y=0.9, hjust=0.15))) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)   #draw quadrents
+
+
+
+#Ser2P
+SR_FtA <- ggplot(SD_Ser2P_FC_then_AVG_plotting_df, aes(log2Rpb1, log2Ser2P, color = over_1p5_SD, label = transcriptID) ) +
+  geom_point(alpha=0.8, size=1, show.legend = FALSE) + 
+  labs(title = "FC Ser2P ChIP-seq reads TTS-5kb ds", subtitle = "Fold Change then Average", x="log2 Pol II Fold Change in 5kb ds of TTS", y="log2 Ser2P Fold Change in 5kb ds of TTS")+
+  xlim(-5,5) + ylim(-5,5) +
+  scale_colour_manual(values=c("#666666", "#850f09")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0.694) + # +1.5 SD line
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  -0.694) +  # -1.5 SD line
+  geom_abline(color="black", slope =  1, intercept =  0) + #fit line
+  #annotation_custom(grobTree(textGrob("y = x", x=0.1,  y=0.9, hjust=0.15))) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)   #draw quadrents
+
+SR_AtF <- ggplot(SD_Ser2P_AVG_then_FC_plotting_df, aes(log2Rpb1, log2Ser2P, color = over_1p5_SD, label = transcriptID) ) +
+  geom_point(alpha=0.8, size=1, show.legend = FALSE) + 
+  labs(title = "FC Ser2P ChIP-seq reads TTS-5kb ds", subtitle = "Average then Fold Change", x="log2 Pol II Fold Change in 5kb ds of TTS", y="log2 Tyr1P Fold Change in 5kb ds of TTS")+
+  xlim(-5,5) + ylim(-5,5) +
+  scale_colour_manual(values=c("#666666", "#850f09")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0.728) + # +1.5 SD line
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  -0.728) +  # -1.5 SD line
+  geom_abline(color="black", slope =  1, intercept =  0) + #fit line
+  #annotation_custom(grobTree(textGrob("y = x", x=0.1,  y=0.9, hjust=0.15))) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)   #draw quadrents
+
+
+#save
+png("figures/TTS_5kb_ds/Tyr1P_vs_PolII_log2_FC_null_hypoth_1p5_SD_lines_AVG_then_FC_scatterplot.png", 350, 350)
+print(TY_AtF)
+dev.off()
+png("figures/TTS_5kb_ds/Tyr1P_vs_PolII_log2_FC_null_hypoth_1p5_SD_lines_FC_then_AVG_scatterplot.png", 350, 350)
+print(TY_FtA)
+dev.off()
+
+
+png("figures/TTS_5kb_ds/Ser2P_vs_PolII_log2_FC_null_hypoth_1p5_SD_lines_AVG_then_FC_scatterplot.png", 350, 350)
+print(SR_AtF)
+dev.off()
+png("figures/TTS_5kb_ds/Ser2P_vs_PolII_log2_FC_null_hypoth_1p5_SD_lines_FC_then_AVG_scatterplot.png", 350, 350)
+print(SR_FtA)
+dev.off()
+
+```
+
+
+
+
+
+Leaning towards avg reps then FC or other calculations
+  best to avg or sum? is there a difference?
+  NO DIFFERENCE WHEN TAKING A FC OR RATIO
+---------------------------------------------------------
+Sum vs avg reps
+  TTS-5kbds region
+  already have avg then FC scatterplot, just need to make sum the FC to compare
+```{r Make Sum_reps col}
+#read in reps norm counts table
+#RPK dfs
+Tyr1P_exp_RPK_5kbds_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/06_analysis/scatterplots/RPK_TTSto5kb_expressed.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+Ser2P_exp_5kbds_RPK <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/RPK_TTSto5kb_expressed.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#FC dfs
+Tyr1P_exp_FC_5kbds_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/06_analysis/scatterplots/FC_5kbds_exp.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+Ser2P_exp_FC_5kbds_df <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/FC_TTSto5kb_expressed.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+
+#add sum reps col
+#Tyr1P
+Tyr1P_exp_RPK_5kbds_df$Rpb1_NHS_sum <- (Tyr1P_exp_RPK_5kbds_df$NHS_Rpb1_R7 + Tyr1P_exp_RPK_5kbds_df$NHS_Rpb1_R8) 
+Tyr1P_exp_RPK_5kbds_df$Rpb1_HS_sum <- (Tyr1P_exp_RPK_5kbds_df$HS_Rpb1_R7 + Tyr1P_exp_RPK_5kbds_df$HS_Rpb1_R8) 
+Tyr1P_exp_RPK_5kbds_df$Tyr1P_NHS_sum <- (Tyr1P_exp_RPK_5kbds_df$NHS_Tyr1P_R7 + Tyr1P_exp_RPK_5kbds_df$NHS_Tyr1P_R8) 
+Tyr1P_exp_RPK_5kbds_df$Tyr1P_HS_sum <- (Tyr1P_exp_RPK_5kbds_df$HS_Tyr1P_R7 + Tyr1P_exp_RPK_5kbds_df$HS_Tyr1P_R8) 
+  #then FC
+Tyr1P_exp_FC_5kbds_df$Rpb1_sum_then_FC <- Tyr1P_exp_RPK_5kbds_df$Rpb1_HS_sum / Tyr1P_exp_RPK_5kbds_df$Rpb1_NHS_sum 
+Tyr1P_exp_FC_5kbds_df$Tyr1P_sum_then_FC <- Tyr1P_exp_RPK_5kbds_df$Tyr1P_HS_sum / Tyr1P_exp_RPK_5kbds_df$Tyr1P_NHS_sum
+
+
+#Ser2P
+Ser2P_exp_5kbds_RPK$Rpb1_NHS_sum <- (Ser2P_exp_5kbds_RPK$Rpb1_NHS_R6 + Ser2P_exp_5kbds_RPK$Rpb1_NHS_R8) 
+Ser2P_exp_5kbds_RPK$Rpb1_HS_sum <- (Ser2P_exp_5kbds_RPK$Rpb1_HS_R6 + Ser2P_exp_5kbds_RPK$Rpb1_HS_R8) 
+Ser2P_exp_5kbds_RPK$Ser2P_NHS_sum <- (Ser2P_exp_5kbds_RPK$Ser2P_NHS_R6 + Ser2P_exp_5kbds_RPK$Ser2P_NHS_R8) 
+Ser2P_exp_5kbds_RPK$Ser2P_HS_sum <- (Ser2P_exp_5kbds_RPK$Ser2P_HS_R6 + Ser2P_exp_5kbds_RPK$Ser2P_HS_R8) 
+  #then FC
+Ser2P_exp_FC_5kbds_df$Rpb1_sum_then_FC <- Ser2P_exp_5kbds_RPK$Rpb1_HS_sum / Ser2P_exp_5kbds_RPK$Rpb1_NHS_sum 
+Ser2P_exp_FC_5kbds_df$Ser2P_sum_then_FC <- Ser2P_exp_5kbds_RPK$Ser2P_HS_sum / Ser2P_exp_5kbds_RPK$Ser2P_NHS_sum
+
+
+
+
+#re-save
+write_delim(Tyr1P_exp_FC_5kbds_df, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/06_analysis/scatterplots/FC_5kbds_exp.tsv", delim = "\t", col_names = TRUE)
+write_delim(Ser2P_exp_FC_5kbds_df, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/FC_TTSto5kb_expressed.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+```{r SUM then FC: plotting scatterplots}
+#(not using common genes)
+#now make plotting DFs
+Tyr1P_plotting_df_1 <- data.frame(transcriptID = Tyr1P_exp_FC_5kbds_df$transcriptID, Rpb1_sum_then_FC = Tyr1P_exp_FC_5kbds_df$Rpb1_sum_then_FC, Tyr1P_sum_then_FC = Tyr1P_exp_FC_5kbds_df$Tyr1P_sum_then_FC)
+Tyr1P_plotting_df <- left_join(Tyr1P_plotting_df_1, ChIP_genes_master_df[c(1,14,18,20,21,25,26)], by = "transcriptID")
+#remove longRT genes
+Tyr1P_plotting_df <- filter(Tyr1P_plotting_df, Tyr1P_plotting_df$longRT == FALSE) #1826 -> 1748 genes
+#save plotting df
+write_delim(Tyr1P_plotting_df, "Tyr1P_5kbds_sumThenFC_plotting_DF.tsv", delim = "\t", col_names = TRUE)
+
+Ser2P_plotting_df_1 <- data.frame(transcriptID = Ser2P_exp_FC_5kbds_df$transcriptID, Rpb1_sum_then_FC = Ser2P_exp_FC_5kbds_df$Rpb1_sum_then_FC, Ser2P_sum_then_FC = Ser2P_exp_FC_5kbds_df$Ser2P_sum_then_FC)
+Ser2P_plotting_df <- left_join(Ser2P_plotting_df_1, ChIP_genes_master_df[c(1,14,18,20,21,25,26)], by = "transcriptID")
+#remove longRT genes
+Ser2P_plotting_df <- filter(Ser2P_plotting_df, Ser2P_plotting_df$longRT == FALSE) #2717 -> 2597 genes 
+#save plotting df
+write_delim(Ser2P_plotting_df, "Ser2P_5kbds_sumThenFC_plotting_DF.tsv", delim = "\t", col_names = TRUE)
+
+
+
+#plot
+t <- ggplot(Tyr1P_plotting_df, aes(log2(Rpb1_sum_then_FC), log2(Tyr1P_sum_then_FC), label = transcriptID) ) + 
+  geom_point(alpha=0.8, size=1, color = "#141414") + #696969 gray
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)           #draw quadrents
+  
+
+png("figures/TTS_5kb_ds/Tyr1PvRpb1_log2_SUM_then_FC_5kbds_scatterplot.png", 500, 500)
+print(t)
+dev.off()
+
+
+
+s <- ggplot(Ser2P_plotting_df, aes(log2(Rpb1_sum_then_FC), log2(Ser2P_sum_then_FC), label = transcriptID) ) + 
+  geom_point(alpha=0.8, size=1, color = "#141414") + #696969 gray
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)            #draw quadrents
+
+
+
+png("figures/TTS_5kb_ds/Ser2PvRpb1_log2_SUM_then_FC_5kbds_scatterplot.png", 500, 500)
+print(s)
+dev.off()
+
+```
+
+---------------------------------------------------------
+
+
+
+
+
+BOXPLOT +P / Pol II (y) for NHS vs HS (x)
+  Showing is +p mark elevated after HS in TTS region?
+  avg -> FC 
+  vs 
+  FC -> avg
+-----------------------------------------------
+start with norm RPK for TTS-5kbds region 
+```{r read-in RPK dfs}
+#RPK dfs
+Tyr1P_exp_RPK_5kbds_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/06_analysis/scatterplots/RPK_TTSto5kb_expressed.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+Ser2P_exp_5kbds_RPK <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/RPK_TTSto5kb_expressed.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#save to testing reps folder
+write_delim(Tyr1P_exp_RPK_5kbds_df, "Tyr1P_exp_RPK_5kbds.tsv", delim = "\t", col_names = TRUE)
+write_delim(Ser2P_exp_5kbds_RPK, "Ser2P_exp_5kbds_RPK.tsv", delim = "\t", col_names = TRUE)
+
+
+```
+
+make +p / Pol II ratios
+  avg -> ratio and ratio -> avg
+```{r make ratio dfs}
+Tyr1P_d_PolII_df <- data.frame(transcriptID = Tyr1P_exp_RPK_5kbds_df$rowname,
+                               NHS_Tyr1P_d_PolII_avg_then_ratio = ((Tyr1P_exp_RPK_5kbds_df$NHS_Tyr1P_R7 + Tyr1P_exp_RPK_5kbds_df$NHS_Tyr1P_R8)/2) / ((Tyr1P_exp_RPK_5kbds_df$NHS_Rpb1_R7 + Tyr1P_exp_RPK_5kbds_df$NHS_Rpb1_R8)/2),
+                               HS_Tyr1P_d_PolII_avg_then_ratio = ((Tyr1P_exp_RPK_5kbds_df$HS_Tyr1P_R7 + Tyr1P_exp_RPK_5kbds_df$HS_Tyr1P_R8)/2) / ((Tyr1P_exp_RPK_5kbds_df$HS_Rpb1_R7 + Tyr1P_exp_RPK_5kbds_df$HS_Rpb1_R8)/2),
+                               
+                               NHS_Tyr1P_d_PolII_ratio_then_avg = (((Tyr1P_exp_RPK_5kbds_df$NHS_Tyr1P_R7 / Tyr1P_exp_RPK_5kbds_df$NHS_Rpb1_R7) + (Tyr1P_exp_RPK_5kbds_df$NHS_Tyr1P_R8 / Tyr1P_exp_RPK_5kbds_df$NHS_Rpb1_R8))/2),
+                               HS_Tyr1P_d_PolII_ratio_then_avg = (((Tyr1P_exp_RPK_5kbds_df$HS_Tyr1P_R7 / Tyr1P_exp_RPK_5kbds_df$HS_Rpb1_R7) + (Tyr1P_exp_RPK_5kbds_df$HS_Tyr1P_R8 / Tyr1P_exp_RPK_5kbds_df$HS_Rpb1_R8))/2)
+                               )
+
+
+#sanity check - how similar are the methods?
+summary(Tyr1P_d_PolII_df$NHS_Tyr1P_d_PolII_avg_then_ratio)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.2624  0.6431  0.8174  0.8662  1.0408  2.1306 
+summary(Tyr1P_d_PolII_df$NHS_Tyr1P_d_PolII_ratio_then_avg)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.2611  0.6426  0.8232  0.8735  1.0500  2.3882 
+
+summary(Tyr1P_d_PolII_df$HS_Tyr1P_d_PolII_avg_then_ratio)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.2143  0.7968  0.9986  1.0278  1.2299  2.4203 
+summary(Tyr1P_d_PolII_df$HS_Tyr1P_d_PolII_ratio_then_avg)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.2687  0.9070  1.1381  1.1679  1.3921  2.7203 
+
+
+#Ser2P
+Ser2P_d_PolII_df <- data.frame(transcriptID = Ser2P_exp_5kbds_RPK$rowname,
+                               NHS_Ser2P_d_PolII_avg_then_ratio = ((Ser2P_exp_5kbds_RPK$Ser2P_NHS_R6 + Ser2P_exp_5kbds_RPK$Ser2P_NHS_R8)/2) / ((Ser2P_exp_5kbds_RPK$Rpb1_NHS_R6 + Ser2P_exp_5kbds_RPK$Rpb1_NHS_R8)/2),
+                               HS_Ser2P_d_PolII_avg_then_ratio = ((Ser2P_exp_5kbds_RPK$Ser2P_HS_R6 + Ser2P_exp_5kbds_RPK$Ser2P_HS_R8)/2) / ((Ser2P_exp_5kbds_RPK$Rpb1_HS_R6 + Ser2P_exp_5kbds_RPK$Rpb1_HS_R8)/2),
+                               
+                               NHS_Ser2P_d_PolII_ratio_then_avg = (((Ser2P_exp_5kbds_RPK$Ser2P_NHS_R6 / Ser2P_exp_5kbds_RPK$Rpb1_NHS_R6) + (Ser2P_exp_5kbds_RPK$Ser2P_NHS_R8 / Ser2P_exp_5kbds_RPK$Rpb1_NHS_R8))/2),
+                               HS_Ser2P_d_PolII_ratio_then_avg = (((Ser2P_exp_5kbds_RPK$Ser2P_HS_R6 / Ser2P_exp_5kbds_RPK$Rpb1_HS_R6) + (Ser2P_exp_5kbds_RPK$Ser2P_HS_R8 / Ser2P_exp_5kbds_RPK$Rpb1_HS_R8))/2)
+                               )
+
+
+#sanity check - how similar are the methods?
+summary(Ser2P_d_PolII_df$NHS_Ser2P_d_PolII_avg_then_ratio)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.1965  0.5865  0.6738  0.7049  0.7937  1.6061 
+summary(Ser2P_d_PolII_df$NHS_Ser2P_d_PolII_ratio_then_avg)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.1865  0.5944  0.6764  0.7064  0.7970  1.5549 
+
+summary(Ser2P_d_PolII_df$HS_Ser2P_d_PolII_avg_then_ratio)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.1831  0.7064  0.8456  0.8415  0.9857  1.7044 
+summary(Ser2P_d_PolII_df$HS_Ser2P_d_PolII_ratio_then_avg)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.1916  0.7154  0.8548  0.8466  0.9887  1.6902 
+
+#save
+write_delim(Tyr1P_d_PolII_df, "Tyr1P_d_PolII_avg_order_test_boxplots.tsv", delim = "\t", col_names = TRUE)
+write_delim(Ser2P_d_PolII_df, "Ser2P_d_PolII_avg_order_test_boxplots.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+plottng: +p / Pol II ratio for NHS and HS
+```{r}
+#make plotting dfs
+TdP_plotting_df <- pivot_longer(Tyr1P_d_PolII_df, cols = c(2:5))
+TdP_avg_then_ratio_plotting_df <- pivot_longer(Tyr1P_d_PolII_df[1:3], cols = c(2:3))
+TdP_ratio_then_avg_plotting_df <- pivot_longer(Tyr1P_d_PolII_df[c(1,4,5)], cols = c(2:3))
+
+SdP_plotting_df <- pivot_longer(Ser2P_d_PolII_df, cols = c(2:5))
+SdP_avg_then_ratio_plotting_df <- pivot_longer(Ser2P_d_PolII_df[1:3], cols = c(2:3))
+SdP_ratio_then_avg_plotting_df <- pivot_longer(Ser2P_d_PolII_df[c(1,4,5)], cols = c(2:3))
+
+#factor to set order
+TdP_plotting_df$name <- factor(TdP_plotting_df$name, levels = c("NHS_Tyr1P_d_PolII_avg_then_ratio", "HS_Tyr1P_d_PolII_avg_then_ratio", "NHS_Tyr1P_d_PolII_ratio_then_avg", "HS_Tyr1P_d_PolII_ratio_then_avg") )
+SdP_plotting_df$name <- factor(SdP_plotting_df$name, levels = c("NHS_Ser2P_d_PolII_avg_then_ratio", "HS_Ser2P_d_PolII_avg_then_ratio", "NHS_Ser2P_d_PolII_ratio_then_avg", "HS_Ser2P_d_PolII_ratio_then_avg") )
+
+
+
+
+#make boxplots
+t_b <- ggplot(TdP_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = 16) + 
+  coord_cartesian(ylim = c(0,3)) +
+  ylab("Tyr1P Pol II / total Pol II") + 
+  ggtitle("3' Tyr1P / Pol II before and after HS") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 10), legend.position="none", axis.text.x = element_text(angle = -45, vjust=1, hjust = 0)) +
+  #theme(plot.title = element_text(size = 9, face = "bold")) + #change size of title
+  scale_colour_manual(values=c("#696969","orange", "black","#b52d0e")) 
+
+
+s_b <- ggplot(SdP_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = 16) + 
+  coord_cartesian(ylim = c(0,3)) +
+  ylab("Ser2P Pol II / total Pol II") + 
+  ggtitle("3' Ser2P / Pol II before and after HS") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 10), legend.position="none", axis.text.x = element_text(angle = -45, vjust=1, hjust = 0)) +
+  #theme(plot.title = element_text(size = 9, face = "bold")) + #change size of title
+  scale_colour_manual(values=c("#696969","#816EA7", "black","purple")) 
+
+#save
+png("figures/TTS_5kb_ds/Tyr1PdPolII_NHS_v_HS_boxplot.png", 350, 450)
+print(t_b)
+dev.off()
+png("figures/TTS_5kb_ds/Ser2PdPolII_NHS_v_HS_boxplot.png", 350, 450)
+print(s_b)
+dev.off()
+
+```
+
+
+-----------------------------------------------
+
+
+
+
+
+
+
+Check reps in PPP region (not finished)
+----------------------------------------
+count for PPP region and scatterplot / boxplot to compare avg methods
+
+first make PPP window bed files
+```{r making PPP bed files}
+#read-in PPP bed file
+PPP_ALL_genes_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v095_TSS_to_250bp.bed", header = FALSE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#and master genes df
+ChIP_genes_master_df <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/ChIP_analyzable_genes_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#filter for ChIP-analyzable genes
+PPP_ChIP_genes_bed <- filter(PPP_ALL_genes_bed, PPP_ALL_genes_bed$V4 %in% ChIP_genes_master_df$transcriptID)
+
+#save
+write_delim(PPP_ChIP_genes_bed, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/Documentation/MANE_gene_annotation_bed_files/PPP_ChIP_analyzable_genes.bed", delim = "\t", col_names = FALSE)
+```
+
+
+Run bedtools count to get counts at PPP windows
+ #coverage -a <gene_definition_bed_file> -b <read_counts_bed_file> > output.bed
+Tyr1P PPP counts: /Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/05_evaluating_replicates/PPP_counts
+Ser2P PPP counts: /Volumes/Seq_data_4/2020_Katy_Ser2P_Rpb1_ChIP-seq/hg38/06_evaluating_replicates/gene_count_bed_files/ppp/
+```{r read-in PPP counts}
+#read-in PPP counts
+#Tyr1P
+fl_Tyr1P <- list.files("../PPP_counts", 
+                  pattern = "*_count.bed",
+                  full.names = TRUE)
+Tyr1P_counts <- lapply(fl_Tyr1P, read.table)
+names(Tyr1P_counts) <- gsub("../PPP_counts/|_PPP_count.bed", "", fl_Tyr1P)
+
+#Ser2P
+fl_Ser2P <- list.files("/Volumes/Seq_data_4/2020_Katy_Ser2P_Rpb1_ChIP-seq/hg38/06_evaluating_replicates/gene_count_bed_files/ppp", 
+                  pattern = "*_count.bed",
+                  full.names = TRUE)
+Ser2P_counts <- lapply(fl_Ser2P, read.table)
+names(Ser2P_counts) <- gsub("/Volumes/Seq_data_4/2020_Katy_Ser2P_Rpb1_ChIP-seq/hg38/06_evaluating_replicates/gene_count_bed_files/ppp/|_ppp_count.bed", "", fl_Ser2P)
+
+```
+for each df in the list containing the bed files from each folder:
+V1-6 for each bed file is the information for each gene (chr, start, end, name, score, strand)
+V7-10 are outputs from bedtools calculating the coverage per gene
+  V7: num of reads that overlapped with the gene by at least 1 bp
+  V8: number of bases in the gene that had at least one read align
+  V9: the length of the gene/ region counted over (in bp)
+  V10: the fraction of bases in the gene that had at least one read / # of bases with zero reads
+  
+make into tables of just counts (V7)
+```{r make dfs}
+#Tyr1P
+Tyr1P_PPP_counts_df <- data.frame(transcriptIDs = Tyr1P_counts$NHS_Rpb1_R7$V4,
+                                NHS_Rpb1_R7 = Tyr1P_counts$NHS_Rpb1_R7$V7,
+                                NHS_Rpb1_R8 = Tyr1P_counts$NHS_Rpb1_R8$V7,
+                                HS_Rpb1_R7 = Tyr1P_counts$HS_Rpb1_R7$V7,
+                                HS_Rpb1_R8 = Tyr1P_counts$HS_Rpb1_R8$V7,
+                                NHS_Tyr1P_R7 = Tyr1P_counts$NHS_Tyr1P_R7$V7,
+                                NHS_Tyr1P_R8 = Tyr1P_counts$NHS_Tyr1P_R8$V7,
+                                HS_Tyr1P_R7 = Tyr1P_counts$HS_Tyr1P_R7$V7,
+                                HS_Tyr1P_R8 = Tyr1P_counts$HS_Tyr1P_R8$V7
+                                )
+
+Ser2P_PPP_counts_df <- data.frame(transcriptIDs = Ser2P_counts$HS_Rpb1_R6$V4,
+                                input = Ser2P_counts$input$V7,
+                                NHS_Rpb1_R6 = Ser2P_counts$NHS_Rpb1_R6$V7,
+                                NHS_Rpb1_R8 = Ser2P_counts$NHS_Rpb1_R8$V7,
+                                HS_Rpb1_R6 = Ser2P_counts$HS_Rpb1_R6$V7,
+                                HS_Rpb1_R8 = Ser2P_counts$HS_Rpb1_R8$V7,
+                                NHS_Ser2P_R6 = Ser2P_counts$NHS_Ser2P_R6$V7,
+                                NHS_Ser2P_R8 = Ser2P_counts$NHS_Ser2P_R8$V7,
+                                HS_Ser2P_R6 = Ser2P_counts$HS_Ser2P_R6$V7,
+                                HS_Ser2P_R8 = Ser2P_counts$HS_Ser2P_R8$V7
+                                )
+```
+```{r norm for seq depth}
+#read-in mapped reads
+mapped_reads_Tyr1P <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/Documentation/mapped_reads_per_sample_Tyr1P_ChIP.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+mapped_reads_Ser2P <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/notes/mapped_reads_per_sample.tsv", header = FALSE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#add factor col to Ser2P df
+mapped_reads_Ser2P$factor <- 1E8 / mapped_reads_Ser2P$V2
+
+#now normalize reads by seq depth
+  #multiply each col by its factor
+Tyr1P_PPP_counts_df$NHS_Rpb1_R7 <- Tyr1P_PPP_counts_df$NHS_Rpb1_R7 * mapped_reads_Tyr1P$factor[1] 
+Tyr1P_PPP_counts_df$NHS_Rpb1_R8 <- Tyr1P_PPP_counts_df$NHS_Rpb1_R8 * mapped_reads_Tyr1P$factor[2]
+Tyr1P_PPP_counts_df$HS_Rpb1_R7 <- Tyr1P_PPP_counts_df$HS_Rpb1_R7 * mapped_reads_Tyr1P$factor[3]
+Tyr1P_PPP_counts_df$HS_Rpb1_R8 <- Tyr1P_PPP_counts_df$HS_Rpb1_R8 * mapped_reads_Tyr1P$factor[4]
+Tyr1P_PPP_counts_df$NHS_Tyr1P_R7 <- Tyr1P_PPP_counts_df$NHS_Tyr1P_R7 * mapped_reads_Tyr1P$factor[5]
+Tyr1P_PPP_counts_df$NHS_Tyr1P_R8 <- Tyr1P_PPP_counts_df$NHS_Tyr1P_R8 * mapped_reads_Tyr1P$factor[6]
+Tyr1P_PPP_counts_df$HS_Tyr1P_R7 <- Tyr1P_PPP_counts_df$HS_Tyr1P_R7 * mapped_reads_Tyr1P$factor[7]
+Tyr1P_PPP_counts_df$HS_Tyr1P_R8 <- Tyr1P_PPP_counts_df$HS_Tyr1P_R8 * mapped_reads_Tyr1P$factor[8]
+
+
+Ser2P_PPP_counts_df$input <- Ser2P_PPP_counts_df$input * mapped_reads_Ser2P$factor[1] 
+Ser2P_PPP_counts_df$NHS_Rpb1_R6 <- Ser2P_PPP_counts_df$NHS_Rpb1_R6 * mapped_reads_Ser2P$factor[2] 
+Ser2P_PPP_counts_df$NHS_Rpb1_R8 <- Ser2P_PPP_counts_df$NHS_Rpb1_R8 * mapped_reads_Ser2P$factor[3]
+Ser2P_PPP_counts_df$HS_Rpb1_R6 <- Ser2P_PPP_counts_df$HS_Rpb1_R6 * mapped_reads_Ser2P$factor[4]
+Ser2P_PPP_counts_df$HS_Rpb1_R8 <- Ser2P_PPP_counts_df$HS_Rpb1_R8 * mapped_reads_Ser2P$factor[5]
+Ser2P_PPP_counts_df$NHS_Ser2P_R6 <- Ser2P_PPP_counts_df$NHS_Ser2P_R6 * mapped_reads_Ser2P$factor[6]
+Ser2P_PPP_counts_df$NHS_Ser2P_R8 <- Ser2P_PPP_counts_df$NHS_Ser2P_R8 * mapped_reads_Ser2P$factor[7]
+Ser2P_PPP_counts_df$HS_Ser2P_R6 <- Ser2P_PPP_counts_df$HS_Ser2P_R6 * mapped_reads_Ser2P$factor[8]
+Ser2P_PPP_counts_df$HS_Ser2P_R8 <- Ser2P_PPP_counts_df$HS_Ser2P_R8 * mapped_reads_Ser2P$factor[9]
+#could have made this a loop but we're here now...
+
+
+
+#write out tables
+write_delim(Tyr1P_PPP_counts_df, "Tyr1P_PPP_counts_norm.tsv", delim = "\t", col_names = TRUE)
+write_delim(Ser2P_PPP_counts_df, "Ser2P_PPP_counts_norm.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+made replicate graphs in 05_testing_replicates.Rmd
+
+
+make individual scatterplots (like 06_scatterplots Rmd)
+  -calc RPK
+  -filter for expressed genes
+  -calculate FC w/HS
+  -plot
+  
+```{r calc RPK}
+##Can't filter Ser2P genes because used NM gene IDs not ENST... will need to re-run bed counts
+  #Ser2P_PPP_counts_df <- read.table("Ser2P_PPP_counts_norm.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+  #since Ser2P ran before 4k ChIP_genes list need to filter for ChIP genes
+  #Ser2P_PPP_counts_df <- filter(Ser2P_PPP_counts_df, Ser2P_PPP_counts_df$transcriptIDs %in% ChIP_genes_master_df$transcriptID)
+
+#make col of IDs into rownames
+Tyr1P_PPP_counts_df <- column_to_rownames(Tyr1P_PPP_counts_df, "transcriptIDs")
+Ser2P_PPP_counts_df <- column_to_rownames(Ser2P_PPP_counts_df, "transcriptIDs")
+
+
+
+#reads / kb
+Tyr1P_PPP_counts_df <- Tyr1P_PPP_counts_df / 0.250 #divide by 250bp for PPP window
+Ser2P_PPP_counts_df <- Ser2P_PPP_counts_df / 0.250
+
+
+
+#save dfs
+write_delim(rownames_to_column(Tyr1P_PPP_counts_df, var = "transcriptID"), "Tyr1P_PPP_RPK.tsv", delim = "\t", col_names = TRUE)
+write_delim(rownames_to_column(Ser2P_PPP_counts_df, var = "transcriptID"), "Ser2P_PPP_RPK.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+f. Filter for expressed genes in ChIP-seq data
+  need to remove genes with low or zero signal before calculating FC so not dividing by super small numbers
+```{r above input filter}
+
+#filter
+Tyr1P_PPP_RPK_exp_df <- filter(Tyr1P_PPP_counts_df, ((Tyr1P_PPP_counts_df$NHS_Rpb1_R7 + Tyr1P_PPP_counts_df$NHS_Rpb1_R8) /2) > 1.5*(mean(Ser2P_PPP_counts_df$input)) & 
+                                     ((Tyr1P_PPP_counts_df$HS_Rpb1_R7 + Tyr1P_PPP_counts_df$HS_Rpb1_R8) /2) > 1.5*(mean(Ser2P_PPP_counts_df$input)) &
+                                     ((Tyr1P_PPP_counts_df$NHS_Tyr1P_R7 + Tyr1P_PPP_counts_df$NHS_Tyr1P_R8) /2) > 1.5*(mean(Ser2P_PPP_counts_df$input)) &
+                                     ((Tyr1P_PPP_counts_df$HS_Tyr1P_R7 + Tyr1P_PPP_counts_df$HS_Tyr1P_R8) /2) > 1.5*(mean(Ser2P_PPP_counts_df$input)) 
+                        )
+#Tyr1P: 3.9k genes passed filter
+
+
+#save dfs
+write_delim(rownames_to_column(Tyr1P_PPP_RPK_exp_df), "Tyr1P_PPP_RPK_exp.tsv", delim = "\t", col_names = TRUE)
+```
+
+???
+
+----------------------------------------
+
+

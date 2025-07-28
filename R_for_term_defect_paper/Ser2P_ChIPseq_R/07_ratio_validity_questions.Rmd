@@ -1,0 +1,158 @@
+---
+title: "07_ratio_validity_questions"
+author: "Katy Walsh"
+date: "10/11/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+***this goes with 07f rmd***
+
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(grid)
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+library(ggfortify)
+library(gtable)
+library(ggpmisc)
+
+#wd: setwd("~/Desktop/Katy/HS_4sU-Seq_2021")
+
+```
+
+
+
+
+plot Ser2P/PolII vs counts
+----
+```{r}
+#total counts norm for seq depth (same 5kb window for all genes so this or RPK is the same)
+view(counts_TTS_df)
+
+#plotting df
+view(bp_TTS_df)
+
+#filter so all genes match
+counts_TTS_df <- rownames_to_column(counts_TTS_df)
+colnames(counts_TTS_df) <- c("transcrtiptID", colnames(counts_TTS_df[2:10]))
+counts_TTS_df_2 <- filter(counts_TTS_df, counts_TTS_df$transcrtiptID %in% bp_TTS_df$transcriptID)
+#and gnbd counts
+counts_gnbd_df_2 <- rownames_to_column(counts_gnbd_df)
+colnames(counts_gnbd_df_2) <- c("transcrtiptID", colnames(counts_gnbd_df_2[2:10]))
+counts_gnbd_df_2 <- filter(counts_gnbd_df_2, counts_gnbd_df_2$transcrtiptID %in% bp_TTS_df$transcriptID)
+
+#add col for raw counts #
+bp_TTS_df$TTS_counts <- (counts_TTS_df_2$Rpb1_NHS_R6 + counts_TTS_df_2$Rpb1_NHS_R8) /2
+bp_TTS_df$gnbd_counts <- (counts_gnbd_df_2$Rpb1_NHS_R6 + counts_gnbd_df_2$Rpb1_NHS_R8) /2
+
+```
+
+plotting Ser2P / Pol II vs counts
+```{r}
+#scatterplot
+p <- ggplot(bp_TTS_df, aes(log2(Ser2PdPolII), TTS_counts)) + 
+  geom_point(alpha=0.8, size=1 ) +  
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +  #draw quadrents
+  #labs(title = "TTS to 5kb ds fold change", subtitle = "no change in uncleaved 4sU RNA reads") +
+  xlab("Ser2P / Pol II") + ylab("NHS TTS counts")
+
+p <- ggplot(bp_TTS_df, aes(log2(Ser2PdPolII), gnbd_counts)) + 
+  geom_point(alpha=0.8, size=1 ) +  
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +  #draw quadrents
+  #labs(title = "TTS to 5kb ds fold change", subtitle = "no change in uncleaved 4sU RNA reads") +
+  xlab("Ser2P / Pol II") + ylab("NHS gnbd counts")
+
+```
+----
+good - doesn't seem to corolate, looks like fairly random distribution
+
+
+
+
+color code scatterplot of Ser2P fc vs Rpb1 fc by total Rpb1 signal
+```{r}
+#plotting df
+view(TTS_FC_exp_plotting_df)
+
+#add counts col
+  #can I color by just number or do I need to make categories?
+#add col for raw counts #
+TTS_FC_exp_plotting_df$TTS_counts <- (counts_TTS_df_2$Rpb1_NHS_R6 + counts_TTS_df_2$Rpb1_NHS_R8) /2
+TTS_FC_exp_plotting_df$gnbd_counts <- (counts_gnbd_df_2$Rpb1_NHS_R6 + counts_gnbd_df_2$Rpb1_NHS_R8) /2
+
+#plotting
+p <- ggplot(TTS_FC_exp_plotting_df, aes(log2(Rpb1), log2(Ser2P), color = TTS_counts) ) + 
+  geom_point(alpha=0.8, size=1) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) #+  #draw quadrents
+
+#seem fairly distributed, now let's look at filtering by top and botom quartiles-ish - different?
+summary(TTS_FC_exp_plotting_df$TTS_counts) #1st quartile <235.7, 3rd quartile >555.3
+p_df <- filter(TTS_FC_exp_plotting_df, TTS_FC_exp_plotting_df$TTS_counts >555.3)
+
+ggplot(p_df, aes(log2(Rpb1), log2(Ser2P)) ) + 
+  geom_point(alpha=0.8, size=1) + 
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) #+  #draw quadrents
+
+```
+they do appear to be different :(
+  but I could also come up with biological reasons for this
+  
+  
+  
+  
+
+
+
+Is the first premise of this issue even true? what's the max Rpb1 signal compared to Ser2P (NHS) and min HS Rpb1 and Ser2P?
+  for this to be an artifact issue the Rpb1 max signal would need to be higher and min HS Ser2P signal would need to be higher
+```{r}
+counts_TTS_df_2 #filtered for exp genes
+summary( ((counts_TTS_df_2$Rpb1_NHS_R6 + counts_TTS_df_2$Rpb1_NHS_R8) /2) ) #avg here since don't have avg col
+#NHS Rpb1
+#  Min.    1st Qu.  Median    Mean    3rd Qu.    Max. 
+#  101.1   235.7    354.0     470.0   555.3      3391.6 
+summary( ((counts_TTS_df_2$Ser2P_NHS_R6 + counts_TTS_df_2$Ser2P_NHS_R8) /2) ) #avg here since don't have avg col
+#NHS Ser2P
+#  Min.   1st Qu.  Median    Mean    3rd Qu.    Max. 
+#  101.2   173.2   233.5     303.9   343.7      2415.8 
+
+#Ser2P max is lower and 3rd quartile is lower but min is the same
+
+
+#now is HS Ser2P min higher than Rpb1?
+summary( ((counts_TTS_df_2$Rpb1_HS_R6 + counts_TTS_df_2$Rpb1_HS_R8) /2) ) #avg here since don't have avg col
+#HS Rpb1
+#  Min.    1st Qu.  Median    Mean    3rd Qu.    Max. 
+#  101.2   140.0    184.0     309.0   287.4      10251.0 
+summary( ((counts_TTS_df_2$Ser2P_HS_R6 + counts_TTS_df_2$Ser2P_HS_R8) /2) )
+#   Min.    1st Qu.  Median    Mean    3rd Qu.    Max. 
+#   101.1   130.0    158.6     221.4   210.6      9131.7 
+
+#nope, the min is the same for Rpb1 and Ser2P and bottom quartiles similar but max is still lower so I think we're good
+
+
+#background higher in NHS 10kb ds Ser2P vs Rpb1?
+summary( ((counts_10to20kb_df$Rpb1_NHS_R6 + counts_10to20kb_df$Rpb1_NHS_R8) /2) )
+#Rpb1
+#  Min.   1st Qu.  Median    Mean    3rd Qu.    Max. 
+#   0.0   123.3    162.6     239.8   252.8      5000.0 
+
+summary( ((counts_10to20kb_df$Ser2P_NHS_R6 + counts_10to20kb_df$Ser2P_NHS_R8) /2) )
+#Ser2P
+#  Min.   1st Qu.  Median    Mean    3rd Qu.    Max. 
+#   0.0   173.8     210.3    240.2   268.5     3687.1 
+
+#similar... Ser2P has higher 1st quartile and median but 3rd quartile is similar and max is lower
+```
+
+
+
+

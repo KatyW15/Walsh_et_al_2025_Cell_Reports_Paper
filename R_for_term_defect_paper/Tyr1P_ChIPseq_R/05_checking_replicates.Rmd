@@ -1,0 +1,315 @@
+---
+title: "05_checking_replicates"
+author: "Katy Walsh"
+date: "3/18/2024"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+wd: /Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/
+
+```{r setup}
+library(tidyverse)
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+library(plyr)
+library(dplyr)
+library(gtable)
+library(grid)
+```
+
+count tags accross the gene body and TTS-5kb ds for ChIP-analyzable genes using bed_tools
+#bash script 05_03
+
+
+Read in data from bed counts
+```{r read in counts data}
+#gnbd counts
+fl_gnbd <- list.files("05_evaluating_replicates/gnbd_counts", 
+                  pattern = "*_count.bed",
+                  full.names = TRUE)
+gnbd_counts <- lapply(fl_gnbd, read.table)
+names(gnbd_counts) <- gsub("05_evaluating_replicates/gnbd_counts/|_gnbd_count.bed", "", fl_gnbd)
+
+#term_window counts
+fl_term <- list.files("05_evaluating_replicates/5kb_ds_counts", 
+                  pattern = "*_count.bed",
+                  full.names = TRUE)
+term_counts <- lapply(fl_term, read.table)
+names(term_counts) <- gsub("05_evaluating_replicates/5kb_ds_counts/|_ds_count.bed", "", fl_term)
+
+#PPP counts
+fl_PPP <- list.files("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/05_evaluating_replicates/PPP_counts", 
+                  pattern = "*_count.bed",
+                  full.names = TRUE)
+PPP_counts <- lapply(fl_PPP, read.table)
+names(PPP_counts) <- gsub("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/05_evaluating_replicates/PPP_counts/|_PPP_count.bed", "", fl_PPP)
+
+```
+for each df in the list containing the bed files from each folder:
+V1-6 for each bed file is the information for each gene (chr, start, end, name, score, strand)
+V7-10 are outputs from bedtools calculating the coverage per gene
+  V7: num of reads that overlapped with the gene by at least 1 bp
+  V8: number of bases in the gene that had at least one read align
+  V9: the length of the gene/ region counted over (in bp)
+  V10: the fraction of bases in the gene that had at least one read / # of bases with zero reads
+  
+make into tables of just counts (V7)
+```{r}
+#make sure the gene IDs are the same for all the gene bed files
+summary(gnbd_counts$HS_Tyr1P_R8$V4 == gnbd_counts$HS_Rpb1_R8$V4) #good
+   #didn't check every possible combination but checked about half and all were the same
+
+
+gnbd_counts_table <- data.frame(transcriptIDs = gnbd_counts$HS_Rpb1_R7$V4,
+                                NHS_Rpb1_R7 = gnbd_counts$NHS_Rpb1_R7$V7,
+                                NHS_Rpb1_R8 = gnbd_counts$NHS_Rpb1_R8$V7,
+                                HS_Rpb1_R7 = gnbd_counts$HS_Rpb1_R7$V7,
+                                HS_Rpb1_R8 = gnbd_counts$HS_Rpb1_R8$V7,
+                                NHS_Tyr1P_R7 = gnbd_counts$NHS_Tyr1P_R7$V7,
+                                NHS_Tyr1P_R8 = gnbd_counts$NHS_Tyr1P_R8$V7,
+                                HS_Tyr1P_R7 = gnbd_counts$HS_Tyr1P_R7$V7,
+                                HS_Tyr1P_R8 = gnbd_counts$HS_Tyr1P_R8$V7
+                                )
+
+term_counts_table <- data.frame(transcriptIDs = term_counts$HS_Rpb1_R7$V4,
+                                NHS_Rpb1_R7 = term_counts$NHS_Rpb1_R7$V7,
+                                NHS_Rpb1_R8 = term_counts$NHS_Rpb1_R8$V7,
+                                HS_Rpb1_R7 = term_counts$HS_Rpb1_R7$V7,
+                                HS_Rpb1_R8 = term_counts$HS_Rpb1_R8$V7,
+                                NHS_Tyr1P_R7 = term_counts$NHS_Tyr1P_R7$V7,
+                                NHS_Tyr1P_R8 = term_counts$NHS_Tyr1P_R8$V7,
+                                HS_Tyr1P_R7 = term_counts$HS_Tyr1P_R7$V7,
+                                HS_Tyr1P_R8 = term_counts$HS_Tyr1P_R8$V7
+                                )
+
+PPP_counts_table <- data.frame(transcriptIDs = PPP_counts$HS_Rpb1_R7$V4,
+                                NHS_Rpb1_R7 = PPP_counts$NHS_Rpb1_R7$V7,
+                                NHS_Rpb1_R8 = PPP_counts$NHS_Rpb1_R8$V7,
+                                HS_Rpb1_R7 = PPP_counts$HS_Rpb1_R7$V7,
+                                HS_Rpb1_R8 = PPP_counts$HS_Rpb1_R8$V7,
+                                NHS_Tyr1P_R7 = PPP_counts$NHS_Tyr1P_R7$V7,
+                                NHS_Tyr1P_R8 = PPP_counts$NHS_Tyr1P_R8$V7,
+                                HS_Tyr1P_R7 = PPP_counts$HS_Tyr1P_R7$V7,
+                                HS_Tyr1P_R8 = PPP_counts$HS_Tyr1P_R8$V7
+                                )
+```
+
+
+normalize bed counts output for number of reads per TD
+```{r}
+#need to make table for reads per sample
+  #from bowtie2 mapping console outputs
+  #reads that mapped exactly 1 time
+  #Rpb1 R8 pulled from Ser2P ChIP-seq
+mapped_reads_nums <- data.frame(sample = c("NHS_Rpb1_R7", "NHS_Rpb1_R8", "HS_Rpb1_R7", "HS_Rpb1_R8", "NHS_Tyr1P_R7", "NHS_Tyr1P_R8", "HS_Tyr1P_R7", "HS_Tyr1P_R8"),
+                                    num_mapped_reads = c(50643605, 77598616, 63935896, 56775134, 70464783, 88212484, 62648227, 104775116)
+                                    )
+
+#normalize to 100 million reads
+#100,000,000 = factor * num mapped reads
+mapped_reads_nums$factor <- 1E8 / mapped_reads_nums$num_mapped_reads
+
+#save for future reference
+write_delim(mapped_reads_nums, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/Documentation/mapped_reads_per_sample_Tyr1P_ChIP.tsv", delim = "\t", col_names = TRUE)
+
+
+#now normalize reads by seq depth
+  #multiply each col by its factor
+gnbd_counts_table$NHS_Rpb1_R7 <- gnbd_counts_table$NHS_Rpb1_R7 * mapped_reads_nums$factor[1] 
+gnbd_counts_table$NHS_Rpb1_R8 <- gnbd_counts_table$NHS_Rpb1_R8 * mapped_reads_nums$factor[2]
+gnbd_counts_table$HS_Rpb1_R7 <- gnbd_counts_table$HS_Rpb1_R7 * mapped_reads_nums$factor[3]
+gnbd_counts_table$HS_Rpb1_R8 <- gnbd_counts_table$HS_Rpb1_R8 * mapped_reads_nums$factor[4]
+gnbd_counts_table$NHS_Tyr1P_R7 <- gnbd_counts_table$NHS_Tyr1P_R7 * mapped_reads_nums$factor[5]
+gnbd_counts_table$NHS_Tyr1P_R8 <- gnbd_counts_table$NHS_Tyr1P_R8 * mapped_reads_nums$factor[6]
+gnbd_counts_table$HS_Tyr1P_R7 <- gnbd_counts_table$HS_Tyr1P_R7 * mapped_reads_nums$factor[7]
+gnbd_counts_table$HS_Tyr1P_R8 <- gnbd_counts_table$HS_Tyr1P_R8 * mapped_reads_nums$factor[8]
+
+
+term_counts_table$NHS_Rpb1_R7 <- term_counts_table$NHS_Rpb1_R7 * mapped_reads_nums$factor[1] 
+term_counts_table$NHS_Rpb1_R8 <- term_counts_table$NHS_Rpb1_R8 * mapped_reads_nums$factor[2]
+term_counts_table$HS_Rpb1_R7 <- term_counts_table$HS_Rpb1_R7 * mapped_reads_nums$factor[3]
+term_counts_table$HS_Rpb1_R8 <- term_counts_table$HS_Rpb1_R8 * mapped_reads_nums$factor[4]
+term_counts_table$NHS_Tyr1P_R7 <- term_counts_table$NHS_Tyr1P_R7 * mapped_reads_nums$factor[5]
+term_counts_table$NHS_Tyr1P_R8 <- term_counts_table$NHS_Tyr1P_R8 * mapped_reads_nums$factor[6]
+term_counts_table$HS_Tyr1P_R7 <- term_counts_table$HS_Tyr1P_R7 * mapped_reads_nums$factor[7]
+term_counts_table$HS_Tyr1P_R8 <- term_counts_table$HS_Tyr1P_R8 * mapped_reads_nums$factor[8]
+#could have made this a loop but we're here now...
+
+PPP_counts_table$NHS_Rpb1_R7 <- PPP_counts_table$NHS_Rpb1_R7 * mapped_reads_nums$factor[1] 
+PPP_counts_table$NHS_Rpb1_R8 <- PPP_counts_table$NHS_Rpb1_R8 * mapped_reads_nums$factor[2]
+PPP_counts_table$HS_Rpb1_R7 <- PPP_counts_table$HS_Rpb1_R7 * mapped_reads_nums$factor[3]
+PPP_counts_table$HS_Rpb1_R8 <- PPP_counts_table$HS_Rpb1_R8 * mapped_reads_nums$factor[4]
+PPP_counts_table$NHS_Tyr1P_R7 <- PPP_counts_table$NHS_Tyr1P_R7 * mapped_reads_nums$factor[5]
+PPP_counts_table$NHS_Tyr1P_R8 <- PPP_counts_table$NHS_Tyr1P_R8 * mapped_reads_nums$factor[6]
+PPP_counts_table$HS_Tyr1P_R7 <- PPP_counts_table$HS_Tyr1P_R7 * mapped_reads_nums$factor[7]
+PPP_counts_table$HS_Tyr1P_R8 <- PPP_counts_table$HS_Tyr1P_R8 * mapped_reads_nums$factor[8]
+
+
+#write out tables
+write_delim(gnbd_counts_table, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/05_evaluating_replicates/gnbd_counts_norm.tsv", delim = "\t", col_names = TRUE)
+write_delim(term_counts_table, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/05_evaluating_replicates/TTS5kbds_counts_norm.tsv", delim = "\t", col_names = TRUE)
+write_delim(PPP_counts_table, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/05_evaluating_replicates/PPP_counts_norm.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+for PPP region for Ser2P and Tyr1P 
+  df's from 05_testing_avg_method.Rmd
+```{r read-in PPP counts for figures}
+Tyr1P_PPP_counts_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/05_evaluating_replicates/testing_avg_methods/Tyr1P_PPP_counts_norm.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+Ser2P_PPP_counts_df <- read.table("//Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/05_evaluating_replicates/testing_avg_methods/Ser2P_PPP_counts_norm.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+```
+  
+
+
+
+now compare replicates
+```{r setup "df" for next block}
+#df <- column_to_rownames(gnbd_counts_table, "transcriptIDs") 
+#df <- column_to_rownames(term_counts_table, "transcriptIDs") 
+df <- column_to_rownames(Tyr1P_PPP_counts_df, "transcriptIDs")
+#df <- column_to_rownames(Ser2P_PPP_counts_df[c(1,3:10)], "transcriptIDs")
+
+```
+
+```{r, making the grid just needs "df" input}
+#make grid for all samples, Rpb1 replicates and Ser2P replicates
+
+n <- dim(df)[2] #number of columns
+labels <- colnames(df) #makes a list of conditions
+sizeItem = 16
+sizeCor = 4
+#list of heatmap plots
+heatmaps <- list()
+for (i in 2:n) { #starting in 2nd row
+   for (j in 1:(i-1)) { #starting in 1st column, limited to number of row - 1/bottom half of diagonal
+      # Data frame  of correlation values
+      df.point <- na.omit(data.frame(cbind(x = df[ , j], y = df[ , i])))
+      x = df.point[, 1]
+      y = df.point[, 2]
+      correlation = cor.test(x, y)
+      cor <- data.frame(rsquared = correlation$estimate * correlation$estimate)
+      cor$cor = paste0("P  = ", sprintf("%.4f",correlation$estimate), "\n",
+                       "R^2 = ", sprintf("%.4f", cor$rsquared))
+      # Plot, color code based on direct comparisons between condition replicates
+      if((i == j+1) && (i%%2==0)){
+        p <- ggplot(cor, aes(x = 1, y = 1)) +
+          geom_tile(fill = "orangered1", width=1, height=1) +
+          geom_text(aes(x = 1, y = 1, label = cor), colour = "White", size = 3, family = "Helvetica", show.legend = FALSE) +
+          theme_bw()+ 
+          theme(panel.grid = element_blank()) 
+      }else{
+        p <- ggplot(cor, aes(x = 1, y = 1)) +
+          geom_tile(fill = "steelblue") +
+          geom_text(aes(x = 1, y = 1, label = cor), colour = "White", size = 3, family = "Helvetica", show.legend = FALSE) +
+          theme_bw() + 
+          theme(panel.grid = element_blank()) 
+      }
+      name <- paste0("Item", j, i)
+      heatmaps[[name]] <- p
+  }
+}
+
+#diagonals, diagonal line separating halves
+diagonals <- list()
+for(i in 1:n){
+  p <- ggplot()+
+    geom_abline(slope=-1, intercept = 1)+
+    theme_bw() + theme(panel.grid = element_blank())
+  name <- paste0("Item", i)
+  diagonals[[name]] <- p
+}
+
+## List of scatter plots
+scatters <- list()
+for (i in 1:(n-1)) {
+   for (j in (i+1):n) {
+    # Data frame 
+    df.point <- na.omit(data.frame(cbind(x = df[ , j], y = df[ , i])))
+    # Plot, color code based on comparisons between biological replicates
+    if((j == i+1) && (j%%2==0)){
+      p <- ggplot(df.point, aes(x, y)) +
+      geom_jitter(size = .7, position = position_jitter(width = .2, height= .2), aes(color = "orangered2")) +
+      stat_smooth(method="lm", colour="black") +
+      theme_bw() + theme(panel.grid = element_blank())
+    }else {
+      p <- ggplot(df.point, aes(x, y)) +
+      geom_jitter(size = .7, position = position_jitter(width = .2, height= .2)) +
+      stat_smooth(method="lm", colour="gray84") +
+      theme_bw() + theme(panel.grid = element_blank())
+    }
+    name <- paste0("Item", j, i)
+    scatters[[name]] <- p
+   } 
+}
+
+# Convert the ggplots to grobs, 
+# and select only the plot panels
+
+scatterGrob <- llply(scatters, ggplotGrob)
+scatterGrob <- llply(scatterGrob,  gtable_filter, "panel")
+tileGrob <- llply(heatmaps, ggplotGrob)
+tileGrob <- llply(tileGrob, gtable_filter, "panel")
+diagonalGrob <- llply(diagonals, ggplotGrob)
+diagonalGrob <- llply(diagonalGrob, gtable_filter, "panel")
+## Set up the gtable layout
+gt <- gtable(unit(rep(1, n), "null"), unit(rep(1, n), "null"))
+
+## Add the plots to the layout
+#Diagonal plots along the diagonal
+for(i in 1:n) {
+  gt <- gtable_add_grob(gt, diagonalGrob[[i]], t=i, l=i)
+}
+# heatmaps in the lower half
+k <- 1
+for (i in 2:n) {
+   for (j in 1:(i-1)) {
+gt <- gtable_add_grob(gt, tileGrob[[k]], t=i, l=j)
+k <- k+1
+} }
+# scatters in the upper half
+k <- 1
+for (i in 1:(n-1)) {
+   for (j in (i+1):n) {
+gt <- gtable_add_grob(gt, scatterGrob[[k]], t=i, l=j)
+k <- k+1
+} }
+#Add item labels
+gt <- gtable_add_cols(gt, unit(1.5, "lines"), 0)
+gt <- gtable_add_rows(gt, unit(1.5, "lines"), 2*n)
+for(i in 1:n) {
+textGrob <- textGrob(labels[i], gp = gpar(fontfamily = "Helvetica", fontsize = 8))
+gt <- gtable_add_grob(gt, textGrob, t=n+1, l=i+1)
+}
+for(i in 1:n) {
+textGrob <- textGrob(labels[i], rot = 90, gp = gpar(fontfamily = "Helvetica", fontsize = 8))
+gt <- gtable_add_grob(gt, textGrob, t=i, l=1)
+}
+# Add small gap between the panels
+for(i in n:1) gt <- gtable_add_cols(gt, unit(0.2, "lines"), i)
+for(i in (n-1):1) gt <- gtable_add_rows(gt, unit(0.2, "lines"), i)
+# Add chart title
+# gt <- gtable_add_rows(gt, unit(1.5, "lines"), 0)
+# textGrob <- textGrob("Correlation Matrix", gp = gpar(fontfamily = "Helvetica", fontface = "bold", fontsize = 8)) 
+# gt <- gtable_add_grob(gt, textGrob, t=1, l=3, r=2*n+1)
+#Add margins to the whole plot
+for(i in c(2*n+1, 0)) {
+gt <- gtable_add_cols(gt, unit(.75, "lines"), i)
+gt <- gtable_add_rows(gt, unit(.75, "lines"), i)
+}
+```
+
+```{r plot}
+grid.newpage()
+grid.draw(gt)
+```
+
+#Save when ready
+(saved manually so could size window as needed)
+```{r}
+pdf("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/05_evaluating_replicates/figures/gnbd_replicates_matrix.pdf", height=5, width=5, units="in", res = 300)
+grid.newpage()
+grid.draw(gt)
+while (!is.null(dev.list()))  dev.off()
+```

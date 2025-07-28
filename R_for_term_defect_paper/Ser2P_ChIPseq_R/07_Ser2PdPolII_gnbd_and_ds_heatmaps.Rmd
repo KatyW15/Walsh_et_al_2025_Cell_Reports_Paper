@@ -1,0 +1,397 @@
+---
+title: "07_Ser2PdPolII_gnbd_and_ds_heatmaps"
+author: "Katy Walsh"
+date: "10/6/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(grid)
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+library(ggfortify)
+library(gtable)
+library(ggpmisc)
+
+#wd: setwd("~/Desktop/Katy/HS_4sU-Seq_2021")
+
+```
+
+
+make bed files with only analyzable genes
+  use "both" df from 07f for list of genes that have signal above background in gnbd and TTS regions
+```{r}
+heatmap_gene_IDs <- both$rowname
+```
+filter gnbd bed file
+```{r}
+#just using full MANE bed file
+MANE_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v095_whole_gene.bed", header = FALSE, sep="\t", stringsAsFactors = FALSE, quote = "")
+MANE_bed <- MANE_bed[1:6]
+
+heatmap_genes_bed <- filter(MANE_bed, MANE_bed$V4 %in% heatmap_gene_IDs)
+```
+save bed file
+```{r}
+write_delim(heatmap_genes_bed, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07_heatmaps/filtered_whole_gene_MANE_for_heatmaps.bed", delim = "\t", col_names = FALSE)
+
+```
+
+Also make gnbd version (+250 to cut off PPP)
+```{r}
+#make gnbd bed file
+gnbd_bed <- heatmap_genes_bed
+colnames(gnbd_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+i = 1
+while(i <= nrow(gnbd_bed)){
+  #if on + strand, start = TSS and end = TTS
+  #for +250 from TSS: start = start + 250; end = end
+  if(gnbd_bed$strand[i]=="+"){
+    gnbd_bed$start[i] = gnbd_bed$start[i] +250
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #for +250 from TSS: end = end - 250
+  else{
+    gnbd_bed$end[i] = gnbd_bed$end[i] -250
+  }
+  i = i+1
+}
+
+write_delim(gnbd_bed, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07_heatmaps/filtered_gnbd_MANE_for_heatmaps.bed", delim = "\t", col_names = FALSE)
+```
+
+And make ds TTS to 5kb bed files
+```{r}
+#make 5kb ds bed file
+ds_bed <- heatmap_genes_bed
+colnames(ds_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+i = 1
+while(i <= nrow(ds_bed)){
+  #if on + strand, start = TSS and end = TTS
+  #for 5kb ds: start = end; end = end + 5000 (END FIRST!!!)
+  if(ds_bed$strand[i]=="+"){
+    ds_bed$start[i] = ds_bed$end[i]
+    ds_bed$end[i] = ds_bed$end[i] +5000
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #for 5kb ds: end = start; start = start -5kb
+  else{
+    ds_bed$end[i] = ds_bed$start[i]
+    ds_bed$start[i] = ds_bed$start[i] -5000
+  }
+  i = i+1
+}
+
+write_delim(ds_bed, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07_heatmaps/filtered_5kbds_MANE_for_heatmaps.bed", delim = "\t", col_names = FALSE)
+
+#aslo just need TTS annotations so that homer can run +- 5kb
+tts_bed <- heatmap_genes_bed
+colnames(tts_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+i = 1
+while(i <= nrow(tts_bed)){
+  #if on + strand, start = TSS and end = TTS
+  #for 5kb ds: start = end; end = end
+  if(tts_bed$strand[i]=="+"){
+    tts_bed$start[i] = tts_bed$end[i]
+  } 
+  #if on - strand, end = TSS and start = TTS
+  #for 5kb ds: end = start; start = start 
+  else{
+    tts_bed$end[i] = tts_bed$start[i]
+  }
+  i = i+1
+}
+
+write_delim(tts_bed, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07_heatmaps/filtered_TTS_MANE_for_heatmaps.bed", delim = "\t", col_names = FALSE)
+
+```
+
+
+Now run homer ghist for all 3
+    
+    annotatePeaks.pl <peak/BED file> <genome>   > <output file>
+    in Ser2P bash scripts folder: 07_gnbd_and_ds_heatmaps.sh
+  output in /Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07_heatmaps/
+                                                                                            whole_gene_ghist/
+                                                                                            gnbd_ghist/
+                                                                                            5kb_ds_ghist/
+
+now need to read-in files, calc Ser2P / Pol II for each rep then avg reps, then plot heatmaps
+```{r read-in ghist files}
+#start with gnbd
+fl_gnbd <- list.files("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07_heatmaps/gnbd_ghist/", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+ls_gnbd <- lapply(fl_gnbd, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ls_gnbd) <- gsub("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07_heatmaps/gnbd_ghist//|.tsv", "", fl_gnbd)
+
+#whole gene
+fl_whole <- list.files("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07_heatmaps/whole_gene_ghist/", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+ls_whole <- lapply(fl_whole, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ls_whole) <- gsub("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07_heatmaps/whole_gene_ghist//|.tsv", "", fl_whole)
+
+#5kb
+fl_5kb <- list.files("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07_heatmaps/5kb_ds_ghist/", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+ls_5kb <- lapply(fl_5kb, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ls_5kb) <- gsub("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07_heatmaps/5kb_ds_ghist//|.tsv", "", fl_5kb)
+
+```
+
+```{r input df}
+#gnbd
+input_gnbd_heatmap_df <- column_to_rownames(ls_gnbd$input, var = "Gene")
+#whole gene
+input_whole_heatmap_df <- column_to_rownames(ls_whole$input, var = "Gene")
+#ds
+input_ds_heatmap_df <- column_to_rownames(ls_5kb$input, var = "Gene")[,51:101]#only need second half since there's 5kb on either side
+
+
+
+#gnbd +5kb ds
+heatmap_gnbd_5kbds_input <- left_join(rownames_to_column(input_whole_heatmap_df) , rownames_to_column(input_ds_heatmap_df) , by = "rowname")
+heatmap_gnbd_5kbds_input <- column_to_rownames(heatmap_gnbd_5kbds_input, var = "rowname")
+#whole gene +5kb ds
+heatmap_whole_gene_5kbds_input <- left_join(rownames_to_column(input_whole_heatmap_df) , rownames_to_column(input_ds_heatmap_df) , by = "rowname")
+heatmap_whole_gene_5kbds_input <- column_to_rownames(heatmap_whole_gene_5kbds_input, var = "rowname")
+
+heatmap(as.matrix(heatmap_whole_gene_5kbds_input), Rowv = NA, Colv = NA )
+
+```
+
+Pol II heatmap
+```{r}
+#gnbd
+R6_NHS_gnbd_heatmap_df <- column_to_rownames(ls_gnbd$NHS_Rpb1_R6, var = "Gene")
+#whole gene
+R6_NHS_whole_heatmap_df <- column_to_rownames(ls_whole$NHS_Rpb1_R6, var = "Gene")
+#ds
+R6_NHS_ds_heatmap_df <- column_to_rownames(ls_5kb$NHS_Rpb1_R6, var = "Gene")[,51:101]#only need second half since there's 5kb on either side
+
+heatmap(as.matrix(R6_NHS_ds_heatmap_df), Rowv = NA, Colv = NA )
+
+
+
+#gnbd +5kb ds
+heatmap_gnbd_5kbds_NHS_R6 <- left_join(rownames_to_column(R6_NHS_whole_heatmap_df) , rownames_to_column(R6_NHS_ds_heatmap_df) , by = "rowname")
+heatmap_gnbd_5kbds_NHS_R6 <- column_to_rownames(heatmap_gnbd_5kbds_NHS_R6, var = "rowname")
+#whole gene +5kb ds
+heatmap_whole_gene_5kbds_NHS_R6 <- left_join(rownames_to_column(R6_NHS_whole_heatmap_df) , rownames_to_column(R6_NHS_ds_heatmap_df) , by = "rowname")
+heatmap_whole_gene_5kbds_NHS_R6 <- column_to_rownames(heatmap_whole_gene_5kbds_NHS_R6, var = "rowname")
+
+heatmap(as.matrix(heatmap_whole_gene_5kbds), Rowv = NA, Colv = NA )
+heatmap(as.matrix(R6_NHS_whole_heatmap_df), Rowv = NA, Colv = NA )
+heatmap(as.matrix(R6_NHS_ds_heatmap_df), Rowv = NA, Colv = NA )
+
+
+```
+
+
+
+```{r Ser2PdPolII dfs}
+#make dfs for Ser2P/Rpb1
+#gnbd
+gnbd_R6_NHS_Ser2PdPolII <- column_to_rownames(ls_gnbd$NHS_Ser2P_R6, var = "Gene")  / column_to_rownames(ls_gnbd$NHS_Rpb1_R6, var = "Gene")
+gnbd_R8_NHS_Ser2PdPolII <- column_to_rownames(ls_gnbd$NHS_Ser2P_R8, var = "Gene")  / column_to_rownames(ls_gnbd$NHS_Rpb1_R8, var = "Gene")
+gnbd_R6_HS_Ser2PdPolII <- column_to_rownames(ls_gnbd$HS_Ser2P_R6, var = "Gene")  / column_to_rownames(ls_gnbd$HS_Rpb1_R6, var = "Gene")
+gnbd_R8_HS_Ser2PdPolII <- column_to_rownames(ls_gnbd$HS_Ser2P_R8, var = "Gene")  / column_to_rownames(ls_gnbd$HS_Rpb1_R8, var = "Gene")
+  #avg reps
+gnbd_NHS_Ser2PdPolII_avg <- (gnbd_R6_NHS_Ser2PdPolII + gnbd_R8_NHS_Ser2PdPolII) /2
+gnbd_HS_Ser2PdPolII_avg <- (gnbd_R6_HS_Ser2PdPolII + gnbd_R8_HS_Ser2PdPolII) /2
+
+#whole gene
+whole_R6_NHS_Ser2PdPolII <- column_to_rownames(ls_whole$NHS_Ser2P_R6 , var = "Gene")  / column_to_rownames(ls_whole$NHS_Rpb1_R6, var = "Gene")
+whole_R8_NHS_Ser2PdPolII <- column_to_rownames(ls_whole$NHS_Ser2P_R8, var = "Gene")  / column_to_rownames(ls_whole$NHS_Rpb1_R8, var = "Gene")
+whole_R6_HS_Ser2PdPolII <- column_to_rownames(ls_whole$HS_Ser2P_R6, var = "Gene")  / column_to_rownames(ls_whole$HS_Rpb1_R6, var = "Gene")
+whole_R8_HS_Ser2PdPolII <- column_to_rownames(ls_whole$HS_Ser2P_R8, var = "Gene")  / column_to_rownames(ls_whole$HS_Rpb1_R8, var = "Gene")
+  #avg reps
+whole_NHS_Ser2PdPolII_avg <- (whole_R6_NHS_Ser2PdPolII + whole_R8_NHS_Ser2PdPolII) /2
+whole_HS_Ser2PdPolII_avg <- (whole_R6_HS_Ser2PdPolII + whole_R8_HS_Ser2PdPolII) /2
+
+#5kb ds
+ds_R6_NHS_Ser2PdPolII <- column_to_rownames(ls_5kb$NHS_Ser2P_R6 , var = "Gene")  / column_to_rownames(ls_5kb$NHS_Rpb1_R6, var = "Gene")
+ds_R8_NHS_Ser2PdPolII <- column_to_rownames(ls_5kb$NHS_Ser2P_R8, var = "Gene")  / column_to_rownames(ls_5kb$NHS_Rpb1_R8, var = "Gene")
+ds_R6_HS_Ser2PdPolII <- column_to_rownames(ls_5kb$HS_Ser2P_R6, var = "Gene")  / column_to_rownames(ls_5kb$HS_Rpb1_R6, var = "Gene")
+ds_R8_HS_Ser2PdPolII <- column_to_rownames(ls_5kb$HS_Ser2P_R8, var = "Gene")  / column_to_rownames(ls_5kb$HS_Rpb1_R8, var = "Gene")
+  #avg reps
+ds_NHS_Ser2PdPolII_avg <- (ds_R6_NHS_Ser2PdPolII + ds_R8_NHS_Ser2PdPolII) /2
+ds_HS_Ser2PdPolII_avg <- (ds_R6_HS_Ser2PdPolII + ds_R8_HS_Ser2PdPolII) /2
+
+
+
+
+
+
+#test plot to see how different reps are
+heatmap(as.matrix(gnbd_NHS_Ser2PdPolII_avg[1:10,1:10]) )
+heatmap(as.matrix(ds_R6_NHS_Ser2PdPolII), Rowv = NA, Colv = NA )
+heatmap(as.matrix(ds_R8_NHS_Ser2PdPolII), Rowv = NA, Colv = NA )
+  #hard to tell with gnbd... using 5kb ds instead, right... norm Ser2P to Pol II will be mostly even, you won't see the peaks
+
+```
+
+
+
+
+
+
+
+
+
+
+
+TTS heatmap/tornadoplot
+```{r}
+analyzable_ChIP_genes <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/ChIP_analyzable_genes_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+
+MANE_20kbds_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/MANE_annotation_files/MANE_v095_20kb_ds.bed", header = FALSE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+heatmap_ds_genes_bed <- filter(MANE_20kbds_bed, MANE_20kbds_bed$V4 %in% analyzable_ChIP_genes$transcriptID)
+#add 1kb upstream of TTS
+colnames(heatmap_ds_genes_bed) <- c("chrom", "start", "end", "id", "score", "strand")
+i = 1
+while(i <= nrow(heatmap_ds_genes_bed)){
+  #if on + strand, start = TTS and end = 20kb ds
+  # move TTS to TTS - 1000bp
+  if(heatmap_ds_genes_bed$strand[i]=="+"){
+    heatmap_ds_genes_bed$start[i] = heatmap_ds_genes_bed$start[i] - 1000
+  } 
+  #if on - strand, end = TTS and start = 20kb ds
+  else{
+    heatmap_ds_genes_bed$end[i] = heatmap_ds_genes_bed$start[i] + 1000
+  }
+  i = i+1
+}
+
+
+
+write_delim(heatmap_ds_genes_bed, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07_heatmaps/filtered_20kbds_MANE_for_heatmaps.bed", delim = "\t", col_names = FALSE)
+
+```
+
+                                                                                            
+Now run homer ghist 
+    
+    annotatePeaks.pl <peak/BED file> <genome>   > <output file>
+      options: 100 bins of 200bp each (20kb / 100 bins), unstranded, norm to 1E8 reads, ghist
+    in Ser2P bash scripts folder: 07_TTS_20kb_ds_ghist_tornadoplot.sh
+  output in /Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07_heatmaps/20kb_ds_ghist/
+                                                                                           
+
+read-in ghist files
+```{r read-in ghist files}
+
+fl<- list.files("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07_heatmaps/20kb_ds_ghist/", 
+                  pattern = "*.tsv",
+                  full.names = TRUE)
+ls <- lapply(fl, read.table, header = TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ls) <- gsub("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07_heatmaps/20kb_ds_ghist//|.tsv", "", fl)
+
+#make dfs and avg reps
+R6_NHS_tornado_df <- column_to_rownames(ls$NHS_Rpb1_R6, var = "Gene")
+R8_NHS_tornado_df <- column_to_rownames(ls$NHS_Rpb1_R8, var = "Gene")
+#didn't both have the same num of genes... just going to use the common ones
+R6_NHS_tornado_df <- filter(R6_NHS_tornado_df, rownames(R6_NHS_tornado_df) %in% rownames(R8_NHS_tornado_df) ) 
+R8_NHS_tornado_df <- filter(R8_NHS_tornado_df, rownames(R8_NHS_tornado_df) %in% rownames(R6_NHS_tornado_df) )
+nrow(R6_NHS_tornado_df) == nrow(R8_NHS_tornado_df)
+summary(rownames(R6_NHS_tornado_df) == rownames(R8_NHS_tornado_df) ) #good, all match and in same order
+#now can avg
+avg_NHS_tornado_df <- (R6_NHS_tornado_df + R8_NHS_tornado_df) /2
+
+R6_HS_tornado_df <- column_to_rownames(ls$HS_Rpb1_R6, var = "Gene")
+R8_HS_tornado_df <- column_to_rownames(ls$HS_Rpb1_R8, var = "Gene")
+#didn't both have the same num of genes... just going to use the common ones
+R6_HS_tornado_df <- filter(R6_HS_tornado_df, rownames(R6_HS_tornado_df) %in% rownames(R8_HS_tornado_df) ) 
+R8_HS_tornado_df <- filter(R8_HS_tornado_df, rownames(R8_HS_tornado_df) %in% rownames(R6_HS_tornado_df) )
+nrow(R6_HS_tornado_df) == nrow(R8_HS_tornado_df)
+summary(rownames(R6_HS_tornado_df) == rownames(R8_HS_tornado_df) ) #good, all match and in same order
+#now can avg
+avg_HS_tornado_df <- (R6_HS_tornado_df + R8_HS_tornado_df) /2
+
+#now make sure NHS and HS match
+avg_NHS_tornado_df <- filter(avg_NHS_tornado_df, rownames(avg_NHS_tornado_df) %in% rownames(avg_HS_tornado_df))
+avg_HS_tornado_df <- filter(avg_HS_tornado_df, rownames(avg_HS_tornado_df) %in% rownames(avg_NHS_tornado_df))
+summary(rownames(avg_NHS_tornado_df) == rownames(avg_HS_tornado_df) ) #good, all match and in same order
+
+
+#fix col names
+colnames(avg_NHS_tornado_df) <- seq(-800, 20000, 200)
+colnames(avg_HS_tornado_df) <- seq(-800, 20000, 200)
+
+t <- rownames_to_column(avg_NHS_tornado_df)
+t2 <- rbind(t, colnames(t))
+t3 <- t2[c(3962,1:3961),]
+
+h <- rownames_to_column(avg_HS_tornado_df)
+h2 <- rbind(h, colnames(h))
+h3 <- h2[c(3962,1:3961),]
+
+
+#save
+write_delim(t3, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07_heatmaps/data_for_tornado_plotting/TTS_hist_NHS_tornado_unsorted.tsv", delim = "\t", col_names = FALSE)
+write_delim(h3, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07_heatmaps/data_for_tornado_plotting/TTS_hist_HS_tornado_unsorted.tsv", delim = "\t", col_names = FALSE)
+
+#filter out not expressed genes in ChIP data...
+#using genes plotted on scatterplot...
+exp_FC_TTS_df <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/FC_TTSto5kb_expressed.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+t4 <- filter(t3, t3$rowname %in% exp_FC_TTS_df$transcriptID) #missing about 15 genes but that's fine
+h4 <- filter(h3, h3$rowname %in% exp_FC_TTS_df$transcriptID)
+#re-make rowname row
+t5 <- rbind(t4, colnames(t4))
+t5 <- t5[c(2704,1:2703),]
+h5 <- rbind(h4, colnames(h4))
+h5 <- h5[c(2704,1:2703),]
+
+#re-save
+write_delim(t5, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07_heatmaps/data_for_tornado_plotting/exp_TTS_hist_NHS_tornado_unsorted.tsv", delim = "\t", col_names = FALSE)
+write_delim(h5, "/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07_heatmaps/data_for_tornado_plotting/exp_TTS_hist_HS_tornado_unsorted.tsv", delim = "\t", col_names = FALSE)
+
+```
+
+can plot and cluster this way, but ended up using javaTreeView and sorting manually in excel by sum of TTS-1kb ds
+  dfs and figures saved in folders in 07_heatmaps
+```{r plotting DIDN'T USE}
+#BiocManager::install("ComplexHeatmap")
+library(ComplexHeatmap)
+library(circlize)
+mycols <- colorRamp2(breaks = c(0, 0.5, 2), 
+                    colors = c("#f5f7fa", "#6d96e3", "#053999"))
+
+colnames(avg_NHS_tornado_df) <- factor(c(colnames(avg_NHS_tornado_df) ))
+?Heatmap
+Heatmap(as.matrix(avg_NHS_tornado_df), col = mycols,
+        name = "Rpb1 ChIP", #title of legend
+        column_title = "bp ds of gene", row_title = "genes",
+        row_names_gp = gpar(fontsize = 7), # Text size for row names
+        cluster_columns = FALSE
+        )
+
+Heatmap(as.matrix(avg_HS_tornado_df), 
+        name = "Rpb1 ChIP", #title of legend
+        column_title = "bp ds of gene", row_title = "genes",
+        row_names_gp = gpar(fontsize = 7) # Text size for row names
+        )
+
+```
+
+
+
+
+
+
+
+
+
+
+

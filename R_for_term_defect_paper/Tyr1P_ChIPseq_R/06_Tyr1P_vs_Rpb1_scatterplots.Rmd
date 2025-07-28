@@ -1,0 +1,692 @@
+---
+title: "06_Tyr1P_vs_Rpb1_scatterplots"
+author: "Katy Walsh"
+date: "3/19/2024"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+making Tyr1P vs Rpb1 scatterplots as a counter point to Ser2P vs Rpb1 scatterplots
+  (referencing 07f_ChIPseq_scatterplots_and_boxplots R markdown from Ser2P Chip analysis)
+  
+  
+Steps:
+  a. need to make bed files from TDs (done, part of 05)
+  b. need bed files with annotations for regions you want counts over (done, using same bed files as Ser2P analysis)
+  c. count over those windows
+      (done, already counted gnbd and TTS-5kb ds for evaluating replicates)
+  d. read in bed files and normalize for sequencing depth to 1 million reads (done in 05)
+  e. calculate RPK
+  f. filter for expressed genes (in gnbd and TTS window above input)
+  g. calculate FC
+  h. plot scatterplots
+      i. basic +- regression line
+      ii. calculate 1.5 SD
+      iii. color genes by categories to look for patterns (haven't done yet)
+  
+  
+  
+  
+```{r setup, include=FALSE}
+library(tidyverse)
+library(grid)
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+library(ggfortify)
+library(gtable)
+library(ggpmisc)
+#install.packages("VennDiagram")
+library(VennDiagram)
+
+#wd: 
+setwd("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/06_analysis/scatterplots")
+
+```
+setup plot settings:
+```{r plotting setup}
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+library(ggpmisc)
+
+theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+    )
+
+###defining plot histogram function###
+#testing
+#hist_df <- Rpb1_hist_data
+#plot_title <- "Metagene Analysis of Pol II ocupancy at the TTS"
+
+    
+plot_hist_function <- function(hist_df, plot_title, subt = "isolated genes"){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line() +
+    labs(subtitle = subt, x= "distance from TTS", y="avg norm tag coverage") +
+    ggtitle(plot_title) +
+    scale_color_manual(values=c("black", "red", "grey"))
+}
+
+```
+
+
+
+```{r}
+#read-in tables generated in 05
+  #normalized reads to 1E8 mapped reads
+gnbd_counts_table <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/05_evaluating_replicates/gnbd_counts_norm.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+ds_counts_table <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/05_evaluating_replicates/TTS5kbds_counts_norm.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+```
+
+
+e. calculate RPK
+```{r calc RPK}
+#make col of IDs into rownames
+gnbd_counts_table <- column_to_rownames(gnbd_counts_table, "transcriptIDs")
+ds_counts_table <- column_to_rownames(ds_counts_table, "transcriptIDs")
+
+#reads / kb
+RPK_gnbd_df <- gnbd_counts_table / (gnbd_counts$NHS_Rpb1_R7$V9 / 1000) #divide by gene length in kb
+    #still had gnbd_counts loaded in but if need to re-run will need to regenerate from 05 rmd
+RPK_5kbds_df <- ds_counts_table / 5 #set 5kb window so can divide everything by 5
+
+
+
+#save dfs
+write_delim(rownames_to_column(RPK_gnbd_df, var = "transcriptID"), "RPK_gnbd.tsv", delim = "\t", col_names = TRUE)
+write_delim(rownames_to_column(RPK_5kbds_df, var = "transcriptID"), "RPK_5kbds.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+f. Filter for expressed genes in ChIP-seq data
+  need to remove genes with low or zero signal before calculating FC so not dividing by super small numbers
+```{r above input filter}
+#need to pull in input RPK values from Ser2P Chip-seq
+Ser2P_gnbd_RPK <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/RPK_gnbd.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+Ser2P_5kbds_RPK <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/RPK_TTSto5kb_expressed.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+#filter
+exp_RPK_gnbd_df <- filter(RPK_gnbd_df, ((RPK_gnbd_df$NHS_Rpb1_R7 + RPK_gnbd_df$NHS_Rpb1_R8) /2) > 1.5*(mean(Ser2P_gnbd_RPK$input)) & 
+                                     ((RPK_gnbd_df$HS_Rpb1_R7 + RPK_gnbd_df$HS_Rpb1_R8) /2) > 1.5*(mean(Ser2P_gnbd_RPK$input)) &
+                                     ((RPK_gnbd_df$NHS_Tyr1P_R7 + RPK_gnbd_df$NHS_Tyr1P_R8) /2) > 1.5*(mean(Ser2P_gnbd_RPK$input)) &
+                                     ((RPK_gnbd_df$HS_Tyr1P_R7 + RPK_gnbd_df$HS_Tyr1P_R8) /2) > 1.5*(mean(Ser2P_gnbd_RPK$input)) 
+                        )
+#Ser2P: 2.1k genes passed filter, same for Tyr1P
+
+exp_RPK_5kbds_df <- filter(RPK_5kbds_df, ((RPK_5kbds_df$NHS_Rpb1_R7 + RPK_5kbds_df$NHS_Rpb1_R8) /2) > 1.5*(mean(Ser2P_gnbd_RPK$input)) & 
+                                     ((RPK_5kbds_df$HS_Rpb1_R7 + RPK_5kbds_df$HS_Rpb1_R8) /2) > 1.5*(mean(Ser2P_gnbd_RPK$input)) &
+                                     ((RPK_5kbds_df$NHS_Tyr1P_R7 + RPK_5kbds_df$NHS_Tyr1P_R8) /2) > 1.5*(mean(Ser2P_gnbd_RPK$input)) &
+                                     ((RPK_5kbds_df$HS_Tyr1P_R7 + RPK_5kbds_df$HS_Tyr1P_R8) /2) > 1.5*(mean(Ser2P_gnbd_RPK$input)) 
+                        )
+#Ser2P: 2717 genes, Tyr1P: 1826 genes
+
+
+
+#save dfs
+write_delim(rownames_to_column(exp_RPK_gnbd_df), "RPK_gnbd_expressed.tsv", delim = "\t", col_names = TRUE)
+write_delim(rownames_to_column(exp_RPK_5kbds_df), "RPK_TTSto5kb_expressed.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+
+compare expressed genes in Ser2P vs Tyr1P 
+```{r venn diagram exp gene lists}
+#read in Ser2P dfs
+Ser2P_exp_gnbd_RPK <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/RPK_gnbd_expressed.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+Ser2P_exp_5kbds_RPK <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/RPK_TTSto5kb_expressed.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+#put into df
+x <- list(as.character(rownames(exp_RPK_gnbd_df)), as.character(Ser2P_exp_gnbd_RPK$transcripID) )
+y <- list(as.character(rownames(exp_RPK_5kbds_df)), as.character(Ser2P_exp_5kbds_RPK$rowname) )
+
+#venn diagram with gene IDs
+#library(RColorBrewer)
+myCol <- brewer.pal(8, "Pastel2")[c(1, 2)]
+myCol <- brewer.pal(8, "Pastel2")[c(1, 8)]
+
+venn.diagram(x 
+             , category.names = c("Tyr1P ChIP-seq", "Ser2P ChIP-seq")
+             , filename = "gnbd_exp_genes_venn.png"
+             , output=T
+             , fill=myCol)
+
+
+```
+**looks good. Tyr1P just filtered out more for the ds genes but largely overlapping**
+plot just the 900 excluded Ser2P genes - make sure it's not one population that's being excluded
+```{r checking excluded genes}
+#read in master df
+ChIP_genes_master_df <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/ChIP_analyzable_genes_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#read in Ser2P exp genes list
+Ser2P_exp_FC_TTS_df <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/FC_TTSto5kb_expressed.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#read in Tyr1P exp genes list
+Tyr1P_exp_FC_5kbds_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/06_analysis/scatterplots/FC_5kbds_exp.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#filter for uncommon genes
+excluded_Ser2P_genes <- filter(Ser2P_exp_FC_TTS_df, !(Ser2P_exp_FC_TTS_df$transcriptID %in% Tyr1P_exp_FC_5kbds_df$transcriptID) )
+excluded_Tyr1P_genes <- filter(Tyr1P_exp_FC_5kbds_df, !(Tyr1P_exp_FC_5kbds_df$transcriptID %in% Ser2P_exp_FC_TTS_df$transcriptID) )
+
+
+
+#first have to make plotting df
+Tyr1P_plotting_df_1 <- data.frame(transcriptID = excluded_Tyr1P_genes$transcriptID, Rpb1 = excluded_Tyr1P_genes$Rpb1_avg, Tyr1P = excluded_Tyr1P_genes$Tyr1P_avg)
+Tyr1P_plotting_df <- left_join(Tyr1P_plotting_df_1, ChIP_genes_master_df[c(1,14,18,20,21,25,26)], by = "transcriptID")
+#remove longRT genes
+Tyr1P_plotting_df <- filter(Tyr1P_plotting_df, Tyr1P_plotting_df$longRT == FALSE) #2 genes removed
+
+
+Ser2P_plotting_df_1 <- data.frame(transcriptID = excluded_Ser2P_genes$transcriptID, Rpb1 = excluded_Ser2P_genes$Rpb1_avg, Ser2P = excluded_Ser2P_genes$Ser2P_avg)
+Ser2P_plotting_df <- left_join(Ser2P_plotting_df_1, ChIP_genes_master_df[c(1,14,18,20,21,25,26)], by = "transcriptID")
+#remove longRT genes
+Ser2P_plotting_df <- filter(Ser2P_plotting_df, Ser2P_plotting_df$longRT == FALSE) #44 long RT genes removed
+
+
+##plot
+ggplot(Ser2P_plotting_df_1, aes(log2(Rpb1), log2(Ser2P), label = transcriptID) ) + 
+  geom_point(alpha=0.8, size=1, color = "#141414") + #696969 gray
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +            #draw quadrents
+  ggtitle("Ser2P exp genes excluded from common genes list") 
+
+ggplot(Tyr1P_plotting_df_1, aes(log2(Rpb1), log2(Tyr1P), label = transcriptID) ) + 
+  geom_point(alpha=0.8, size=1, color = "#141414") + #696969 gray
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +            #draw quadrents
+  ggtitle("Tyr1P exp genes excluded from common genes list") 
+
+#saved plots manually
+```
+*looks like genes excluded from the common genes list are representative of the population*
+
+
+
+
+
+Fold change with HS
+```{r FC}
+#can use norm counts or RPK but using RPK since I already have it filtered for exp genes
+exp_FC_gnbd_df <- data.frame(transcriptID = rownames(exp_RPK_gnbd_df),
+                         Rpb1_R7 = exp_RPK_gnbd_df$HS_Rpb1_R7 / exp_RPK_gnbd_df$NHS_Rpb1_R7,
+                         Rpb1_R8 = exp_RPK_gnbd_df$HS_Rpb1_R8 / exp_RPK_gnbd_df$NHS_Rpb1_R8,
+                         Tyr1P_R7 = exp_RPK_gnbd_df$HS_Tyr1P_R7 / exp_RPK_gnbd_df$NHS_Tyr1P_R7,
+                         Tyr1P_R8 = exp_RPK_gnbd_df$HS_Tyr1P_R8 / exp_RPK_gnbd_df$NHS_Tyr1P_R8,
+                         Rpb1_avg = ((exp_RPK_gnbd_df$HS_Rpb1_R7 / exp_RPK_gnbd_df$NHS_Rpb1_R7) +
+                                             (exp_RPK_gnbd_df$HS_Rpb1_R8 / exp_RPK_gnbd_df$NHS_Rpb1_R8)) /2,
+                         Tyr1P_avg = ((exp_RPK_gnbd_df$HS_Tyr1P_R7 / exp_RPK_gnbd_df$NHS_Tyr1P_R7) +
+                                             (exp_RPK_gnbd_df$HS_Tyr1P_R8 / exp_RPK_gnbd_df$NHS_Tyr1P_R8)) /2
+                         )
+
+exp_FC_5kbds_df <- data.frame(transcriptID = rownames(exp_RPK_5kbds_df),
+                         Rpb1_R7 = exp_RPK_5kbds_df$HS_Rpb1_R7 / exp_RPK_5kbds_df$NHS_Rpb1_R7,
+                         Rpb1_R8 = exp_RPK_5kbds_df$HS_Rpb1_R8 / exp_RPK_5kbds_df$NHS_Rpb1_R8,
+                         Tyr1P_R7 = exp_RPK_5kbds_df$HS_Tyr1P_R7 / exp_RPK_5kbds_df$NHS_Tyr1P_R7,
+                         Tyr1P_R8 = exp_RPK_5kbds_df$HS_Tyr1P_R8 / exp_RPK_5kbds_df$NHS_Tyr1P_R8,
+                         Rpb1_avg = ((exp_RPK_5kbds_df$HS_Rpb1_R7 / exp_RPK_5kbds_df$NHS_Rpb1_R7) +
+                                             (exp_RPK_5kbds_df$HS_Rpb1_R8 / exp_RPK_5kbds_df$NHS_Rpb1_R8)) /2,
+                         Tyr1P_avg = ((exp_RPK_5kbds_df$HS_Tyr1P_R7 / exp_RPK_5kbds_df$NHS_Tyr1P_R7) +
+                                             (exp_RPK_5kbds_df$HS_Tyr1P_R8 / exp_RPK_5kbds_df$NHS_Tyr1P_R8)) /2
+                         )
+
+
+#save dfs
+write_delim(exp_FC_gnbd_df, "FC_gnbd_exp.tsv", delim = "\t", col_names = TRUE)
+write_delim(exp_FC_5kbds_df, "FC_5kbds_exp.tsv", delim = "\t", col_names = TRUE)
+```
+
+
+
+```{r TTSto5kb ds Rpb1 vs Ser2P}
+#read-in exp_FC_TTS if needed
+#exp_FC_5kbds_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/06_analysis/scatterplots/FC_5kbds_exp.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#and master genes df
+ChIP_genes_master_df <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/ChIP_analyzable_genes_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+## 3' peak
+TTS_FC_exp_plotting_df_1 <- data.frame(transcriptID = exp_FC_5kbds_df$transcriptID, Rpb1 = exp_FC_5kbds_df$Rpb1_avg, Tyr1P = exp_FC_5kbds_df$Tyr1P_avg)
+TTS_FC_exp_plotting_df <- left_join(TTS_FC_exp_plotting_df_1, ChIP_genes_master_df[c(1,14,18,20,21,25,26)], by = "transcriptID")
+#remove longRT genes
+TTS_FC_exp_plotting_df <- filter(TTS_FC_exp_plotting_df, TTS_FC_exp_plotting_df$longRT == FALSE) #78 long RT genes removed
+
+#save plotting df
+write_delim(TTS_FC_exp_plotting_df, "TTS_Rpb1vsTyr1P_plotting_DF.tsv", delim = "\t", col_names = TRUE)
+TTS_FC_exp_plotting_df <- read.table("TTS_Rpb1vsTyr1P_plotting_DF.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+
+p <- ggplot(TTS_FC_exp_plotting_df, aes(log2(Rpb1), log2(Tyr1P), label = transcriptID) ) + 
+  geom_point(alpha=0.8, size=1, color = "#141414") + #696969 gray
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) #+            #draw quadrents
+  #geom_smooth(method='lm', color = "#262626") +                    #reg line
+  #stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+  #             formula = y ~ x, parse = TRUE, size = 4)
+
+
+png("figures/Tyr1PvRpb1_log2_FC_scatterplot.png", 500, 500)
+print(p)
+dev.off()
+
+```
+
+Plotting Ser2P vs Pol II with the same genes set
+```{r}
+#read-in Ser2P data
+Ser2P_exp_FC_TTS_df <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/FC_TTSto5kb_expressed.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#check that same gene list as inital df used for venn diagrams to compare Ser2P and Tyr1P
+stopifnot( Ser2P_exp_5kbds_RPK$rowname == Ser2P_exp_FC_TTS_df$transcriptID ) #good
+
+#filter for genes in Tyr1P data set
+Ser2P_exp_FC_TTS_df_filtered <- filter(Ser2P_exp_FC_TTS_df, Ser2P_exp_FC_TTS_df$transcriptID %in% exp_FC_5kbds_df$transcriptID)
+nrow(exp_FC_5kbds_df) - nrow(Ser2P_exp_FC_TTS_df_filtered)
+
+#filter out 37 genes that are only in Tyr1P exp genes
+Tyr1P_exp_FC_5kbds_df <- filter(exp_FC_5kbds_df, exp_FC_5kbds_df$transcriptID %in% Ser2P_exp_FC_TTS_df$transcriptID)
+nrow(Tyr1P_exp_FC_5kbds_df) == nrow(Ser2P_exp_FC_TTS_df_filtered) #true
+
+
+#now make plotting DFs
+Tyr1P_plotting_df_1 <- data.frame(transcriptID = Tyr1P_exp_FC_5kbds_df$transcriptID, Rpb1 = Tyr1P_exp_FC_5kbds_df$Rpb1_avg, Tyr1P = Tyr1P_exp_FC_5kbds_df$Tyr1P_avg)
+Tyr1P_plotting_df <- left_join(Tyr1P_plotting_df_1, ChIP_genes_master_df[c(1,14,18,20,21,25,26)], by = "transcriptID")
+#remove longRT genes
+Tyr1P_plotting_df <- filter(Tyr1P_plotting_df, Tyr1P_plotting_df$longRT == FALSE) #76 long RT genes removed
+#save plotting df
+write_delim(Tyr1P_plotting_df, "TTS_common_genes_Rpb1vsTyr1P_plotting_DF.tsv", delim = "\t", col_names = TRUE)
+Tyr1P_plotting_df <- read.table("TTS_common_genes_Rpb1vsTyr1P_plotting_DF.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+Ser2P_plotting_df_1 <- data.frame(transcriptID = Ser2P_exp_FC_TTS_df_filtered$transcriptID, Rpb1 = Ser2P_exp_FC_TTS_df_filtered$Rpb1_avg, Ser2P = Ser2P_exp_FC_TTS_df_filtered$Ser2P_avg)
+Ser2P_plotting_df <- left_join(Ser2P_plotting_df_1, ChIP_genes_master_df[c(1,14,18,20,21,25,26)], by = "transcriptID")
+#remove longRT genes
+Ser2P_plotting_df <- filter(Ser2P_plotting_df, Ser2P_plotting_df$longRT == FALSE) #76 long RT genes removed
+#save plotting df
+write_delim(Ser2P_plotting_df, "Ser2PvPolII_scatterplots/Ser2P_TTS_common_genes_Rpb1vsTyr1P_plotting_DF.tsv", delim = "\t", col_names = TRUE)
+Ser2P_plotting_df <- read.table("Ser2PvPolII_scatterplots/Ser2P_TTS_common_genes_Rpb1vsTyr1P_plotting_DF.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+
+
+#plot
+t <- ggplot(Tyr1P_plotting_df, aes(log2(Rpb1), log2(Tyr1P), label = transcriptID) ) + 
+  geom_point(alpha=0.8, size=1, color = "#141414") + #696969 gray
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +            #draw quadrents
+  geom_smooth(method='lm', color = "#262626") +                    #reg line
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+
+
+png("figures/Tyr1PvRpb1_log2_FC_reg_line_common_genes_scatterplot.png", 500, 500)
+print(t)
+dev.off()
+
+
+
+s <- ggplot(Ser2P_plotting_df, aes(log2(Rpb1), log2(Ser2P), label = transcriptID) ) + 
+  geom_point(alpha=0.8, size=1, color = "#141414") + #696969 gray
+  xlim(c(-5,5)) + ylim(c(-5,5)) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +            #draw quadrents
+  geom_smooth(method='lm', color = "#262626") +                    #reg line
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+
+
+png("Ser2PvPolII_scatterplots/figures/Ser2PvRpb1_log2_FC_reg_line_common_genes_scatterplot.png", 500, 500)
+print(s)
+dev.off()
+```
+
+
+1.5 standard deviation plots
+  calc from null hypothesis (line with slope 1)
+```{r }
+#using plotting dfs with common genes expressed in both Tyr1P and Ser2P data sets
+
+#make df to calc residuals
+null_SD_Tyr1P_df <- Tyr1P_plotting_df[1:3] #just data, remove extra master df columns
+null_SD_Tyr1P_df$log2Rpb1 <- log2(null_SD_Tyr1P_df$Rpb1)
+null_SD_Tyr1P_df$log2Tyr1P <- log2(null_SD_Tyr1P_df$Tyr1P)
+#repeat for Ser2P
+null_SD_Ser2P_df <- Ser2P_plotting_df[1:3]
+null_SD_Ser2P_df$log2Rpb1 <- log2(null_SD_Ser2P_df$Rpb1)
+null_SD_Ser2P_df$log2Ser2P <- log2(null_SD_Ser2P_df$Ser2P)
+
+
+#null hypothesis line: y = 1x +0   (y=x)
+
+#calc expected y given trendline and X (expected y = Rpb1 because y=x+0 is the null trendline)
+null_SD_Tyr1P_df$expected_Y <- (null_SD_Tyr1P_df$log2Rpb1)
+null_SD_Ser2P_df$expected_Y <- (null_SD_Ser2P_df$log2Rpb1)
+
+#calc residual (actual - theoretical)
+null_SD_Tyr1P_df$residual <- null_SD_Tyr1P_df$log2Tyr1P - null_SD_Tyr1P_df$expected_Y
+null_SD_Ser2P_df$residual <- null_SD_Ser2P_df$log2Ser2P - null_SD_Ser2P_df$expected_Y
+
+
+#calc residual squared
+null_SD_Tyr1P_df$residual_sq <- null_SD_Tyr1P_df$residual^2
+null_SD_Ser2P_df$residual_sq <- null_SD_Ser2P_df$residual^2
+
+#sum, count and RMSE
+res_sum_Tyr1P <- sum(null_SD_Tyr1P_df$residual_sq)
+num_count <- nrow(null_SD_Tyr1P_df)
+RMSE_Tyr1P <- (res_sum_Tyr1P / num_count )^0.5
+
+res_sum_Ser2P <- sum(null_SD_Ser2P_df$residual_sq)
+num_count <- nrow(null_SD_Ser2P_df)
+RMSE_Ser2P <- (res_sum_Ser2P / num_count )^0.5
+
+#+1.5 SD = expected_Y + (1.5*RMSE)
+null_SD_Tyr1P_df$pos_1p5_SD <- null_SD_Tyr1P_df$expected_Y + (1.5*RMSE_Tyr1P)
+null_SD_Ser2P_df$pos_1p5_SD <- null_SD_Ser2P_df$expected_Y + (1.5*RMSE_Ser2P)
+#-2SD = expected_Y - (2*RMSE)
+null_SD_Tyr1P_df$neg_1p5_SD <- null_SD_Tyr1P_df$expected_Y - (1.5*RMSE_Tyr1P)
+null_SD_Ser2P_df$neg_1p5_SD <- null_SD_Ser2P_df$expected_Y - (1.5*RMSE_Ser2P)
+
+#plot SD lines and get equations
+ggplot(null_SD_Ser2P_df, aes(log2Rpb1, pos_1p5_SD )) + 
+  geom_point(alpha=0.8, size=1)  +
+  #xlim(c(0,35)) + ylim(c(0,35)) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+#Tyr1P pos: y=0.946 + 1x R^2=1.0
+#Ser2P pos: y=0.636 + 1x R^2=1.0
+
+
+ggplot(null_SD_Tyr1P_df, aes(log2Rpb1, neg_1p5_SD )) + 
+  geom_point(alpha=0.8, size=1)  +
+  #xlim(c(0,35)) + ylim(c(0,35)) +
+  geom_smooth(method='lm', color = "#262626") +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+               formula = y ~ x, parse = TRUE, size = 4)
+#Tyr1P neg: y=-0.946 + 1x R^2=1.0
+#Ser2P neg: y=-0.636 + 1x R^2=1.0  (before filtering genes to common genes list y-int was +-0.926)
+##good, it's the same for both pos and neg
+
+
+#calc points above and below 1.5 SD lines
+
+
+#Tyr1P
+  # y=0.946 + 1x
+  # y=-0.946 + 1x
+#calc points outside of 1.5 SDs
+null_SD_Tyr1P_df$over_1p5_SD <- null_SD_Tyr1P_df$log2Tyr1P > (1*null_SD_Tyr1P_df$log2Rpb1 + 0.946) | null_SD_Tyr1P_df$log2Tyr1P < (1*null_SD_Tyr1P_df$log2Rpb1 - 0.946)
+table(null_SD_Tyr1P_df$over_1p5_SD) #231 genes over 1.5 SD out of ~1700
+
+231 / 1713 # = ~13.5%
+
+#Ser2P
+  # y=0.636 + 1x
+  # y=-0.636 + 1x
+#calc points outside of 1.5 SDs
+null_SD_Ser2P_df$over_1p5_SD <- null_SD_Ser2P_df$log2Ser2P > (1*null_SD_Ser2P_df$log2Rpb1 + 0.636) | null_SD_Ser2P_df$log2Ser2P < (1*null_SD_Ser2P_df$log2Rpb1 - 0.636)
+table(null_SD_Ser2P_df$over_1p5_SD) #214 genes out of ~1700
+
+214 / 1713 # = ~12.5%
+
+
+#65 genes over 2 SD out of ~1700 *wierd that it's exactly 65 for both Ser2P and Tyr1P...
+65 / 1713 # = ~4% of genes are outside of 2 SD (didn't save this data)
+
+
+### Venn Diagram genes outside of 1.5 SD for Tyr1P and Ser2P ###
+s <- filter(null_SD_Ser2P_df, null_SD_Ser2P_df$over_1p5_SD == TRUE)
+t <- filter(null_SD_Tyr1P_df, null_SD_Tyr1P_df$over_1p5_SD == TRUE)
+x <- filter(s, s$transcriptID %in% t$transcriptID) #92 genes in common
+
+venn.diagram(
+  x = list(s$transcriptID, t$transcriptID),
+  category.names = c("Ser2P" , "Tyr1P" ),
+  filename = 'overlapping_genes_outside_1p5SD_Tyr1P_Ser2P.png',
+  output = TRUE ,
+          imagetype="png" ,
+          height = 480 , 
+          width = 480 , 
+          resolution = 300,
+          compression = "lzw",
+          lwd = 1,
+          col=c("#a35db3", '#e68c17'),
+          fill = c(alpha("#ba89c4",0.3), alpha('#f0b05d',0.3)), 
+          cex = 0.7, #number size
+          fontfamily = "sans",
+          cat.cex = 0.75, #label size
+          cat.default.pos = "outer",
+          cat.pos = c(-27, 27),
+          cat.dist = c(0.055, 0.055),
+          cat.fontfamily = "sans",
+          cat.col = c("#a35db3", "#e68c17" )
+)
+
+
+#plot, color by outlier
+t <- ggplot(null_SD_Tyr1P_df, aes(log2Rpb1, log2Tyr1P, color = over_1p5_SD, label = transcriptID) ) +
+  geom_point(alpha=0.8, size=1, show.legend = FALSE) + 
+  labs( #title = "FC ChIP-seq reads TTS-5kb ds", 
+       x="Total Pol II\nFold Change After HS (log2)", 
+       y="Tyr1P Pol II\nFold Change After HS (log2)") +
+  theme(axis.text=element_text(size=13), axis.title = element_text(size=14) )+
+  xlim(-5,5) + ylim(-5,5) +
+  scale_colour_manual(values=c("#666666", "#850f09")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0.946) + # +1.5 SD line
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  -0.946) +  # -1.5 SD line
+  geom_abline(color="black", slope =  1, intercept =  0) + #fit line
+  #annotation_custom(grobTree(textGrob("y = x", x=0.1,  y=0.9, hjust=0.15))) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)   #draw quadrents
+
+s <- ggplot(null_SD_Ser2P_df, aes(log2Rpb1, log2Ser2P, color = over_1p5_SD, label = transcriptID) ) +
+  geom_point(alpha=0.8, size=1, show.legend = FALSE) + 
+  labs( #title = "FC ChIP-seq reads TTS-5kb ds", 
+       x="Total Pol II\nFold Change After HS (log2)", 
+       y="Ser2P Pol II\nFold Change After HS (log2)") +
+  theme(axis.text=element_text(size=13), axis.title = element_text(size=14) )+
+  xlim(-5,5) + ylim(-5,5) +
+  scale_colour_manual(values=c("#666666", "#850f09")) +
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0.946) + # +1.5 SD line
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  -0.946) +  # -1.5 SD line
+  geom_abline(color="black", slope =  1, intercept =  0) + #fit line
+  #annotation_custom(grobTree(textGrob("y = x", x=0.1,  y=0.9, hjust=0.15))) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)   #draw quadrents
+
+
+#save
+pdf("figures/Tyr1P_vs_PolII_log2_FC_null_hypoth_1p5_SD_lines_scatterplot.pdf", 4, 4)
+print(t)
+dev.off()
+
+pdf("Ser2PvPolII_scatterplots/figures/Ser2P_vs_PolII_log2_FC_null_hypoth_1p5_SD_lines_scatterplot.pdf", 4, 4)
+print(s)
+dev.off()
+
+
+#save SD df
+write_delim(null_SD_Tyr1P_df, "1p5_SD_Tyr1P_null_calc_df.tsv", delim = "\t", col_names = TRUE)
+write_delim(null_SD_Ser2P_df, "Ser2PvPolII_scatterplots/1p5_SD_Ser2P_null_calc_df.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+1 SD = ~35% of genes outside of SD
+1.5 SD = ~ 12-14% of genes outside of SD (goldilocks)
+2 SD = ~5% of genes outside of SD
+**went with 1.5 SD still because 65 is too few genes to confidently analyse**
+
+
+Make list of genes outside of 1.5 SD
+```{r}
+#fist make common genes list
+common_genes <- data.frame(transcriptID = Ser2P_exp_FC_TTS_df_filtered$transcriptID)
+write_delim(common_genes, "../TTS5kbds_common_genes_list.tsv", delim = "\t", col_names = TRUE)
+#common_genes <- read.table("../TTS5kbds_common_genes_list.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#make lists of genes outside
+common_genes <- filter(common_genes, common_genes$transcriptID %in% null_SD_Tyr1P_df$transcriptID) #remove long RT genes
+common_genes$Tyr1P_over_1p5_SD_df <- null_SD_Tyr1P_df$log2Tyr1P > (1*null_SD_Tyr1P_df$log2Rpb1 + 0.946) 
+common_genes$Tyr1P_under_1p5_SD_df <-  null_SD_Tyr1P_df$log2Tyr1P < (1*null_SD_Tyr1P_df$log2Rpb1 - 0.946)
+common_genes$Ser2P_over_1p5_SD_df <- null_SD_Ser2P_df$log2Ser2P > (1*null_SD_Ser2P_df$log2Rpb1 + 0.636) 
+common_genes$Ser2P_under_1p5_SD_df <-  null_SD_Ser2P_df$log2Ser2P < (1*null_SD_Ser2P_df$log2Rpb1 - 0.636)
+
+#now compress to one col for if outside 1.5 SD (one per Tyr1P and Ser2P seperate)
+temp <- vector()
+i=1
+while (i<=nrow(common_genes)) {
+  if (common_genes$Tyr1P_over_1p5_SD_df[i] == TRUE) {
+    temp <- append(temp, "over")
+  } else if (common_genes$Tyr1P_under_1p5_SD_df[i] == TRUE) {
+    temp <- append(temp, "under")
+  } else {
+    temp <- append(temp, "not_sig")
+  }
+  i=i+1
+} 
+#add temp as col
+common_genes$Tyr1P_outside_1p5_SD <- temp
+
+#repeat for Ser2P
+temp <- vector()
+i=1
+while (i<=nrow(common_genes)) {
+  if (common_genes$Ser2P_over_1p5_SD_df[i] == TRUE) {
+    temp <- append(temp, "over")
+  } else if (common_genes$Ser2P_under_1p5_SD_df[i] == TRUE) {
+    temp <- append(temp, "under")
+  } else {
+    temp <- append(temp, "not_sig")
+  }
+  i=i+1
+} 
+#add temp as col
+common_genes$Ser2P_outside_1p5_SD <- temp
+
+#now clean up table and take out extra cols
+common_genes_final <- common_genes[c(1,6,7)]
+
+#save
+write_delim(common_genes_final, "common_genes_outside_1p5_SD.tsv", delim = "\t", col_names = TRUE)
+common_genes_final <- read.table("common_genes_outside_1p5_SD.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+# # #
+## make col that's over 1.5 SD in either Tyr1P or Ser2P or both ##
+  #need col that's nc, Tyr1P, Ser2P, or both
+temp <- vector()
+i=1
+while (i<=nrow(common_genes)) {
+  if (common_genes_final$Tyr1P_outside_1p5_SD[i] == "not_sig" & common_genes_final$Ser2P_outside_1p5_SD[i] == "not_sig") {
+    temp <- append(temp, "Neither")
+  } else if (!(common_genes_final$Tyr1P_outside_1p5_SD[i] == "not_sig") & common_genes_final$Ser2P_outside_1p5_SD[i] == "not_sig") {
+    temp <- append(temp, "Tyr1P")
+  } else if (common_genes_final$Tyr1P_outside_1p5_SD[i] == "not_sig" & !(common_genes_final$Ser2P_outside_1p5_SD[i] == "not_sig")) {
+    temp <- append(temp, "Ser2P")
+  }
+  else  {
+    temp <- append(temp, "Both")
+  }
+  i=i+1
+} 
+#add temp as col
+common_genes_final$both_outside_1p5_SD <- temp
+
+write_delim(common_genes_final, "common_genes_outside_1p5_SD.tsv", delim = "\t", col_names = TRUE)
+
+
+```
+
+
+
+
+What if I plotted Tyr1P / Pol II vs Ser2P / Pol II?
+  do genes with increased Ser2P also have increased Tyr1P?
+  (according to venn diagram, about half but this is a more nuanced approach)
+```{r Tyr1P vs Ser2P}
+#if need to read in data
+common_genes_MASTER_df <- read.table("../ChIP_common_TTS5kbds_genes_MASTER_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#filter out long RT genes
+common_genes_MASTER_df <- filter(common_genes_MASTER_df, common_genes_MASTER_df$longRT_4sU == FALSE)
+
+#make plotting df
+TvS_plotting_df <- common_genes_MASTER_df[c(1,17:18)]
+
+#color based on if over 1.5 SD for Tyr1P or Ser2P
+common_genes_final <- read.table("common_genes_outside_1p5_SD.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#join last col with plotting df
+#check genes are in same order
+table(TvS_plotting_df$transcriptID == common_genes_final$transcriptID) #all true, can just add col since join is being weird
+TvS_plotting_df$outside_1p5_SD <- common_genes_final$both_outside_1p5_SD
+#factor in order
+TvS_plotting_df$outside_1p5_SD <- factor(TvS_plotting_df$outside_1p5_SD, c("Neither", "Ser2P", "Tyr1P", "Both") )
+
+
+
+s <- ggplot(TvS_plotting_df, aes(log2(Tyr1PdPolII), log2(Ser2PdPolII), label = transcriptID, color = outside_1p5_SD) ) + 
+  geom_point(alpha=0.8, size=1 ) + #color = "#141414" 696969 gray
+  xlim(c(-2.5,2.5)) + ylim(c(-2.5,2.5)) +
+  labs( #title = "FC ChIP-seq reads TTS-5kb ds", 
+       x="Tyr1P Pol II / Total Pol II\nFold Change After HS (log2)", 
+       y="Ser2P Pol II / Total Pol II\nFold Change After HS (log2)") +
+  theme(axis.text=element_text(size=13), axis.title = element_text(size=14), #text size
+        plot.margin = margin(20, 20, 20, 20),
+        legend.position = c(0.875, 0.2),                                     #format legend
+        legend.background = element_rect(color = "black", linetype = "solid"),     
+        legend.text=element_text(size=12),
+        legend.title = element_text(size = 0)
+         ) + 
+  #guides(color = guide_legend(override.aes = list(size = 2))) +  #increase point size in legend
+  guides(color = guide_legend(reverse=TRUE)) + #reverse legend order
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0) +            #draw quadrents
+  scale_colour_manual(values=c("#666666", "#a35db3", "#e68c17", "#850f09")) 
+  
+
+pdf("figures/Tyr1PdPolII_v_Ser2PdPolII_scatterplot_colors.pdf", 5, 5) #pdf's are better resolution but have issues transfering off computer
+print(s)
+dev.off()
+
+## without coloring
+a <- ggplot(TvS_plotting_df, aes(log2(Tyr1PdPolII), log2(Ser2PdPolII), label = transcriptID) ) + 
+  geom_point(alpha=0.3, size=1, color = "gray10") + #color = "#141414" 696969 gray
+  xlim(c(-2.5,2.5)) + ylim(c(-2.5,2.5)) +
+  labs( #title = "FC ChIP-seq reads TTS-5kb ds", 
+       x="Tyr1P Pol II / Total Pol II\nFold Change After HS (log2)", 
+       y="Ser2P Pol II / Total Pol II\nFold Change After HS (log2)") +
+  theme(axis.text=element_text(size=13), axis.title = element_text(size=14), #text size
+        plot.margin = margin(20, 20, 20, 20) ) + 
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)             #draw quadrents
+
+pdf("figures/Tyr1PdPolII_v_Ser2PdPolII_scatterplot.pdf", 4, 4) #pdf's are better resolution but have issues transfering off computer
+print(a)
+dev.off()
+
+```
+
+
+
+
+

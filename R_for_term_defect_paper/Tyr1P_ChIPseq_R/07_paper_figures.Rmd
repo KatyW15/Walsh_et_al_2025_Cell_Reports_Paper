@@ -1,0 +1,2291 @@
+---
+title: "07_paper_figures_Ser2P_and_Tyr1P"
+author: "Katy Walsh"
+date: "4/25/2024"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(grid)
+library(ggplot2)
+library(ggpubr)
+library(hexbin)
+library(ggfortify)
+library(gtable)
+library(ggpmisc)
+#install.packages("VennDiagram")
+library(VennDiagram)
+
+#wd: 
+setwd("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures")
+
+#always need master df
+ChIP_genes_master_df <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/ChIP_analyzable_genes_master_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#will need comon genes
+common_genes_master_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/06_analysis/ChIP_common_TTS5kbds_genes_MASTER_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+```
+setup plot settings:
+```{r plotting setup}
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+library(ggpmisc)
+
+theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+    )
+
+
+plot_fun_sized_hist_function <- function(hist_df, plot_title, subt = ""){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs(subtitle = subt, x= "", y="Read Count") +
+    ggtitle(plot_title) +
+    scale_x_continuous(labels=c("test","TTS", "5 kb", "10 kb", "15 kb", "20 kb"))+
+    scale_y_continuous(labels = c(0,10,20,30,40,50))+ coord_cartesian(ylim=c(0,50))+
+    theme(axis.title.y = element_text(size = 13), axis.text = element_text(size = 13), #change axis label size
+          legend.position = c(0.8, 0.8), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 30, 10, 10),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold"),   #change size of title
+          plot.subtitle = element_text(size = 12)) +             #change size of subtitle
+    scale_color_manual(values=c("lightgray", "black", "red"))
+}
+
+```
+
+
+SECTIONS:
+---------------------------------------------------------------------------------------------------
+*avg reps then FC or ratio
+**both common genes and individual gene lists for Ser2P and Tyr1P
+
+1. TTS Hist plots
+    Rpb1, Ser2P, Tyr1P
+    +-HS (versions with and without input)
+    homer hist for all reps separately then average (Rpb1 - average all 3 reps)
+  
+2. Phosphorylation after HS boxplots
+    separate for Rpb1 and +p marks, NHS and HS
+    +p / Rpb1 NHS and HS
+
+3. Phosphorylation vs other categories
+    FC +p / Rpb1 vs term defect cat
+    FC uncleaved reads vs +p cat (quartiles of FC +P/Rpb1?)
+
+4. Ser2P/PolII vs Tyr1P/PolII scatterplot
+
+5. +p accross various gene regions
+(PPP, gnbd, term window)
+
+---------------------------------------------------------------------------------------------------
+
+
+1. TTS Hist plots
+------------------
+TTS bed files for all 4k ChIP genes:
+(/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/ChIP_genes_TTS.bed)
+/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/Documentation/MANE_gene_annotation_bed_files/ChIP_analyzable_genes_TTS.bed
+/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/Documentation/MANE_gene_annotation_bed_files/common_ChIP_genes_TTS.bed
+
+*doesn't make sense to use common genes for this because only have common genes for TTS-5kb ds and metaplots go to 20kb ds...?*
+*I'll do it anyway just in case*
+```{r make TTS bed for common genes }
+common_genes_master_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/06_analysis/ChIP_common_TTS5kbds_genes_MASTER_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+TTS_bed <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/ChIP_genes_TTS.bed", header = FALSE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+common_TTS_bed <- filter(TTS_bed, TTS_bed$V4 %in% common_genes_master_df$transcriptID)
+
+write_delim(common_TTS_bed, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/Documentation/MANE_gene_annotation_bed_files/common_ChIP_genes_TTS.bed", delim = "\t", col_names = FALSE)
+write_delim(TTS_bed, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/Documentation/MANE_gene_annotation_bed_files/ChIP_analyzable_genes_TTS.bed", delim = "\t", col_names = FALSE)
+```
+
+bash script
+  annotatePeaks.pl <gene list TTS bed file> hg38 -size -20000,20000 -hist 200 -norm 1E8 -d <tag directory> > <output.tsv> 
+
+
+```{r read-in data}
+##all CHIP analyzable genes
+#read all data into list of df's
+fl_all <- list.files("TTS_hist/homer_outputs/TTS_ChIP_genes", 
+                  full.names = TRUE)
+ls_all <- lapply(fl_all, read.table, header=TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ls_all) <- gsub("TTS_hist/homer_outputs/TTS_ChIP_genes/|.tsv", "", fl_all)
+
+#rename obnoxiously long homer default col names
+i=1
+while(i<=length(ls_all)){
+  names(ls_all[[i]]) <- c("distance_from_TTS", "coverage", "sense_tags", "antisense_tags")
+  i=i+1
+}
+
+##common genes
+#read all data into list of df's
+fl_common <- list.files("TTS_hist/homer_outputs/TTS_common_genes", 
+                  full.names = TRUE)
+ls_common <- lapply(fl_common, read.table, header=TRUE, sep="\t",stringsAsFactors=FALSE, quote="")
+names(ls_common) <- gsub("TTS_hist/homer_outputs/TTS_common_genes/|.tsv", "", fl_common)
+
+#rename obnoxiously long homer default col names
+i=1
+while(i<=length(ls_common)){
+  names(ls_common[[i]]) <- c("distance_from_TTS", "coverage", "sense_tags", "antisense_tags")
+  i=i+1
+}
+
+```
+
+```{r make plotting dfs}
+###
+# Rpb1 
+###
+Rpb1_all_plotting_df <- data.frame(distance_from_TTS = ls_all$Rpb1_NHS_R7$distance_from_TTS,
+                                     NHS = (ls_all$Rpb1s_NHS_R6$coverage + ls_all$Rpb1_NHS_R7$coverage + ls_all$Rpb1s_NHS_R8$coverage)/3,
+                                     HS = (ls_all$Rpb1s_HS_R6$coverage + ls_all$Rpb1_HS_R7$coverage + ls_all$Rpb1s_HS_R8$coverage)/3,
+                                     input = ls_all$input$coverage
+                                     )
+#trim off -20kb so window is -1kb to +20kb
+Rpb1_all_plotting_df <- filter(Rpb1_all_plotting_df, Rpb1_all_plotting_df$distance_from_TTS >= -1000)
+Rpb1_all_plotting_df <- filter(Rpb1_all_plotting_df, Rpb1_all_plotting_df$distance_from_TTS < 20000) #take off last bin since that can look like a sharp increase due to ds genes
+
+#save
+write_delim(Rpb1_all_plotting_df, "TTS_hist/Rpb1_ChIP_genes_TTS_hist_df.tsv", delim = "\t", col_names = TRUE)
+
+#pivot longer so R can plot it
+Rpb1_all_plotting_df <- pivot_longer(Rpb1_all_plotting_df, cols =2:4)
+Rpb1_all_plotting_df$name <- factor(Rpb1_all_plotting_df$name, levels = c('input', 'NHS', 'HS'))
+
+
+
+#common genes list
+Rpb1_common_plotting_df <- data.frame(distance_from_TTS = ls_common$Rpb1_NHS_R7$distance_from_TTS,
+                                     NHS = (ls_common$Rpb1s_NHS_R6$coverage + ls_common$Rpb1_NHS_R7$coverage + ls_common$Rpb1s_NHS_R8$coverage)/3,
+                                     HS = (ls_common$Rpb1s_HS_R6$coverage + ls_common$Rpb1_HS_R7$coverage + ls_common$Rpb1s_HS_R8$coverage)/3,
+                                     input = ls_common$input$coverage
+                                     )
+#trim off -20kb so window is -1kb to +20kb
+Rpb1_common_plotting_df <- filter(Rpb1_common_plotting_df, Rpb1_common_plotting_df$distance_from_TTS >= -1000)
+Rpb1_common_plotting_df <- filter(Rpb1_common_plotting_df, Rpb1_common_plotting_df$distance_from_TTS < 20000) #take off last bin since that can look like a sharp increase due to ds genes
+
+#save
+write_delim(Rpb1_common_plotting_df, "TTS_hist/Rpb1_common_genes_TTS_hist_df.tsv", delim = "\t", col_names = TRUE)
+
+#pivot longer so R can plot it
+Rpb1_common_plotting_df <- pivot_longer(Rpb1_common_plotting_df, cols =2:4)
+Rpb1_common_plotting_df$name <- factor(Rpb1_common_plotting_df$name, levels = c('input', 'NHS', 'HS'))
+
+
+
+
+
+
+###
+# Ser2P 
+###
+Ser2P_all_plotting_df <- data.frame(distance_from_TTS = ls_all$Ser2P_NHS_R6$distance_from_TTS,
+                                     NHS = (ls_all$Ser2P_NHS_R6$coverage + ls_all$Ser2P_NHS_R8$coverage)/2,
+                                     HS = (ls_all$Ser2P_HS_R6$coverage + ls_all$Ser2P_HS_R8$coverage)/2,
+                                     input = ls_all$input$coverage
+                                     )
+#trim off -20kb so window is -1kb to +20kb
+Ser2P_all_plotting_df <- filter(Ser2P_all_plotting_df, Ser2P_all_plotting_df$distance_from_TTS >= -1000)
+Ser2P_all_plotting_df <- filter(Ser2P_all_plotting_df, Ser2P_all_plotting_df$distance_from_TTS < 20000) #take off last bin since that can look like a sharp increase due to ds genes
+
+#save
+write_delim(Ser2P_all_plotting_df, "TTS_hist/Ser2P_ChIP_genes_TTS_hist_df.tsv", delim = "\t", col_names = TRUE)
+
+#pivot longer so R can plot it
+Ser2P_all_plotting_df <- pivot_longer(Ser2P_all_plotting_df, cols =2:4)
+Ser2P_all_plotting_df$name <- factor(Ser2P_all_plotting_df$name, levels = c('input', 'NHS', 'HS'))
+
+
+
+#common genes list
+Ser2P_common_plotting_df <- data.frame(distance_from_TTS = ls_common$Ser2P_NHS_R6$distance_from_TTS, 
+                                     NHS = (ls_common$Ser2P_NHS_R6$coverage + ls_common$Ser2P_NHS_R8$coverage)/2,
+                                     HS = (ls_common$Ser2P_HS_R6$coverage + ls_common$Ser2P_HS_R8$coverage)/2,
+                                     input = ls_common$input$coverage
+                                     )
+#trim off -20kb so window is -1kb to +20kb
+Ser2P_common_plotting_df <- filter(Ser2P_common_plotting_df, Ser2P_common_plotting_df$distance_from_TTS >= -1000)
+Ser2P_common_plotting_df <- filter(Ser2P_common_plotting_df, Ser2P_common_plotting_df$distance_from_TTS < 20000) #take off last bin since that can look like a sharp increase due to ds genes
+
+#save
+write_delim(Ser2P_common_plotting_df, "TTS_hist/Ser2P_common_genes_TTS_hist_df.tsv", delim = "\t", col_names = TRUE)
+
+#pivot longer so R can plot it
+Ser2P_common_plotting_df <- pivot_longer(Ser2P_common_plotting_df, cols =2:4)
+Ser2P_common_plotting_df$name <- factor(Ser2P_common_plotting_df$name, levels = c('input', 'NHS', 'HS'))
+
+
+
+
+
+###
+# Tyr1P 
+###
+Tyr1P_all_plotting_df <- data.frame(distance_from_TTS = ls_all$Tyr1P_NHS_R7$distance_from_TTS,
+                                     NHS = (ls_all$Tyr1P_NHS_R7$coverage + ls_all$Tyr1P_NHS_R8$coverage)/2,
+                                     HS = (ls_all$Tyr1P_HS_R7$coverage + ls_all$Tyr1P_HS_R8$coverage)/2,
+                                     input = ls_all$input$coverage
+                                     )
+#trim off -20kb so window is -1kb to +20kb
+Tyr1P_all_plotting_df <- filter(Tyr1P_all_plotting_df, Tyr1P_all_plotting_df$distance_from_TTS >= -1000)
+Tyr1P_all_plotting_df <- filter(Tyr1P_all_plotting_df, Tyr1P_all_plotting_df$distance_from_TTS < 20000) #take off last bin since that can look like a sharp increase due to ds genes
+
+#save
+write_delim(Tyr1P_all_plotting_df, "TTS_hist/Tyr1P_ChIP_genes_TTS_hist_df.tsv", delim = "\t", col_names = TRUE)
+
+#pivot longer so R can plot it
+Tyr1P_all_plotting_df <- pivot_longer(Tyr1P_all_plotting_df, cols =2:4)
+Tyr1P_all_plotting_df$name <- factor(Tyr1P_all_plotting_df$name, levels = c('input', 'NHS', 'HS'))
+
+
+
+#common genes list
+Tyr1P_common_plotting_df <- data.frame(distance_from_TTS = ls_common$Tyr1P_NHS_R7$distance_from_TTS, 
+                                     NHS = (ls_common$Tyr1P_NHS_R7$coverage + ls_common$Tyr1P_NHS_R8$coverage)/2,
+                                     HS = (ls_common$Tyr1P_HS_R7$coverage + ls_common$Tyr1P_HS_R8$coverage)/2,
+                                     input = ls_common$input$coverage
+                                     )
+#trim off -20kb so window is -1kb to +20kb
+Tyr1P_common_plotting_df <- filter(Tyr1P_common_plotting_df, Tyr1P_common_plotting_df$distance_from_TTS >= -1000)
+Tyr1P_common_plotting_df <- filter(Tyr1P_common_plotting_df, Tyr1P_common_plotting_df$distance_from_TTS < 20000) #take off last bin since that can look like a sharp increase due to ds genes
+
+#save
+write_delim(Tyr1P_common_plotting_df, "TTS_hist/Tyr1P_common_genes_TTS_hist_df.tsv", delim = "\t", col_names = TRUE)
+
+#pivot longer so R can plot it
+Tyr1P_common_plotting_df <- pivot_longer(Tyr1P_common_plotting_df, cols =2:4)
+Tyr1P_common_plotting_df$name <- factor(Tyr1P_common_plotting_df$name, levels = c('input', 'NHS', 'HS'))
+
+```
+
+```{r plot TTS hist}
+
+###defining plot histogram function###
+plot_hist_function <- function(hist_df, plot_title, subt = "isolated genes"){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs(subtitle = subt, x= "", y="Tag coverage normalized for sequencing depth") +
+    ggtitle(plot_title) +
+    scale_x_continuous(labels=c("TTS", "+5 kb", "+10 kb", "+15 kb", "+20 kb"))+
+    theme(axis.title.y = element_text(size = 13, face = "bold"), axis.text = element_text(size = 13), #change axis label size
+          legend.position = c(0.8, 0.8), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 50, 10, 10),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold")) + #change size of title
+    scale_color_manual(values=c("lightgray", "black", "red"))
+}
+
+ggplot(Rpb1_all_plotting_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size = 1.5) +
+    ggtitle("Metagene Analysis of Total RNA Pol II occupancy at the TTS") +
+    labs(subtitle = "all ChIP analyzable genes (~4000)", x="", y="Tag coverage normalized for sequencing depth") +
+    scale_x_continuous(labels=c("TTS", "+5 kb", "+10 kb", "+15 kb", "+20 kb"))+
+    theme(axis.title.y = element_text(size = 13, face = "bold"), axis.text = element_text(size = 13), #change axis label size
+          legend.position = c(0.8, 0.8), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 50, 10, 10),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold")) + #change size of title
+    scale_color_manual(values=c("black", "red", "grey"))
+    
+
+R_a <- plot_hist_function(Rpb1_all_plotting_df, "Metagene Analysis of Total RNA Pol II occupancy at the TTS", "all ChIP analyzable genes (~4000)") 
+R_c <- plot_hist_function(Rpb1_common_plotting_df, "Metagene Analysis of Total RNA Pol II occupancy at the TTS", "common genes list (~1800)") 
+
+S_a <- plot_hist_function(Ser2P_all_plotting_df, "Metagene Analysis of Ser2P RNA Pol II occupancy at the TTS", "all ChIP analyzable genes (~4000)") 
+S_c <- plot_hist_function(Ser2P_common_plotting_df, "Metagene Analysis of Ser2P RNA Pol II occupancy at the TTS", "common genes list (~1800)") 
+
+T_a <- plot_hist_function(Tyr1P_all_plotting_df, "Metagene Analysis of Tyr1P RNA Pol II occupancy at the TTS", "all ChIP analyzable genes (~4000)") 
+T_c <- plot_hist_function(Tyr1P_common_plotting_df, "Metagene Analysis of Tyr1P RNA Pol II occupancy at the TTS", "common genes list (~1800)") 
+
+#save (saved PDFs manually, they just look kinda blury so also saved pngs)
+png("TTS_hist/figures/Rpb1_ChIP_genes_TTS_hist.png", 400, 350)
+print(R_a)
+dev.off()
+png("TTS_hist/figures/Rpb1_common_genes_TTS_hist.png", 400, 350)
+print(R_c)
+dev.off()
+
+png("TTS_hist/figures/Ser2P_ChIP_genes_TTS_hist.png", 400, 350)
+print(S_a)
+dev.off()
+png("TTS_hist/figures/Ser2P_common_genes_TTS_hist.png", 400, 350)
+print(S_c)
+dev.off()
+
+png("TTS_hist/figures/Tyr1P_ChIP_genes_TTS_hist.png", 400, 350)
+print(T_a)
+dev.off()
+png("TTS_hist/figures/Tyr1P_common_genes_TTS_hist.png", 400, 350)
+print(T_c)
+dev.off()
+
+```
+
+
+
+
+FUN SIZED PLOTS!
+```{r plot TTS hist FUN SIZED}
+###defining plot histogram function###
+plot_fun_sized_hist_function <- function(hist_df, plot_title = "", subt = ""){
+  theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+  )
+  
+  ggplot(data = hist_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs(subtitle = subt, x= "", y="Read Count") +
+    ggtitle(plot_title) +
+    scale_x_continuous(labels=c("3'end", "", "+10kb", "", "+20kb"))+  
+    #scale_y_continuous(labels = c(0,10,20,30,40,50,60))+   coord_cartesian(ylim=c(0,60))+ #set equal y-axis
+    theme(axis.title.y = element_text(size = 13), axis.text = element_text(size = 13), #change axis label size
+          legend.position = c(0.8, 0.8), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 30, 10, 10),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold"),   #change size of title
+          plot.subtitle = element_text(size = 12)) +             #change size of subtitle
+    scale_color_manual(values=c("lightgray", "black", "red"))
+}
+
+
+## Rpb1
+R_a <- plot_fun_sized_hist_function(Rpb1_all_plotting_df, "Rpb1 ChIP-seq", "all ChIP analyzable genes") 
+R_c <- plot_fun_sized_hist_function(Rpb1_common_plotting_df) 
+jpeg("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/TTS_hist/figures/fun_size/Rpb1_TTS_hist_all_genes.jpeg", width=2.75, height=2.75, units="in", res=300)
+print(R_a)
+dev.off()
+jpeg("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/TTS_hist/figures/fun_size/Rpb1_TTS_hist_common_genes.jpeg", width=2.75, height=2.75, units="in", res=300)
+print(R_c)
+dev.off()
+
+## Ser2P
+S_a <- plot_fun_sized_hist_function(Ser2P_all_plotting_df, "Ser2P Pol II ChIP-seq", "all ChIP analyzable genes (~4000)") 
+S_c <- plot_fun_sized_hist_function(Ser2P_common_plotting_df, "Ser2P Pol II ChIP-seq", "common genes list (~1800)") 
+pdf("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/TTS_hist/figures/fun_size/Ser2P_TTS_hist_all_genes.pdf", 4, 3.5)
+print(S_a)
+dev.off()
+pdf("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/TTS_hist/figures/fun_size/Ser2P_TTS_hist_common_genes.pdf", 4, 3.5)
+print(S_c)
+dev.off()
+
+## Tyr1P
+T_a <- plot_fun_sized_hist_function(Tyr1P_all_plotting_df, "Tyr1P Pol II ChIP-seq", "all ChIP analyzable genes (~4000)") 
+T_c <- plot_fun_sized_hist_function(Tyr1P_common_plotting_df, "Tyr1P Pol II ChIP-seq", "common genes list (~1800)") 
+pdf("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/TTS_hist/figures/fun_size/Tyr1P_TTS_hist_all_genes.pdf", 4, 3.5)
+print(T_a)
+dev.off()
+pdf("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/TTS_hist/figures/fun_size/Tyr1P_TTS_hist_common_genes.pdf", 4, 3.5)
+print(T_c)
+dev.off()
+
+
+g <- ggarrange(R_c, S_c, T_c, nrow = 1, ncol = 3)
+pdf("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/TTS_hist/figures/fun_size/all_TTS_hist_common_genes_same_ysclae.pdf", 12, 3.5)
+print(g)
+dev.off()
+
+```
+
+
+
+Custom color plots
+  Pol II: "#ef7562","#b31b0b"
+  Ser2P: "#ac93b8", "#5a1766"
+  Tyr1P: "#fac30f", "#d18d04"
+```{r plot TTS hist color matching}
+## colors match browser tracks not boxplots!
+
+theme_set(theme_bw() +
+    theme(axis.line = element_line(color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      panel.background = element_blank(),
+      legend.title = element_blank())
+)
+
+## Rpb1
+R_c <- ggplot(data = Rpb1_common_plotting_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs( x= "", y="Read Count") +
+    ggtitle("Total Pol II ChIP-seq") +
+    scale_x_continuous(labels=c("3'end", "", "+10kb", "", "+20kb"))+  
+    #scale_y_continuous(labels = c(0,10,20,30,40,50,60))+   coord_cartesian(ylim=c(0,60))+ #set equal y-axis
+    theme(axis.title.y = element_text(size = 13), axis.text = element_text(size = 13), #change axis label size
+          legend.position = c(0.8, 0.8), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 30, 10, 10),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold"),   #change size of title
+          plot.subtitle = element_text(size = 12)) +             #change size of subtitle
+    scale_color_manual(values=c("lightgray", "#ef7562","#b31b0b"))
+
+jpeg("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/TTS_hist/figures/fun_size/Rpb1_TTS_hist_common_genes_reds.jpeg", width=2.75, height=2.5, units="in", res=300)
+print(R_c)
+dev.off()
+
+## Ser2P
+S_c <- ggplot(data = Ser2P_common_plotting_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs( x= "", y="Read Count") +
+    ggtitle("Ser2P Pol II ChIP-seq") +
+    scale_x_continuous(labels=c("3'end", "", "+10kb", "", "+20kb"))+  
+    #scale_y_continuous(labels = c(0,10,20,30,40,50,60))+   coord_cartesian(ylim=c(0,60))+ #set equal y-axis
+    theme(axis.title.y = element_text(size = 13), axis.text = element_text(size = 13), #change axis label size
+          legend.position = c(0.8, 0.8), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 30, 10, 10),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold"),   #change size of title
+          plot.subtitle = element_text(size = 12)) +             #change size of subtitle
+    scale_color_manual(values=c("lightgray", "#ac93b8", "#5a1766"))
+
+jpeg("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/TTS_hist/figures/fun_size/Ser2P_TTS_hist_common_genes_purples.jpeg", width=2.75, height=2.5, units="in", res=300)
+print(S_c)
+dev.off()
+
+## Tyr1P
+T_c <- ggplot(data = Tyr1P_common_plotting_df, aes(x=distance_from_TTS, y=value, group=name, color=name))+
+    geom_line(size=1.5) +
+    labs( x= "", y="Read Count") +
+    ggtitle("Tyr1P Pol II ChIP-seq") +
+    scale_x_continuous(labels=c("3'end", "", "+10kb", "", "+20kb"))+  
+    #scale_y_continuous(labels = c(0,10,20,30,40,50,60))+   coord_cartesian(ylim=c(0,60))+ #set equal y-axis
+    theme(axis.title.y = element_text(size = 13), axis.text = element_text(size = 13), #change axis label size
+          legend.position = c(0.8, 0.8), legend.text = element_text(size=12), #legend position and size
+          plot.margin = margin(10, 30, 10, 10),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold"),   #change size of title
+          plot.subtitle = element_text(size = 12)) +             #change size of subtitle
+    scale_color_manual(values=c("lightgray", "#fac30f", "#d18d04"))
+
+jpeg("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/TTS_hist/figures/fun_size/Tyr1P_TTS_hist_common_genes_yellows.jpeg", width=2.75, height=2.5, units="in", res=300)
+print(T_c)
+dev.off()
+
+
+g <- ggarrange(R_c, S_c, T_c, nrow = 1, ncol = 3)
+jpeg("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/TTS_hist/figures/fun_size/all_TTS_hist_common_genes_color_matching.jpeg", width=8.25, height=2.5, units="in", res=300)
+print(g)
+dev.off()
+
+```
+
+
+```{r make plotting dfs without input}
+#need to remake plotting dfs without input before pivot longer
+###
+# Rpb1 
+###
+Rpb1_all_plotting_df <- read.table("TTS_hist/Rpb1_ChIP_genes_TTS_hist_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#pivot longer so R can plot it (without input)
+Rpb1_all_long_df <- pivot_longer(Rpb1_all_plotting_df[c(1:3)], cols =2:3)
+Rpb1_all_long_df$name <- factor(Rpb1_all_long_df$name, levels = c('NHS', 'HS'))
+
+##common genes
+Rpb1_common_plotting_df <- read.table("TTS_hist/Rpb1_common_genes_TTS_hist_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#pivot longer so R can plot it (without input)
+Rpb1_common_long_df <- pivot_longer(Rpb1_common_plotting_df[c(1:3)], cols =2:3)
+Rpb1_common_long_df$name <- factor(Rpb1_common_long_df$name, levels = c('NHS', 'HS'))
+
+###
+# Ser2P 
+###
+Ser2P_all_plotting_df <- read.table("TTS_hist/Ser2P_ChIP_genes_TTS_hist_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#pivot longer so R can plot it (without input)
+Ser2P_all_long_df <- pivot_longer(Ser2P_all_plotting_df[c(1:3)], cols =2:3)
+Ser2P_all_long_df$name <- factor(Ser2P_all_long_df$name, levels = c('NHS', 'HS'))
+
+##common genes
+Ser2P_common_plotting_df <- read.table("TTS_hist/Ser2P_common_genes_TTS_hist_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#pivot longer so R can plot it (without input)
+Ser2P_common_long_df <- pivot_longer(Ser2P_common_plotting_df[c(1:3)], cols =2:3)
+Ser2P_common_long_df$name <- factor(Ser2P_common_long_df$name, levels = c('NHS', 'HS'))
+
+
+###
+# Tyr1P
+###
+Tyr1P_all_plotting_df <- read.table("TTS_hist/Ser2P_ChIP_genes_TTS_hist_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#pivot longer so R can plot it (without input)
+Tyr1P_all_long_df <- pivot_longer(Tyr1P_all_plotting_df[c(1:3)], cols =2:3)
+Tyr1P_all_long_df$name <- factor(Tyr1P_all_long_df$name, levels = c('NHS', 'HS'))
+
+##common genes
+Tyr1P_common_plotting_df <- read.table("TTS_hist/Ser2P_common_genes_TTS_hist_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#pivot longer so R can plot it (without input)
+Tyr1P_common_long_df <- pivot_longer(Tyr1P_common_plotting_df[c(1:3)], cols =2:3)
+Tyr1P_common_long_df$name <- factor(Tyr1P_common_long_df$name, levels = c('NHS', 'HS'))
+```
+```{r plot without input}
+
+R_a <- plot_hist_function(Rpb1_all_long_df, "TTS Metagene Analysis of Total RNA Pol II occupancy", "all ChIP analyzable genes (~4000)") 
+R_c <- plot_hist_function(Rpb1_common_long_df, "TTS Metagene Analysis of Total RNA Pol II occupancy", "common genes list (~1800)") 
+
+S_a <- plot_hist_function(Ser2P_all_long_df, "TTS Metagene Analysis of Ser2P RNA Pol II occupancy", "all ChIP analyzable genes (~4000)") 
+S_c <- plot_hist_function(Ser2P_common_long_df, "TTS Metagene Analysis of Ser2P RNA Pol II occupancy", "common genes list (~1800)") 
+
+T_a <- plot_hist_function(Tyr1P_all_long_df, "TTS Metagene Analysis of Tyr1P RNA Pol II occupancy", "all ChIP analyzable genes (~4000)") 
+T_c <- plot_hist_function(Tyr1P_common_long_df, "TTS Metagene Analysis of Tyr1P RNA Pol II occupancy", "common genes list (~1800)") 
+
+#save
+pdf("TTS_hist/figures/without_input/Rpb1_ChIP_genes_TTS_hist.pdf", 5, 5)
+print(R_a)
+dev.off()
+pdf("TTS_hist/figures/without_input/Rpb1_common_genes_TTS_hist.pdf", 5, 5)
+print(R_c)
+dev.off()
+
+pdf("TTS_hist/figures/without_input/Ser2P_ChIP_genes_TTS_hist.pdf", 5, 5)
+print(S_a)
+dev.off()
+pdf("TTS_hist/figures/without_input/Ser2P_common_genes_TTS_hist.pdf", 5, 5)
+print(S_c)
+dev.off()
+
+pdf("TTS_hist/figures/without_input/Tyr1P_ChIP_genes_TTS_hist.pdf", 5, 5)
+print(T_a)
+dev.off()
+pdf("TTS_hist/figures/without_input/Tyr1P_common_genes_TTS_hist.pdf", 5, 5)
+print(T_c)
+dev.off()
+
+```
+
+
+
+
+
+
+
+
+troubleshooting:
+**Something is overriding HS signal in the 4k ChIP genes**
+**just looks like giant TTS peak for some reason (event to an extent in input)**
+**why wasn't I seeing this before? is there an issue with the bed file?**
+```{r compare TTS bed files}
+TTS_bed_current <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/Documentation/MANE_gene_annotation_bed_files/ChIP_analyzable_genes_TTS.bed", header = FALSE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+TTS_bed_previous <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/ChIP_genes_TTS.bed", header = FALSE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+TTS_bed_current == TTS_bed_previous
+stopifnot(TTS_bed_current == TTS_bed_previous) #look to all be the same
+```
+can't find any differences between when I ran this previously and now...
+  previous command:
+  annotatePeaks.pl /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/annotation_bed_files/ChIP_genes_TTS.bed hg38 -size 40000 -hist 200 -norm 1E8 -d /Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/03_tag_directories/NHS_Rpb1_R6_TD > /Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/07_analysis/07e_comparing_to_ChIPseq/homer_hist_outputs/all_genes/NHS_Rpb1_R6.tsv
+
+  current command:
+  annotatePeaks.pl /Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/Documentation/MANE_gene_annotation_bed_files/ChIP_analyzable_genes_TSS.bed hg38 -size -20000,20000 -hist 200 -norm 1E8 -d /Volumes/Seq_data_4/2020_Katy_Ser2P_Rpb1_ChIP-seq/hg38/03_tag_directories/NHS_Rpb1_R6_TD > /Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/TTS_hist/homer_outputs/TTS_ChIP_genes/Rpb1s_NHS_R6.tsv 
+
+only differences are the bed file, the size window as 40kb vs -+20kb, and the location of the TDs and output files
+*re-running with exact same bed file and changing to 40kb window*
+bash script 07a_troubleshooting
+*fixed it!*
+*now re-making TTS hist common genes from exact bed file and changing to 40kb window for common genes*
+
+
+
+
+
+smoothing function?
+
+
+------------------
+
+
+
+
+2. Phosphorylation after HS boxplots
+------------------
+*only with common genes, would need to redo tables for Rpb1 to get all possible Rpb1 analyzable genes
+  (previously had filtered on Rpb1 expressed above background AND +P mark)
+  
+a. RPK for Total Pol II and +P NHS and HS separately
+```{r read-in data}
+#RPK dfs
+Tyr1P_exp_RPK_5kbds_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/06_analysis/scatterplots/RPK_TTSto5kb_expressed.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+Ser2P_exp_5kbds_RPK_df <- read.table("/Users/goodrichlab/Desktop/Katy/Ser2P_ChIPseq_2020/hg38/07_analysis/07f_Ser2P_vs_PolII/data_tables/RPK_TTSto5kb_expressed.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#ratio dfs
+Tyr1P_d_PolII_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/05_evaluating_replicates/testing_avg_methods/Tyr1P_d_PolII_avg_order_test_boxplots.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+Ser2P_d_PolII_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/05_evaluating_replicates/testing_avg_methods/Ser2P_d_PolII_avg_order_test_boxplots.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+```
+
+```{r RPK NHS and HS boxplots}
+boxplots_RPK_plotting_df <- left_join(Ser2P_exp_5kbds_RPK_df, Tyr1P_exp_RPK_5kbds_df, by = "rowname")
+boxplots_RPK_plotting_df <- boxplots_RPK_plotting_df[c(1,2,3,11,4,12,5,13,6,14,7,8,9,10,15:18)]
+#filter for common genes
+common_boxplots_RPK_plotting_df <- filter(boxplots_RPK_plotting_df, boxplots_RPK_plotting_df$rowname %in% common_genes_master_df$transcriptID)
+#remove extra Rpb1 cols
+common_boxplots_RPK_plotting_df <- common_boxplots_RPK_plotting_df[c(1:4,6:8,10:18)]
+#average reps
+common_boxplots_RPK_plotting_df$Rpb1_NHS_avg <- (common_boxplots_RPK_plotting_df$Rpb1_NHS_R6 + common_boxplots_RPK_plotting_df$NHS_Rpb1_R7 + common_boxplots_RPK_plotting_df$NHS_Rpb1_R8)/3
+common_boxplots_RPK_plotting_df$Rpb1_HS_avg <- (common_boxplots_RPK_plotting_df$Rpb1_HS_R6 + common_boxplots_RPK_plotting_df$HS_Rpb1_R7 + common_boxplots_RPK_plotting_df$HS_Rpb1_R8)/3
+common_boxplots_RPK_plotting_df$Ser2P_NHS_avg <- (common_boxplots_RPK_plotting_df$Ser2P_NHS_R6 + common_boxplots_RPK_plotting_df$Ser2P_NHS_R8 )/2
+common_boxplots_RPK_plotting_df$Ser2P_HS_avg <- (common_boxplots_RPK_plotting_df$Ser2P_HS_R6 + common_boxplots_RPK_plotting_df$Ser2P_HS_R8 )/2
+common_boxplots_RPK_plotting_df$Tyr1P_NHS_avg <- (common_boxplots_RPK_plotting_df$NHS_Tyr1P_R7 + common_boxplots_RPK_plotting_df$NHS_Tyr1P_R8 )/2
+common_boxplots_RPK_plotting_df$Tyr1P_HS_avg <- (common_boxplots_RPK_plotting_df$HS_Tyr1P_R7 + common_boxplots_RPK_plotting_df$HS_Tyr1P_R8 )/2
+
+
+#save dfs
+write_delim(boxplots_RPK_plotting_df, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/phos_boxplots/boxplots_RPK_df.tsv", delim = "\t", col_names = TRUE)
+write_delim(common_boxplots_RPK_plotting_df, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/phos_boxplots/boxplots_RPK_common_genes_df.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+```{r plotting dfs}
+common_boxplots_RPK_plotting_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/phos_boxplots/boxplots_RPK_common_genes_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+common_boxplots_RPK_long_plotting_df <- pivot_longer(common_boxplots_RPK_plotting_df[c(1,17:22)], cols = c(2:7))
+#factor for right order
+common_boxplots_RPK_long_plotting_df$name <- factor(common_boxplots_RPK_long_plotting_df$name, c("Rpb1_NHS_avg", "Rpb1_HS_avg", "Ser2P_NHS_avg", "Ser2P_HS_avg", "Tyr1P_NHS_avg", "Tyr1P_HS_avg") )
+
+```
+
+```{r plot boxplot: RPK}
+#make boxplots
+b <- ggplot(common_boxplots_RPK_long_plotting_df, aes(y=value, x=name, color = name) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd=1.25) + 
+  coord_cartesian(ylim = c(0,250)) +
+  ylab("RPK") + xlab("")+
+  #ggtitle("Pol II in the transcription termination window") +
+  scale_x_discrete(labels=c("NHS\nPol II", "HS\nPol II", "NHS\nSer2P", "HS\nSer2P", "NHS\nTyr1P", "HS\nTyr1P"))+
+  theme(axis.title.y = element_text(size = 14), axis.title.x = element_blank(), #change axis title size
+        axis.text = element_text(size = 13),                                  #change axis label size
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 12, color = "gray40")              #caption formating
+        ) + 
+  #scale_colour_manual(values=c("#e86b5d","#a81707","#ba89c4", "#a35db3", "#f0b05d", "#e68c17")) +
+  scale_colour_manual(values=c("#ef7562","#b31b0b","#ac93b8", "#5a1766", "#fac30f", "#d18d04")) + #matches browser tracks
+  annotate("text", x=1.5, y=250, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 1, xend = 2, y = 250, yend = 250, colour = "gray40")+ #Pol II line and * for stats
+  annotate("text", x=3.5, y=175, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 3, xend = 4, y = 175, yend = 175, colour = "gray40")+ #Ser2 line and * for stats
+  annotate("text", x=5.5, y=175, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 5, xend = 6, y = 175, yend = 175, colour = "gray40") #+ #Tyr1 line and * for stats
+  #labs(caption = "****p<0.0001") #add caption specifying pval
+
+
+#saved as PDF manually for easier sizing
+#save png too
+jpeg("phos_boxplots/figures/RPK_common_genes_boxplot.jpeg", width=5, height=3, units="in", res=300)
+print(b)
+dev.off()
+```
+
+```{r stats}
+#PolII NHS vs HS
+res <- wilcox.test(as.numeric(common_boxplots_RPK_plotting_df[,17]), as.numeric(common_boxplots_RPK_plotting_df[,18]) )
+res$p.value #3.798171e-185
+
+#Ser2P NHS vs HS
+res <- wilcox.test(as.numeric(common_boxplots_RPK_plotting_df[,19]), as.numeric(common_boxplots_RPK_plotting_df[,20]) )
+res$p.value #5.619099e-92
+
+#Tyr1P NHS vs HS
+res <- wilcox.test(as.numeric(common_boxplots_RPK_plotting_df[,21]), as.numeric(common_boxplots_RPK_plotting_df[,22]) )
+res$p.value #1.364974e-101
+
+
+#make a stats df
+RPK_NHSvHS_pval_df <- data.frame(comparison = c("Pol II", "Ser2P", "Tyr1P"),
+                                   NHSvHS_p_values = c(3.798171e-185, 5.619099e-92, 1.364974e-101))
+
+#save
+write_delim(RPK_NHSvHS_pval_df, "cat_phos_boxplots/RPK_NHSvHS_boxplot_pval_wilcox_test.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+
+b. +P / Pol II ratios NHS and HS
+```{r make dfs}
+#starting with common genes df from part a
+common_boxplots_RPK_plotting_df
+#calculating ratios with averages
+  #make R6 / R8 avg for Ser2P and R7 / R8 avg for Tyr1P
+common_boxplots_RPK_plotting_df$Rpb1_NHS_R6_R8_avg <- (common_boxplots_RPK_plotting_df$Rpb1_NHS_R6 + common_boxplots_RPK_plotting_df$NHS_Rpb1_R8) /2
+common_boxplots_RPK_plotting_df$Rpb1_HS_R6_R8_avg <- (common_boxplots_RPK_plotting_df$Rpb1_HS_R6 + common_boxplots_RPK_plotting_df$HS_Rpb1_R8) /2
+
+common_boxplots_RPK_plotting_df$Rpb1_NHS_R7_R8_avg <- (common_boxplots_RPK_plotting_df$NHS_Rpb1_R7 + common_boxplots_RPK_plotting_df$NHS_Rpb1_R8) /2
+common_boxplots_RPK_plotting_df$Rpb1_HS_R7_R8_avg <- (common_boxplots_RPK_plotting_df$HS_Rpb1_R7 + common_boxplots_RPK_plotting_df$HS_Rpb1_R8) /2
+
+#now make ratios
+common_ratio_boxplot_df <- data.frame(transcriptID = common_boxplots_RPK_plotting_df$rowname,
+                                      Ser2PdPolII_NHS = common_boxplots_RPK_plotting_df$Ser2P_NHS_avg / common_boxplots_RPK_plotting_df$Rpb1_NHS_R6_R8_avg,
+                                      Ser2PdPolII_HS = common_boxplots_RPK_plotting_df$Ser2P_HS_avg / common_boxplots_RPK_plotting_df$Rpb1_HS_R6_R8_avg,
+                                      Tyr1PdPolII_NHS = common_boxplots_RPK_plotting_df$Tyr1P_NHS_avg / common_boxplots_RPK_plotting_df$Rpb1_NHS_R7_R8_avg,
+                                      Tyr1PdPolII_HS = common_boxplots_RPK_plotting_df$Tyr1P_HS_avg / common_boxplots_RPK_plotting_df$Rpb1_HS_R7_R8_avg)
+
+#save
+write_delim(common_ratio_boxplot_df, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/phos_boxplots/boxplots_ratio_df.tsv", delim = "\t", col_names = TRUE)
+```
+
+```{r format for plotting}
+common_ratio_boxplot_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/phos_boxplots/boxplots_ratio_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+common_ratio_boxplot_longer_df <- pivot_longer(common_ratio_boxplot_df, cols = c(2:5))
+#factor for right order
+common_ratio_boxplot_longer_df$name <- factor(common_ratio_boxplot_longer_df$name, c("Ser2PdPolII_NHS", "Ser2PdPolII_HS", "Tyr1PdPolII_NHS", "Tyr1PdPolII_HS") )
+```
+
+```{r plot boxplot: ratio}
+#make boxplots
+b <- ggplot(common_ratio_boxplot_longer_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = 16, lwd=1) + 
+  coord_cartesian(ylim = c(0,3)) +
+  ylab("Phospho Pol II\nnorm to total Pol II") + xlab("")+
+  #ggtitle("Pol II in the transcription termination window") +
+  scale_x_discrete(labels=c("NHS\nSer2P", "HS\nSer2P", "NHS\nTyr1P", "HS\nTyr1P"))+
+  theme(axis.title.y = element_text(size = 13), axis.text = element_text(size = 12), legend.position="none",
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        plot.caption = element_text(size = 12, color = "gray40")              #caption formating
+        ) +
+  #theme(plot.title = element_text(size = 13, face = "bold")) + #change size of title
+  #scale_colour_manual(values=c("#ba89c4", "#a35db3", "#f0b05d", "#e68c17")) +
+  scale_colour_manual(values=c("#ac93b8", "#5a1766", "#fac30f", "#d18d04")) + #matches browser tracks
+  annotate("text", x=1.5, y=2, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 1, xend = 2, y = 2, yend = 2, colour = "gray40")+ #Ser2 line and * for stats
+  annotate("text", x=3.5, y=2.75, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 3, xend = 4, y = 2.75, yend = 2.75, colour = "gray40") #+ #Tyr1 line and * for stats
+  #labs(caption = "****p<0.0001") #add caption specifying pval
+
+#saved as PDF manually for easier sizing
+#save jpeg too
+jpeg("phos_boxplots/figures/ratio_common_genes_boxplot.jpeg", width=3.75, height=3, units="in", res=300)
+print(b)
+dev.off()
+
+
+### plot Ser2 and Tyr1 separately!
+Ser2P_common_ratio_boxplot_longer_df <- pivot_longer(common_ratio_boxplot_df[c(1:3)], cols = c(2:3))
+Ser2P_common_ratio_boxplot_longer_df$name <- factor(Ser2P_common_ratio_boxplot_longer_df$name, c("Ser2PdPolII_NHS", "Ser2PdPolII_HS") )
+Tyr1P_common_ratio_boxplot_longer_df <- pivot_longer(common_ratio_boxplot_df[c(1,4,5)], cols = c(2:3))
+Tyr1P_common_ratio_boxplot_longer_df$name <- factor(Tyr1P_common_ratio_boxplot_longer_df$name, c("Tyr1PdPolII_NHS", "Tyr1PdPolII_HS") )
+
+sb <- ggplot(Ser2P_common_ratio_boxplot_longer_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.85, outlier.shape = 16, lwd = 1) + 
+  coord_cartesian(ylim = c(0,2)) + scale_y_continuous(breaks = c(0,1,2)) +
+  ylab("Ser2P Pol II\nNorm to Total Pol II")  +
+  #ggtitle("3' Ser2P / Pol II by Termination Defect Category") +              #couldn't fit title on such a narrow plot
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 12),  #change axis title size
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        axis.title.y = element_text(size = 12),                                #y-axis label text size 
+        plot.caption = element_text(size = 12, color = "gray40")
+        ) +                                                           
+  scale_x_discrete(labels=c("NHS", "HS"))+             #rename x axis labels
+  #stat_compare_means(aes(group = term_defect_final), label = "p.signif") + ##adds stats, same p-val as wilcox (get number change to p.format), not surehow to move label, easier to add just text over the plot
+  annotate("text", x=1.5, y=1.85, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 1, xend = 2, y = 1.85, yend = 1.85, colour = "gray40")+ #add line and * for stats
+  #labs(caption = "****p<0.0001") + #add caption specifying pval
+  #scale_colour_manual(values=c("#ba89c4", "#a35db3")) #purples   
+  scale_colour_manual(values=c("#ac93b8", "#5a1766"))  #matches browser tracks
+
+
+tb <- ggplot(Tyr1P_common_ratio_boxplot_longer_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.85, outlier.shape = 16, lwd = 1) + 
+  coord_cartesian(ylim = c(0,3)) +
+  ylab("Tyr1P Pol II\nNorm to Total Pol II")  +
+  #ggtitle("3' Ser2P / Pol II by Termination Defect Category") +              #couldn't fit title on such a narrow plot
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 12),  #change axis title size
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(10, 10, 10, 5),                                 #add white space
+        axis.title.y = element_text(size = 12),                                #y-axis label text size 
+        plot.caption = element_text(size = 12, color = "gray40")
+        ) +                                                           
+  scale_x_discrete(labels=c("NHS", "HS"))+             #rename x axis labels
+  annotate("text", x=1.5, y=2.8, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 1, xend = 2, y = 2.8, yend = 2.8, colour = "gray40")+ #add line and * for stats
+  #labs(caption = "****p<0.0001") + #add caption specifying pval
+  #scale_colour_manual(values=c("#f0b05d", "#e68c17")) #oranges
+  scale_colour_manual(values=c("#fac30f", "#d18d04"))  #matches browser tracks
+
+gg <- ggarrange(sb, tb, ncol = 2, nrow = 1)
+
+
+#save
+jpeg("phos_boxplots/figures/Ser2P_ratio_common_genes_boxplot.jpeg", width=2, height=3, units="in", res=300)
+print(sb)
+dev.off()
+
+jpeg("phos_boxplots/figures/Tyr1P_ratio_common_genes_boxplot.jpeg", width=2, height=3, units="in", res=300)
+print(tb)
+dev.off()
+
+jpeg("phos_boxplots/figures/both_ratio_common_genes_boxplot.jpeg", width=4, height=3, units="in", res=300)
+print(gg)
+dev.off()
+
+```
+
+```{r stats}
+
+#Ser2P NHS vs HS
+res <- wilcox.test(as.numeric(common_ratio_boxplot_df[,2]), as.numeric(common_ratio_boxplot_df[,3]), paired = TRUE )
+res$p.value #3.035178e-67 (p=5.451628e-79 if run as paired)
+
+#Tyr1P NHS vs HS
+res <- wilcox.test(as.numeric(common_ratio_boxplot_df[,4]), as.numeric(common_ratio_boxplot_df[,5]), paired = TRUE )
+res$p.value #1.482921e-56 (p=2.769625e-69 if run as paired)
+
+
+#make a stats df
+NHSvHS_pval_df <- data.frame(comparison = c("NHS vs HS"),
+                                   Ser2PdPolII_p_values = c(3.035178e-67),
+                                   Tyr1PdPolII_p_values = c(1.482921e-56))
+
+#save
+write_delim(NHSvHS_pval_df, "cat_phos_boxplots/PhosdPolII_NHSvHS_boxplot_pval_wilcox_test.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+------------------
+
+
+
+
+3. Phosphorylation vs other categories
+-----------------------------------------
+*only common genes right now
+calculate FC in ratios
+  FC then ratio or ratio then FC? (avg reps first)
+  going with ratio then FC because I have those dfs already and just need to calc FC
+    I think they're mathematically identical
+
+a. term defect cat
+```{r FC dfs}
+FC_ratio_df <- data.frame(transcriptID = common_ratio_boxplot_df$transcriptID, 
+                    Ser2PdPolII_FC = (common_ratio_boxplot_df$Ser2PdPolII_HS / common_ratio_boxplot_df$Ser2PdPolII_NHS),
+                    Tyr1PdPolII_FC = (common_ratio_boxplot_df$Tyr1PdPolII_HS / common_ratio_boxplot_df$Tyr1PdPolII_NHS))
+
+write_delim(FC_ratio_df, "cat_phos_boxplots/FC_ratio_df.tsv", delim = "\t", col_names = TRUE)
+
+```
+```{r get quartiles}
+##Ser2P
+summary(FC_ratio_df$Ser2PdPolII_FC)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.1987  0.9683  1.1679  1.1729  1.3684  2.3712 
+#add quartile label col
+
+temp <- vector()
+i=1
+while (i<=nrow(FC_ratio_df)) {
+  if (FC_ratio_df$Ser2PdPolII_FC[i] <=0.9683) {
+    temp <- append(temp, "first_quartile")
+  } else if (FC_ratio_df$Ser2PdPolII_FC[i] >0.9683 && FC_ratio_df$Ser2PdPolII_FC[i] <=1.1729) {
+    temp <- append(temp, "second_quartile")
+  }  else if (FC_ratio_df$Ser2PdPolII_FC[i] >1.1729 && FC_ratio_df$Ser2PdPolII_FC[i] <=1.3684) {
+    temp <- append(temp, "third_quartile")
+  } else if (FC_ratio_df$Ser2PdPolII_FC[i] >1.3684) {
+    temp <- append(temp, "fourth_quartile")
+  } else {
+    temp <- append(temp, "oops")
+  }
+  i=i+1
+} 
+#add temp as col
+FC_ratio_df$Ser2P_quartile_cat <- temp
+table(FC_ratio_df$Ser2P_quartile_cat) #good no oops
+
+##Tyr1P
+summary(FC_ratio_df$Tyr1PdPolII_FC)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.1938  0.9287  1.2092  1.2873  1.5926  3.3155 
+
+temp <- vector()
+i=1
+while (i<=nrow(FC_ratio_df)) {
+  if (FC_ratio_df$Tyr1PdPolII_FC[i] <=0.9287) {
+    temp <- append(temp, "first_quartile")
+  } else if (FC_ratio_df$Tyr1PdPolII_FC[i] >0.9287 && FC_ratio_df$Tyr1PdPolII_FC[i] <=1.2873) {
+    temp <- append(temp, "second_quartile")
+  }  else if (FC_ratio_df$Tyr1PdPolII_FC[i] >1.2873 && FC_ratio_df$Tyr1PdPolII_FC[i] <=1.5926) {
+    temp <- append(temp, "third_quartile")
+  } else if (FC_ratio_df$Tyr1PdPolII_FC[i] >1.5926) {
+    temp <- append(temp, "fourth_quartile")
+  } else {
+    temp <- append(temp, "oops")
+  }
+  i=i+1
+} 
+#add temp as col
+FC_ratio_df$Tyr1P_quartile_cat <- temp
+table(FC_ratio_df$Tyr1P_quartile_cat) #good no oops
+
+#save
+write_delim(FC_ratio_df, "cat_phos_boxplots/FC_ratio_df.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+```{r FC ratio vs defect / no defect boxplots}
+#FC_ratio_df
+FC_ratio_df <- read.table("cat_phos_boxplots/FC_ratio_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+ChIP_common_genes_master_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/06_analysis/ChIP_common_TTS5kbds_genes_MASTER_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+master_cat_ratio_plotting_df <- left_join(FC_ratio_df, ChIP_common_genes_master_df, by = "transcriptID")
+
+write_delim(master_cat_ratio_plotting_df, "cat_phos_boxplots/master_cat_ratio_plotting_df.tsv", delim = "\t", col_names = TRUE)
+master_cat_ratio_plotting_df <- read.table("cat_phos_boxplots/master_cat_ratio_plotting_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+#now need just ratios and defect cat
+defect_cat_plotting_df <- master_cat_ratio_plotting_df[c(1:3,7,11)]
+
+#now filter out long RT genes
+defect_cat_plotting_df <- filter(defect_cat_plotting_df, defect_cat_plotting_df$longRT_4sU == FALSE)
+table(defect_cat_plotting_df$term_defect_final) #only 90 nd genes and 1600 defect genes...
+
+Ser2P_defect_cat_plotting_df <- defect_cat_plotting_df[c(2,4)]
+Tyr1P_defect_cat_plotting_df <- defect_cat_plotting_df[c(3,4)]
+
+##Ser2P
+sb <- ggplot(Ser2P_defect_cat_plotting_df, aes(y=Ser2PdPolII_FC, x=term_defect_final, color = term_defect_final ) ) +
+  geom_boxplot(width=0.85, outlier.shape = 16, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,2.5)) +
+  ylab("Ser2P Pol II / total Pol II\nFC after HS")  +
+  #ggtitle("3' Ser2P / Pol II by Termination Defect Category") +              #couldn't fit title on such a narrow plot
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 14),  #change axis title size
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        axis.title.y = element_text(size = 15),                                #y-axis label text size 
+        plot.caption = element_text(size = 12, color = "gray40")
+        ) +                                                           
+  scale_x_discrete(labels=c("No\nDefect", "Term\nDefect"))+             #rename x axis labels
+  #stat_compare_means(aes(group = term_defect_final), label = "p.signif") + ##adds stats, same p-val as wilcox (get number change to p.format), not surehow to move label, easier to add just text over the plot
+  annotate("text", x=1.5, y=2.5, label= "****", colour = "gray40", size = 6) + annotate("segment", x = 1, xend = 2, y = 2.5, yend = 2.5, colour = "gray40")+ #add line and * for stats
+  #labs(caption = "") + #add caption specifying pval
+  scale_colour_manual(values=c("#ac93b8", "#5a1766")) #purples
+
+tb <- ggplot(Tyr1P_defect_cat_plotting_df, aes(y=Tyr1PdPolII_FC, x=term_defect_final, color = term_defect_final ) ) +
+  geom_boxplot(width=0.75, outlier.shape = 16, lwd = 1) + 
+  coord_cartesian(ylim = c(0,3.5)) + #scale_y_continuous(breaks = c(0,1,2,3)) +
+  ylab("Tyr1P Pol II / total Pol II\nFC after HS") + 
+  #ggtitle("3' Ser2P / Pol II by Termination Defect Category") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 14),  #change axis title size
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(10, 10, 10, 10),                                  #add white space
+        axis.title.y = element_text(size = 15),                              #y-axis label text size 
+        plot.caption = element_text(size = 12, color = "gray40")
+        ) +  
+  scale_x_discrete(labels=c("No\nDefect", "Term\nDefect"))+             #rename x axis labels
+  annotate("text", x=1.5, y=3.5, label= "***", colour = "gray40", size = 6) + annotate("segment", x = 1, xend = 2, y = 3.5, yend = 3.5, colour = "gray40")+ #add line and * for stats
+  #labs(caption = "****p<0.0001, ***p<0.001") + #add caption specifying pval
+  scale_colour_manual(values=c("#fac30f", "#d18d04")) #oranges
+
+
+ggarrange(sb, tb, ncol = 2, nrow = 1)
+
+jpeg("cat_phos_boxplots/figures/defect_cat_Ser2P_FC_ratio_common_genes_boxplot_same_scale.jpeg", width=2.5, height=3, units="in", res=300)
+print(sb)
+dev.off()
+
+jpeg("cat_phos_boxplots/figures/defect_cat_Tyr1P_FC_ratio_common_genes_boxplot.jpeg", width=2.4, height=3, units="in", res=300)
+print(tb)
+dev.off()
+
+```
+
+```{r stats}
+#Ser2P
+defect_stats <- filter(Ser2P_defect_cat_plotting_df, Ser2P_defect_cat_plotting_df$term_defect_final == TRUE)
+nd_stats <- filter(Ser2P_defect_cat_plotting_df, Ser2P_defect_cat_plotting_df$term_defect_final == FALSE)
+
+#defect vs no defect
+res <- wilcox.test(as.numeric(defect_stats[,1]), as.numeric(nd_stats[,1]) )
+res$p.value #1.532655e-06 ****
+#sanity check
+res <- wilcox.test(as.numeric(nd_stats[,1]), as.numeric(nd_stats[,1]) )
+res$p.value #1 good
+
+
+
+
+## Tyr1P
+defect_stats <- filter(Tyr1P_defect_cat_plotting_df, Tyr1P_defect_cat_plotting_df$term_defect_final == TRUE)
+nd_stats <- filter(Tyr1P_defect_cat_plotting_df, Tyr1P_defect_cat_plotting_df$term_defect_final == FALSE)
+
+#defect vs no defect
+res <- wilcox.test(as.numeric(defect_stats[,1]), as.numeric(nd_stats[,1]) )
+res$p.value #0.0003791101 ***
+#sanity check
+res <- wilcox.test(as.numeric(nd_stats[,1]), as.numeric(nd_stats[,1]) )
+res$p.value #1 good
+
+
+#make a stats df
+defect_cat_pval_df <- data.frame(comparison = c("nd vs defect"),
+                                   Ser2P_p_values = c(1.532655e-06),
+                                   Tyr1P_p_values = c(0.0003791101))
+
+#save
+write_delim(defect_cat_pval_df, "cat_phos_boxplots/defect_cat_boxplot_pval_wilcox_test.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+b. uncleaved reads cat
+```{r y FC ratio, x uncleaved reads cat}
+#now need just ratios and defect cat
+cleavage_cat_plotting_df <- master_cat_ratio_plotting_df[c(1:3,16,11)]
+
+#now filter out long RT genes
+cleavage_cat_plotting_df <- filter(cleavage_cat_plotting_df, cleavage_cat_plotting_df$longRT_4sU == FALSE)
+table(cleavage_cat_plotting_df$cleaved_cat_4sU) #only 55 decreased uncleaved reads genes and ,735 increased, and 906 no change
+#remove 17 NAs
+cleavage_cat_plotting_df <- filter(cleavage_cat_plotting_df, cleavage_cat_plotting_df$cleaved_cat_4sU == "decreased" |
+                                      cleavage_cat_plotting_df$cleaved_cat_4sU == "increased" |
+                                      cleavage_cat_plotting_df$cleaved_cat_4sU == "no change")
+
+Ser2P_cleavage_cat_plotting_df <- cleavage_cat_plotting_df[c(2,4)]
+#factor for right order
+Ser2P_cleavage_cat_plotting_df$cleaved_cat_4sU <- factor(Ser2P_cleavage_cat_plotting_df$cleaved_cat_4sU, c("decreased", "no change", "increased") )
+Tyr1P_cleavage_cat_plotting_df <- cleavage_cat_plotting_df[c(3,4)]
+#factor for right order
+Tyr1P_cleavage_cat_plotting_df$cleaved_cat_4sU <- factor(Tyr1P_cleavage_cat_plotting_df$cleaved_cat_4sU, c("decreased", "no change", "increased") )
+
+
+
+##can't figure out how to plot on same graph
+sb <- ggplot(Ser2P_cleavage_cat_plotting_df, aes(y=Ser2PdPolII_FC, x=cleaved_cat_4sU, color = cleaved_cat_4sU ) ) +
+  geom_boxplot(width=0.85, outlier.shape = 16, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,2.5)) +
+  ylab("Ser2P Pol II / total Pol II\nFC after HS")  +
+  #ggtitle("3' Ser2P / Pol II by Termination Defect Category") +              #couldn't fit title on such a narrow plot
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13),  #change axis title size
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        axis.title.y = element_text(size = 15),                               #y-axis label text size 
+        plot.caption = element_text(size = 12, color = "gray40")              #caption font and color
+        ) +                                                           
+  scale_x_discrete(labels=c("Improved\nCleavage", "NC", "Cleavage\nDefect"))+     #rename x axis labels
+  scale_colour_manual(values=c("#ac93b8","gray", "#5a1766")) +                #purples
+  annotate("text", x=1.5, y=2.5, label= "***", colour = "gray40", size = 6) + 
+      annotate("segment", x = 1, xend = 2, y = 2.45, yend = 2.45, colour = "gray40")+ #left line and * for stats
+  annotate("text", x=2.5, y=2.4, label= "**", colour = "gray40", size = 6) + 
+      annotate("segment", x = 2, xend = 3, y = 2.35, yend = 2.35, colour = "gray40") #+ #right line and * for stats
+  #labs(caption = "") #add caption specifying pval (one caption when plotting together)
+  
+  
+  
+
+tb <- ggplot(Tyr1P_cleavage_cat_plotting_df, aes(y=Tyr1PdPolII_FC, x=cleaved_cat_4sU, color = cleaved_cat_4sU ) ) +
+  geom_boxplot(width=0.85, outlier.shape = 16, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,4)) +
+  ylab("Tyr1P Pol II / total Pol II\nFC after HS") + 
+  #ggtitle("3' Ser2P / Pol II by Termination Defect Category") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13),  #change axis title size
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        axis.title.y = element_text(size = 15),                               #y-axis label text size 
+        plot.caption = element_text(size = 12, color = "gray40")              #caption font and color
+        ) +  
+  scale_x_discrete(labels=c("Improved\nCleavage", "NC", "Cleavage\nDefect"))+     #rename x axis labels
+  scale_colour_manual(values=c("#fac30f", "gray","#d18d04")) + #oranges
+  annotate("text", x=1.5, y=3.75, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 1, xend = 2, y = 3.7, yend = 3.7, colour = "gray40")+ #left line and * for stats
+  annotate("text", x=2.5, y=3.6, label= "**", colour = "gray40", size = 6) + 
+      annotate("segment", x = 2, xend = 3, y = 3.55, yend = 3.55, colour = "gray40") #+ #right line and * for stats
+  #labs(caption = "****p<0.0001, ***p<0.001, **p<0.01") #add caption specifying pval
+
+
+
+ggarrange(sb, tb, ncol = 2, nrow = 1)
+
+#pdf("cat_phos_boxplots/figures/cleavage_cat_Ser2P_FC_ratio_common_genes_boxplot_same_scale.pdf", 4, 4)
+#print(sb)
+#dev.off()
+
+
+jpeg("cat_phos_boxplots/figures/cleavage_cat_Ser2P_FC_ratio_common_genes_boxplot.jpeg", width=3.4, height=3, units="in", res=300)
+print(sb)
+dev.off()
+
+jpeg("cat_phos_boxplots/figures/cleavage_cat_Tyr1P_FC_ratio_common_genes_boxplot.jpeg", width=3.4, height=3, units="in", res=300)
+print(tb)
+dev.off()
+
+```
+```{r boxplots without No Change box}
+
+#### ONY RUN IF WANT TO EXCLUDE NO CHAGNE BOX ###
+cleavage_cat_plotting_df_2 <- filter(cleavage_cat_plotting_df, cleavage_cat_plotting_df$cleaved_cat_4sU == "decreased" |
+                                      cleavage_cat_plotting_df$cleaved_cat_4sU == "increased" )
+
+Ser2P_cleavage_cat_plotting_df_2 <- cleavage_cat_plotting_df_2[c(2,4)]
+#factor for right order
+Ser2P_cleavage_cat_plotting_df_2$cleaved_cat_4sU <- factor(Ser2P_cleavage_cat_plotting_df_2$cleaved_cat_4sU, c("decreased",  "increased") )
+Tyr1P_cleavage_cat_plotting_df_2 <- cleavage_cat_plotting_df_2[c(3,4)]
+#factor for right order
+Tyr1P_cleavage_cat_plotting_df_2$cleaved_cat_4sU <- factor(Tyr1P_cleavage_cat_plotting_df_2$cleaved_cat_4sU, c("decreased",  "increased") )
+#### 
+
+sb <- ggplot(Ser2P_cleavage_cat_plotting_df_2, aes(y=Ser2PdPolII_FC, x=cleaved_cat_4sU, color = cleaved_cat_4sU ) ) +
+  geom_boxplot(width=0.85, outlier.shape = 16, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,2.5)) +
+  ylab("Ser2P Pol II / total Pol II\nFC after HS")  +
+  #ggtitle("3' Ser2P / Pol II by Termination Defect Category") +              #couldn't fit title on such a narrow plot
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13),  #change axis title size
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        axis.title.y = element_text(size = 15),                               #y-axis label text size 
+        plot.caption = element_text(size = 12, color = "gray40")              #caption font and color
+        ) +                                                           
+  scale_x_discrete(labels=c("Improved\nCleavage", "Cleavage\nDefect"))+     #rename x axis labels
+  scale_colour_manual(values=c("#ac93b8", "#5a1766")) +                #purples
+  annotate("text", x=1.5, y=2.5, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 1, xend = 2, y = 2.45, yend = 2.45, colour = "gray40") #left line and * for stats
+  #labs(caption = "") #add caption specifying pval (one caption when plotting together)
+  
+  
+  
+
+tb <- ggplot(Tyr1P_cleavage_cat_plotting_df_2, aes(y=Tyr1PdPolII_FC, x=cleaved_cat_4sU, color = cleaved_cat_4sU ) ) +
+  geom_boxplot(width=0.85, outlier.shape = 16, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,4)) +
+  ylab("Tyr1P Pol II / total Pol II\nFC after HS") + 
+  #ggtitle("3' Ser2P / Pol II by Termination Defect Category") +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13),  #change axis title size
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        axis.title.y = element_text(size = 15),                               #y-axis label text size 
+        plot.caption = element_text(size = 12, color = "gray40")              #caption font and color
+        ) +  
+  scale_x_discrete(labels=c("Improved\nCleavage",  "Cleavage\nDefect"))+     #rename x axis labels
+  scale_colour_manual(values=c("#fac30f", "#d18d04")) + #oranges
+  annotate("text", x=1.5, y=3.75, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 1, xend = 2, y = 3.7, yend = 3.7, colour = "gray40") #left line and * for stats
+  #labs(caption = "****p<0.0001, ***p<0.001, **p<0.01") #add caption specifying pval
+
+
+
+jpeg("cat_phos_boxplots/figures/cleavage_cat_Ser2P_FC_ratio_common_genes_boxplot_no_NC.jpeg", width=2.9, height=3, units="in", res=300)
+print(sb)
+dev.off()
+
+jpeg("cat_phos_boxplots/figures/cleavage_cat_Tyr1P_FC_ratio_common_genes_boxplot_no_NC.jpeg", width=2.75, height=3, units="in", res=300)
+print(tb)
+dev.off()
+
+```
+
+
+
+```{r stats}
+#Ser2P
+uncl_dec_stats <- filter(Ser2P_cleavage_cat_plotting_df, Ser2P_cleavage_cat_plotting_df$cleaved_cat_4sU == "decreased")
+uncl_nc_stats <- filter(Ser2P_cleavage_cat_plotting_df, Ser2P_cleavage_cat_plotting_df$cleaved_cat_4sU == "no change")
+uncl_inc_stats <- filter(Ser2P_cleavage_cat_plotting_df, Ser2P_cleavage_cat_plotting_df$cleaved_cat_4sU == "increased")
+
+#dec vs nc
+res <- wilcox.test(as.numeric(uncl_dec_stats[,1]), as.numeric(uncl_nc_stats[,1]) )
+res$p.value #0.000334344 (3.3E-4) ***
+#dec vs inc
+res <- wilcox.test(as.numeric(uncl_dec_stats[,1]), as.numeric(uncl_inc_stats[,1]) )
+res$p.value #7.595767e-06 ****
+#inc vs nc
+res <- wilcox.test(as.numeric(uncl_inc_stats[,1]), as.numeric(uncl_nc_stats[,1]) )
+res$p.value #0.00590626 (5.9E-3) **
+
+#sanity check
+res <- wilcox.test(as.numeric(uncl_dec_stats[,1]), as.numeric(uncl_dec_stats[,1]) )
+res$p.value #1 good
+
+
+
+
+## Tyr1P
+uncl_dec_stats <- filter(Tyr1P_cleavage_cat_plotting_df, Tyr1P_cleavage_cat_plotting_df$cleaved_cat_4sU == "decreased")
+uncl_nc_stats <- filter(Tyr1P_cleavage_cat_plotting_df, Tyr1P_cleavage_cat_plotting_df$cleaved_cat_4sU == "no change")
+uncl_inc_stats <- filter(Tyr1P_cleavage_cat_plotting_df, Tyr1P_cleavage_cat_plotting_df$cleaved_cat_4sU == "increased")
+
+#dec vs nc
+res <- wilcox.test(as.numeric(uncl_dec_stats[,1]), as.numeric(uncl_nc_stats[,1]) )
+res$p.value #2.055461e-06 ****
+#dec vs inc
+res <- wilcox.test(as.numeric(uncl_dec_stats[,1]), as.numeric(uncl_inc_stats[,1]) )
+res$p.value #1.797802e-08 ****
+#inc vs nc
+res <- wilcox.test(as.numeric(uncl_inc_stats[,1]), as.numeric(uncl_nc_stats[,1]) )
+res$p.value #0.006420544 **
+
+#sanity check
+res <- wilcox.test(as.numeric(uncl_dec_stats[,1]), as.numeric(uncl_dec_stats[,1]) )
+res$p.value #1 good
+
+
+
+#make a stats df
+uncleaved_cat_pval_df <- data.frame(comparison = c("inc_v_dec", "inc_v_nc", "dec_v_nc"),
+                                   Ser2P_p_values = c(0.000334344, 7.595767e-06, 0.00590626),
+                                   Tyr1P_p_values = c(2.055461e-06, 1.797802e-08, 0.006420544))
+
+#save
+write_delim(uncleaved_cat_pval_df, "cat_phos_boxplots/uncleaved_cat_boxplot_pval_wilcox_test.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+% of defect and nd genes in each boxplot?
+
+
+
+
+c. +p ratio quartiles vs uncleaved FC (y)
+  quartiles meanings:
+    first: FC<1, aka lowest +p, NC to decreased
+    fourth: FC >1.3 (S) or 1.5 (Y), aka most increased +p
+```{r plotting quartiles +p/Pol vs uncleaved FC}
+#+p ratios and cleavage FC df
+cleavage_FC_plotting_df <- master_cat_ratio_plotting_df[c(1,15,4,5,11)]
+
+#remove long RT genes
+cleavage_FC_plotting_df <- filter(cleavage_FC_plotting_df, cleavage_FC_plotting_df$longRT_4sU == FALSE) #76 genes
+
+#factor for order
+cleavage_FC_plotting_df$Ser2P_quartile_cat <- factor(cleavage_FC_plotting_df$Ser2P_quartile_cat, c("first_quartile", "second_quartile", "third_quartile", "fourth_quartile") )
+cleavage_FC_plotting_df$Tyr1P_quartile_cat <- factor(cleavage_FC_plotting_df$Tyr1P_quartile_cat, c("first_quartile", "second_quartile", "third_quartile", "fourth_quartile") )
+
+
+#plot Ser2P ratio vs FC
+sb <- ggplot(cleavage_FC_plotting_df, aes(y=uncleaved_reads_FC_4sU, x=Ser2P_quartile_cat, color = Ser2P_quartile_cat ) ) +
+  geom_boxplot(width=0.85, outlier.shape = NA, lwd = 1) + 
+  coord_cartesian(ylim = c(0,6.5)) +
+  ylab("Fold change in unleaved reads after HS") + 
+  xlab("Quartiles of the fold change in Ser2P/Pol II") + 
+  #ggtitle("Fold change in uncleaved 3' RNA by quartiles of the fold change of Ser2P / Pol II after HS") +              
+  theme(axis.title = element_text(size = 14), axis.text = element_text(size = 13),  #change axis label size
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(10, 30, 10, 10)                                  #add white space
+        ) +                                                           
+  scale_x_discrete(labels=c("first", "second", "third", "fourth"))+             #rename x axis labels
+  scale_colour_manual(values=c("#beb0d9","#a38ad1", "#7760a8","#534278")) #purples
+
+#Tyr1P
+tb <- ggplot(cleavage_FC_plotting_df, aes(y=uncleaved_reads_FC_4sU, x=Tyr1P_quartile_cat, color = Tyr1P_quartile_cat ) ) +
+  geom_boxplot(width=0.85, outlier.shape = NA, lwd = 1) + 
+  coord_cartesian(ylim = c(0,6.5)) +
+  ylab("Fold change in unleaved reads after HS") + 
+  xlab("Quartiles of the fold change in Tyr1P/Pol II") + 
+  #ggtitle("Fold change in uncleaved 3' RNA by quartiles of the fold change of Ser2P / Pol II after HS") +              
+  theme(axis.title = element_text(size = 14), axis.text = element_text(size = 13),  #change axis label size
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(10, 30, 10, 10)                                  #add white space
+        ) +                                                           
+  scale_x_discrete(labels=c("first", "second", "third", "fourth"))+             #rename x axis labels
+  scale_colour_manual(values=c("#f7be5c", "#f5a720","#FFA607", "#d98b04")) #oranges
+
+#save
+pdf("cat_phos_boxplots/figures/uncleaved_FC_Ser2P_FC_ratio_common_genes_boxplot.pdf", 4, 4)
+print(sb)
+dev.off()
+
+pdf("cat_phos_boxplots/figures/uncleaved_FC_Tyr1P_FC_ratio_common_genes_boxplot.pdf", 4, 4)
+print(tb)
+dev.off()
+
+
+
+
+##plot just first and last quartiles
+Ser2P_cleavage_FC_plotting_df <- filter(cleavage_FC_plotting_df, cleavage_FC_plotting_df$Ser2P_quartile_cat == "first_quartile" | cleavage_FC_plotting_df$Ser2P_quartile_cat == "fourth_quartile")
+Tyr1P_cleavage_FC_plotting_df <- filter(cleavage_FC_plotting_df, cleavage_FC_plotting_df$Tyr1P_quartile_cat == "first_quartile" | cleavage_FC_plotting_df$Tyr1P_quartile_cat == "fourth_quartile")
+
+#now plot
+sb2 <- ggplot(Ser2P_cleavage_FC_plotting_df, aes(y=uncleaved_reads_FC_4sU, x=Ser2P_quartile_cat, color = Ser2P_quartile_cat ) ) +
+  geom_boxplot(width=0.85, outlier.shape = NA, lwd = 1) + 
+  coord_cartesian(ylim = c(0,6.5)) +
+  ylab("Fold change in unleaved reads after HS") + 
+  #xlab("Quartiles of the fold change in Ser2P/Pol II") + 
+  xlab("") + 
+  #ggtitle("Fold change in uncleaved 3' RNA by quartiles of the fold change of Ser2P / Pol II after HS") +              
+  theme(axis.title = element_text(size = 13), axis.text = element_text(size = 11),  #change axis label size
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(30, 10, 10, 10)                                  #add white space
+        ) +                                                           
+  scale_x_discrete(labels=c("lowest\n+P FC\ngenes", "highest\n+P FC\ngenes"))+             #rename x axis labels
+  scale_colour_manual(values=c("#beb0d9","#534278")) #purples
+
+#Tyr1P
+tb2 <- ggplot(Tyr1P_cleavage_FC_plotting_df, aes(y=uncleaved_reads_FC_4sU, x=Tyr1P_quartile_cat, color = Tyr1P_quartile_cat ) ) +
+  geom_boxplot(width=0.85, outlier.shape = NA, lwd = 1) + 
+  coord_cartesian(ylim = c(0,6.5)) +
+  ylab("Fold change in unleaved reads after HS") + 
+  #xlab("Quartiles of the fold change in Tyr1P/Pol II") + 
+  xlab("") + 
+  #ggtitle("Fold change in uncleaved 3' RNA by quartiles of the fold change of Ser2P / Pol II after HS") +              
+  theme(axis.title = element_text(size = 13), axis.text = element_text(size = 11),  #change axis label size
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(30, 10, 10, 10)                                  #add white space
+        ) +                                                           
+  scale_x_discrete(labels=c("lowest\n+P FC\ngenes", "highest\n+P FC\ngenes"))+             #rename x axis labels
+  scale_colour_manual(values=c("#f7be5c", "#d98b04")) #oranges
+
+#save
+pdf("cat_phos_boxplots/figures/uncleaved_FC_Ser2P_hilo_ratio_common_genes_boxplot.pdf", 2.5, 4)
+print(sb2)
+dev.off()
+
+pdf("cat_phos_boxplots/figures/uncleaved_FC_Tyr1P_hilo_ratio_common_genes_boxplot.pdf", 2.5, 4)
+print(tb2)
+dev.off()
+
+```
+
+
+```{r stats}
+#Ser2P
+Ser2P_1Q_stats <- filter(cleavage_FC_plotting_df, cleavage_FC_plotting_df$Ser2P_quartile_cat == "first_quartile")
+Ser2P_2Q_stats <- filter(cleavage_FC_plotting_df, cleavage_FC_plotting_df$Ser2P_quartile_cat == "second_quartile")
+Ser2P_3Q_stats <- filter(cleavage_FC_plotting_df, cleavage_FC_plotting_df$Ser2P_quartile_cat == "third_quartile")
+Ser2P_4Q_stats <- filter(cleavage_FC_plotting_df, cleavage_FC_plotting_df$Ser2P_quartile_cat == "fourth_quartile")
+
+#1 vs 2
+res <- wilcox.test(as.numeric(Ser2P_1Q_stats[,2]), as.numeric(Ser2P_2Q_stats[,2]) )
+res$p.value #0.02448761
+#1 vs 3
+res <- wilcox.test(as.numeric(Ser2P_1Q_stats[,2]), as.numeric(Ser2P_3Q_stats[,2]) )
+res$p.value #0.0006821443
+#1 vs 4
+res <- wilcox.test(as.numeric(Ser2P_1Q_stats[,2]), as.numeric(Ser2P_4Q_stats[,2]) )
+res$p.value #5.764017e-08
+#sanity check
+res <- wilcox.test(as.numeric(Ser2P_1Q_stats[,2]), as.numeric(Ser2P_1Q_stats[,2]) )
+res$p.value #1 good
+
+#2 vs 3
+res <- wilcox.test(as.numeric(Ser2P_2Q_stats[,2]), as.numeric(Ser2P_3Q_stats[,2]) )
+res$p.value #0.2129093
+#2 vs 4
+res <- wilcox.test(as.numeric(Ser2P_2Q_stats[,2]), as.numeric(Ser2P_4Q_stats[,2]) )
+res$p.value #0.00114489
+
+#3 vs 4
+res <- wilcox.test(as.numeric(Ser2P_3Q_stats[,2]), as.numeric(Ser2P_4Q_stats[,2]) )
+res$p.value #0.05154559
+
+
+
+
+
+## Tyr1P
+Tyr1P_1Q_stats <- filter(cleavage_FC_plotting_df, cleavage_FC_plotting_df$Tyr1P_quartile_cat == "first_quartile")
+Tyr1P_2Q_stats <- filter(cleavage_FC_plotting_df, cleavage_FC_plotting_df$Tyr1P_quartile_cat == "second_quartile")
+Tyr1P_3Q_stats <- filter(cleavage_FC_plotting_df, cleavage_FC_plotting_df$Tyr1P_quartile_cat == "third_quartile")
+Tyr1P_4Q_stats <- filter(cleavage_FC_plotting_df, cleavage_FC_plotting_df$Tyr1P_quartile_cat == "fourth_quartile")
+
+#1 vs 2
+res <- wilcox.test(as.numeric(Tyr1P_1Q_stats[,2]), as.numeric(Tyr1P_2Q_stats[,2]) )
+res$p.value #0.07696018
+#1 vs 3
+res <- wilcox.test(as.numeric(Tyr1P_1Q_stats[,2]), as.numeric(Tyr1P_3Q_stats[,2]) )
+res$p.value #0.0005968992
+#1 vs 4
+res <- wilcox.test(as.numeric(Tyr1P_1Q_stats[,2]), as.numeric(Tyr1P_4Q_stats[,2]) )
+res$p.value #1.343595e-06
+#sanity check
+res <- wilcox.test(as.numeric(Tyr1P_1Q_stats[,2]), as.numeric(Tyr1P_1Q_stats[,2]) )
+res$p.value #1 good
+
+#2 vs 3
+res <- wilcox.test(as.numeric(Tyr1P_2Q_stats[,2]), as.numeric(Tyr1P_3Q_stats[,2]) )
+res$p.value #0.06325752
+#2 vs 4
+res <- wilcox.test(as.numeric(Tyr1P_2Q_stats[,2]), as.numeric(Tyr1P_4Q_stats[,2]) )
+res$p.value #0.0008877213
+
+#3 vs 4
+res <- wilcox.test(as.numeric(Tyr1P_3Q_stats[,2]), as.numeric(Tyr1P_4Q_stats[,2]) )
+res$p.value #0.2550767
+
+
+
+
+
+#make a stats df
+uncleaved_FC_pval_df <- data.frame(comparison = c("1v2", "1v3", "1v4", "2v3", "2v4", "3v4"),
+                                   Ser2P_p_values = c(0.02448761, 0.0006821443, 5.764017e-08, 0.2129093, 0.00114489, 0.05154559),
+                                   Tyr1P_p_values = c(0.07696018, 0.0005968992, 1.343595e-06, 0.06325752, 0.0008877213, 0.2550767))
+#save
+write_delim(uncleaved_FC_pval_df, "cat_phos_boxplots/uncleaved_FC_boxplot_pval_wilcox_test.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+  
+
+
+
+d. defect length cat
+```{r}
+#if need to read in data
+common_genes_MASTER_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/06_analysis/ChIP_common_TTS5kbds_genes_MASTER_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#filter out long RT genes
+common_genes_MASTER_df <- filter(common_genes_MASTER_df, common_genes_MASTER_df$longRT_4sU == FALSE)
+
+#make plotting dfs
+  ###cleaved or uncleaved
+defect_TTS_df <- common_genes_MASTER_df[c(17,18,3,9)]
+#factor for order
+defect_TTS_df$defect_cat_4sU <- factor(defect_TTS_df$defect_cat_4sU, c("no defect", "moderate defect","severe defect", "max defect") )
+table(defect_TTS_df$defect_cat_4sU)
+
+#make boxplots
+#Ser2P 
+sb <- ggplot(defect_TTS_df, aes(y=Ser2PdPolII, x=defect_cat_4sU, color = defect_cat_4sU ) ) +
+  geom_boxplot(width=0.85, outlier.shape = 16, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,3)) +
+  ylab("Ser2P Pol II / total Pol II\nFC after HS")  +
+  #ggtitle("3' Ser2P / Pol II by Termination Defect Category") +              #couldn't fit title on such a narrow plot
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13),  #change axis title size
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        axis.title.y = element_text(size = 14),                               #y-axis label text size 
+        plot.caption = element_text(size = 12, color = "gray40")              #caption font and color
+        ) +                                                           
+  scale_x_discrete(labels=c("No RT", "1-9kb", "10-19kb", "20kb+"))+     #rename x axis labels
+  scale_colour_manual(values=c("#696969","#ac93b8","#835996","#5a1766")) +                #purples
+  annotate("text", x=1.5, y=2.5, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 1, xend = 2, y = 2.5, yend = 2.5, colour = "gray40")+ #left line and * for stats
+  annotate("text", x=2, y=2.75, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 1, xend = 3, y = 2.75, yend = 2.75, colour = "gray40")+ #middle line and * for stats
+  annotate("text", x=2.5, y=3, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 1, xend = 4, y = 3, yend = 3, colour = "gray40") #+ #right line and * for stats
+  #labs(caption = "") #add caption specifying pval (one caption when plotting together)
+  
+#Tyr1P
+tb <- ggplot(defect_TTS_df, aes(y=Tyr1PdPolII, x=defect_cat_4sU, color = defect_cat_4sU ) ) +
+  geom_boxplot(width=0.85, outlier.shape = 16, lwd = 1.25) + 
+  coord_cartesian(ylim = c(0,5)) +
+  ylab("Tyr1P Pol II / total Pol II\nFC after HS")  +
+  #ggtitle("3' Ser2P / Pol II by Termination Defect Category") +              #couldn't fit title on such a narrow plot
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13),  #change axis title size
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(10, 10, 10, 10),                                 #add white space
+        axis.title.y = element_text(size = 14),                               #y-axis label text size 
+        plot.caption = element_text(size = 12, color = "gray40")              #caption font and color
+        ) +                                                           
+  scale_x_discrete(labels=c("No RT", "1-9kb", "10-19kb", "20kb+"))+     #rename x axis labels
+  scale_colour_manual(values=c("#696969","#fac30f","#e8b12e", "#d18d04"))+ #oranges 
+  annotate("text", x=1.5, y=4.25, label= "*", colour = "gray40", size = 6) + 
+      annotate("segment", x = 1, xend = 2, y = 4.25, yend = 4.25, colour = "gray40")+ #left line and * for stats
+  annotate("text", x=2, y=4.625, label= "***", colour = "gray40", size = 6) + 
+      annotate("segment", x = 1, xend = 3, y = 4.625, yend = 4.625, colour = "gray40")+ #middle line and * for stats
+  annotate("text", x=2.5, y=5, label= "*", colour = "gray40", size = 6) + 
+      annotate("segment", x = 1, xend = 4, y = 5, yend = 5, colour = "gray40") #+ #right line and * for stats
+  #labs(caption = "****p<0.0001, ***p<0.001, *p<0.05") #add caption specifying pval (one caption when plotting together)
+
+
+ggarrange(sb, tb, ncol = 2, nrow = 1)
+#saved pdf manually
+
+
+#save
+jpeg("cat_phos_boxplots/figures/Ser2PdPolII_defect_cat_boxplot.jpeg", width=3.8, height=3, units="in", res=300)
+print(sb)
+dev.off()
+
+jpeg("cat_phos_boxplots/figures/Tyr1PdPolII_defect_cat_boxplot.jpeg", width=3.8, height=3, units="in", res=300)
+print(tb)
+dev.off()
+
+
+
+
+
+
+
+#stats
+nd_stats <- filter(defect_TTS_df, defect_cat_4sU == "no defect")
+md_stats <- filter(defect_TTS_df, defect_cat_4sU == "moderate defect")
+sd_stats <- filter(defect_TTS_df, defect_cat_4sU == "severe defect")
+xd_stats <- filter(defect_TTS_df, defect_cat_4sU == "max defect")
+
+ ## Ser2P
+#nd vs all
+res <- wilcox.test(as.numeric(nd_stats[,2]), as.numeric(md_stats[,2]) )
+res$p.value #3.35481e-06 ****
+
+res <- wilcox.test(as.numeric(nd_stats[,2]), as.numeric(sd_stats[,2]) )
+res$p.value #9.474632e-08 ****
+
+res <- wilcox.test(as.numeric(nd_stats[,2]), as.numeric(xd_stats[,2]) )
+res$p.value #9.404962e-07 ****
+
+#md vs sd and xd
+res <- wilcox.test(as.numeric(md_stats[,2]), as.numeric(sd_stats[,2]) )
+res$p.value #0.4114241 ns
+
+res <- wilcox.test(as.numeric(md_stats[,2]), as.numeric(xd_stats[,2]) )
+res$p.value #0.7118418 ns
+
+#sd vs xd
+res <- wilcox.test(as.numeric(sd_stats[,2]), as.numeric(xd_stats[,2]) )
+res$p.value #0.1833743 ns
+
+#only nd vs defect cats are stat sig for Ser2P
+
+
+  ## Tyr1P
+#nd vs all
+res <- wilcox.test(as.numeric(nd_stats[,1]), as.numeric(md_stats[,1]) )
+res$p.value #0.02402087 *
+
+res <- wilcox.test(as.numeric(nd_stats[,1]), as.numeric(sd_stats[,1]) )
+res$p.value #0.0004406006 ***
+
+res <- wilcox.test(as.numeric(nd_stats[,1]), as.numeric(xd_stats[,1]) )
+res$p.value #0.01157111 *
+
+#md vs sd and xd
+res <- wilcox.test(as.numeric(md_stats[,1]), as.numeric(sd_stats[,1]) )
+res$p.value #0.02703218 *
+
+res <- wilcox.test(as.numeric(md_stats[,1]), as.numeric(xd_stats[,1]) )
+res$p.value #0.7706076 ns
+
+#sd vs xd
+res <- wilcox.test(as.numeric(sd_stats[,1]), as.numeric(xd_stats[,1]) )
+res$p.value #0.04289633 *
+
+#really only nd vs severe defect is stat sig for Tyr1P (p<0.01), other two defect cat are p<0.05
+```
+
+
+
+
+
+-----------------------------------------
+
+
+
+
+4. Ser2P/PolII vs Tyr1P/PolII scatterplot
+-----------------------------
+```{r}
+master_cat_ratio_plotting_df <- read.table("cat_phos_boxplots/master_cat_ratio_plotting_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#need to make pretty
+install.packages("ggpointdensity")
+library(ggpointdensity)
+library(viridis)
+
+t <- ggplot(master_cat_ratio_plotting_df, aes(log2(Ser2PdPolII_FC), log2(Tyr1PdPolII_FC), label = transcriptID) ) + 
+  geom_hline(yintercept=0) + geom_vline(xintercept=0)   +          #draw quadrents
+  geom_abline(color="gray40", lty=2, slope =  1, intercept =  0) +
+  #geom_point(alpha=0.8, size=1, color = "#141414") + #696969 gray
+  geom_pointdensity(adjust=0.1, size=1) +
+  scale_color_viridis() +
+  xlim(c(-2.5,2.5)) + ylim(c(-2.5,2.5)) +
+  ylab("Tyr1P / Total Pol II\nFC after HS (log2)") + xlab("Ser2P / Total Pol II\nFC after HS (log2)") +
+  theme(axis.title = element_text(size = 13), axis.text = element_text(size = 13), #change axis label size
+          legend.position = "none",                              #remove legend
+          plot.margin = margin(10, 10, 10, 10),                  #add whitespace so labels aren't cut off
+          plot.title = element_text(size = 12, face = "bold"),   #change size of title
+          plot.subtitle = element_text(size = 12)) 
+  
+  #geom_smooth(method='lm', color = "#262626") +                    #reg line
+  #stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~~")), 
+   #            formula = y ~ x, parse = TRUE, size = 4)
+
+jpeg("Tyr1PvSer2P_scatterplot/figures/Tyr1PdRpb1_vs_Ser2PdRpb1_log2_FC_common_genes_scatterplot_heatmap.jpeg", width=3.1, height=3, units="in", res=300)
+print(t)
+dev.off()
+
+```
+
+
+
+
+-----------------------------
+
+
+
+
+5. +p accross various gene regions
+(PPP, gnbd, term window)
+-------------------------------------
+Ser2P and paired Rpb1 count files:
+#    /Volumes/Seq_data_4/2020_Katy_Ser2P_Rpb1_ChIP-seq/hg38/06_evaluating_replicates/gene_count_bed_files/
+seq depth norm counts: 
+#    /Volumes/Seq_data_4/2020_Katy_Ser2P_Rpb1_ChIP-seq/hg38/06_evaluating_replicates/gnbd_tag_corrected_counts.tsv /Volumes/Seq_data_4/2020_Katy_Ser2P_Rpb1_ChIP-seq/hg38/06_evaluating_replicates/ppp_tag_corrected_counts.tsv /Volumes/Seq_data_4/2020_Katy_Ser2P_Rpb1_ChIP-seq/hg38/06_evaluating_replicates/tts_tag_corrected_counts.tsv /Volumes/Seq_data_4/2020_Katy_Ser2P_Rpb1_ChIP-seq/hg38/06_evaluating_replicates/whole_gene_tag_corrected_counts.tsv
+
+
+Tyr1P and paired Rpb1 count files:
+#    /Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/05_evaluating_replicates
+seq depth norm counts: 
+#    /Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/05_evaluating_replicates/gnbd_counts_norm.tsv
+#    /Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/05_evaluating_replicates/TTS5kbds_counts_norm.tsv
+#    /Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/05_evaluating_replicates/PPP_counts_norm.tsv
+
+
+```{r read in norm counts}
+#read-in seq depth norm counts
+## gnbd
+Ser_gnbd_df <- read.table("/Volumes/Seq_data_4/2020_Katy_Ser2P_Rpb1_ChIP-seq/hg38/06_evaluating_replicates/gnbd_tag_corrected_counts.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+## PPP
+Ser_PPP_df <- read.table("/Volumes/Seq_data_4/2020_Katy_Ser2P_Rpb1_ChIP-seq/hg38/06_evaluating_replicates/ppp_tag_corrected_counts.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#convert NM IDs to ENSTs
+gene_ID_conversion_table <- read.table("/Users/goodrichlab/Desktop/Katy/HS_4sU-Seq_2021/documentation/geneID_conversion_table.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+# gnbd
+colnames(Ser_gnbd_df) <- c("ncbiId", colnames(Ser_gnbd_df[c(2:14)]) )
+t <- left_join(Ser_gnbd_df, gene_ID_conversion_table[c(4,6)], by = "ncbiId")
+Ser_gnbd_df <- t[c(15,2:14)]
+# PPP
+colnames(Ser_PPP_df) <- c("ncbiId", colnames(Ser_PPP_df[c(2:14)]) )
+t <- left_join(Ser_PPP_df, gene_ID_conversion_table[c(4,6)], by = "ncbiId")
+Ser_PPP_df <- t[c(15,2:14)]
+
+#remove pooled in Ser2P
+Ser_gnbd_df <- Ser_gnbd_df[c(1,8,10,11,3,4,13,14,6,7)]
+Ser_PPP_df <- Ser_PPP_df[c(1,8,10,11,3,4,13,14,6,7)]
+
+
+
+#Tyr1P
+## gnbd
+Tyr_gnbd_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/05_evaluating_replicates/gnbd_counts_norm.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+## PPP
+Tyr_PPP_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/05_evaluating_replicates/PPP_counts_norm.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+#all same gene ID names
+colnames(Tyr_gnbd_df) <- c( "ENSEMBL_transcript_ID",colnames(Tyr_gnbd_df[c(2:9)]))
+colnames(Tyr_PPP_df) <- c( "ENSEMBL_transcript_ID",colnames(Tyr_PPP_df[c(2:9)]))
+
+```
+
+filter to common genes list*
+  *not exactly the same because Ser2P counts were with different bed file and are missing 50 genes
+```{r}
+Ser_gnbd_df_common <- filter(Ser_gnbd_df, Ser_gnbd_df$ENSEMBL_transcript_ID %in% common_genes_master_df$transcriptID)
+Ser_PPP_df_common <- filter(Ser_PPP_df, Ser_PPP_df$ENSEMBL_transcript_ID %in% common_genes_master_df$transcriptID)
+Tyr_gnbd_df_common <- filter(Tyr_gnbd_df, Tyr_gnbd_df$ENSEMBL_transcript_ID %in% common_genes_master_df$transcriptID)
+Tyr_PPP_df_common <- filter(Tyr_PPP_df, Tyr_PPP_df$ENSEMBL_transcript_ID %in% common_genes_master_df$transcriptID)
+
+
+##Ser2P is norm to twice as many reads so need to multiply by two to get everything even
+  # Ser2P data for Rpb1_R8 is half of Tyr1P version of Rpb1_R8
+t <- inner_join(Ser_gnbd_df_common, Tyr_gnbd_df_common, by = "ENSEMBL_transcript_ID")
+t2 <- t[c(1,11,16,4,18)]
+summary(t$HS_Rpb1_R8.x / t$HS_Rpb1_R8.y) #not exactly half but I'm going to assume that's due to rounding...
+
+#make all num df
+Ser_gnbd_df_common <- column_to_rownames(Ser_gnbd_df_common, "ENSEMBL_transcript_ID")
+Ser_PPP_df_common <- column_to_rownames(Ser_PPP_df_common, "ENSEMBL_transcript_ID")
+#multiply by 2
+Ser_gnbd_df_common <- Ser_gnbd_df_common *2
+Ser_PPP_df_common <- Ser_PPP_df_common *2
+#put gene IDs back
+Ser_gnbd_df_common <- rownames_to_column(Ser_gnbd_df_common, var = "ENSEMBL_transcript_ID")
+Ser_PPP_df_common <- rownames_to_column(Ser_PPP_df_common, var = "ENSEMBL_transcript_ID")
+
+
+#save
+write_delim(Ser_gnbd_df_common, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/phos_accross_gene_regions/seq_depth_norm_counts/Ser2P_gnbd_common_genes_counts.tsv", delim = "\t", col_names = TRUE)
+write_delim(Ser_PPP_df_common, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/phos_accross_gene_regions/seq_depth_norm_counts/Ser2P_PPP_common_genes_counts.tsv", delim = "\t", col_names = TRUE)
+write_delim(Tyr_gnbd_df_common, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/phos_accross_gene_regions/seq_depth_norm_counts/Tyr1P_gnbd_common_genes_counts.tsv", delim = "\t", col_names = TRUE)
+write_delim(Tyr_PPP_df_common, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/phos_accross_gene_regions/seq_depth_norm_counts/Tyr1P_PPP_common_genes_counts.tsv", delim = "\t", col_names = TRUE)
+
+```
+why am I missing 50 genes in the Ser2P data??? *if data looks good will need to redo counts with same bed files*
+
+
+calculate RPK
+```{r}
+#PPP is 250 bp so divide all by 0.25
+Ser_PPP_df_common_RPK <- column_to_rownames(Ser_PPP_df_common, var = "ENSEMBL_transcript_ID") / 0.25
+Tyr_PPP_df_common_RPK <- column_to_rownames(Tyr_PPP_df_common, var = "ENSEMBL_transcript_ID") / 0.25
+#put gene IDs back
+Ser_PPP_df_common_RPK <- rownames_to_column(Ser_PPP_df_common_RPK, var = "ENSEMBL_transcript_ID")
+Tyr_PPP_df_common_RPK <- rownames_to_column(Tyr_PPP_df_common_RPK, var = "ENSEMBL_transcript_ID")
+
+#gnbd, use lengths from gene ID conversion table
+gene_ID_conversion_table$gene_length <- abs(gene_ID_conversion_table$chromStart - gene_ID_conversion_table$chromEnd)
+##Ser2P
+Ser_temp <- left_join(Ser_gnbd_df_common, gene_ID_conversion_table[c(4,13)], by = "ENSEMBL_transcript_ID")
+##Tyr1P
+Tyr_temp <- left_join(Tyr_gnbd_df_common, gene_ID_conversion_table[c(4,13)], by = "ENSEMBL_transcript_ID")
+
+#make only num df
+Ser_temp2 <- column_to_rownames(Ser_temp, var = "ENSEMBL_transcript_ID")
+Tyr_temp2 <- column_to_rownames(Tyr_temp, var = "ENSEMBL_transcript_ID")
+
+#divide df by gene length
+Ser_gnbd_df_common_RPK <- Ser_temp2[c(1:9)] / (Ser_temp2$gene_length / 1000)
+Tyr_gnbd_df_common_RPK <- Tyr_temp2[c(1:8)] / (Tyr_temp2$gene_length / 1000)
+#put gene IDs back
+Ser_gnbd_df_common_RPK <- rownames_to_column(Ser_gnbd_df_common_RPK, var = "ENSEMBL_transcript_ID")
+Tyr_gnbd_df_common_RPK <- rownames_to_column(Tyr_gnbd_df_common_RPK, var = "ENSEMBL_transcript_ID")
+
+
+#save
+write_delim(Ser_gnbd_df_common_RPK, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/phos_accross_gene_regions/RPK/Ser2P_gnbd_common_genes_RPK.tsv", delim = "\t", col_names = TRUE)
+write_delim(Ser_PPP_df_common_RPK, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/phos_accross_gene_regions/RPK/Ser2P_PPP_common_genes_RPK.tsv", delim = "\t", col_names = TRUE)
+write_delim(Tyr_gnbd_df_common_RPK, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/phos_accross_gene_regions/RPK/Tyr1P_gnbd_common_genes_RPK.tsv", delim = "\t", col_names = TRUE)
+write_delim(Tyr_PPP_df_common_RPK, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/phos_accross_gene_regions/RPK/Tyr1P_PPP_common_genes_RPK.tsv", delim = "\t", col_names = TRUE)
+
+
+#make combined dfs with all data
+all_gnbd_RPK_df <- inner_join(Ser_gnbd_df_common_RPK, Tyr_gnbd_df_common_RPK, by = "ENSEMBL_transcript_ID")
+#combine all Rpb1 reps
+all_gnbd_RPK_df$NHS_Rpb1_RPK_avg <- (all_gnbd_RPK_df$NHS_Rpb1_R6 + all_gnbd_RPK_df$NHS_Rpb1_R7 + all_gnbd_RPK_df$NHS_Rpb1_R8.y) /3
+all_gnbd_RPK_df$HS_Rpb1_RPK_avg <- (all_gnbd_RPK_df$HS_Rpb1_R6 + all_gnbd_RPK_df$HS_Rpb1_R7 + all_gnbd_RPK_df$HS_Rpb1_R8.y) /3
+#avg Ser2P and Tyr1P
+all_gnbd_RPK_df$NHS_Ser2P_RPK_avg <- (all_gnbd_RPK_df$NHS_Ser2P_R6 + all_gnbd_RPK_df$NHS_Ser2P_R8) /2
+all_gnbd_RPK_df$HS_Ser2P_RPK_avg <- (all_gnbd_RPK_df$HS_Ser2P_R6 + all_gnbd_RPK_df$HS_Ser2P_R8) /2
+all_gnbd_RPK_df$NHS_Tyr1P_RPK_avg <- (all_gnbd_RPK_df$NHS_Tyr1P_R7 + all_gnbd_RPK_df$NHS_Tyr1P_R8) /2
+all_gnbd_RPK_df$HS_Tyr1P_RPK_avg <- (all_gnbd_RPK_df$HS_Tyr1P_R7 + all_gnbd_RPK_df$HS_Tyr1P_R8) /2
+
+## PPP
+all_PPP_RPK_df <- inner_join(Ser_PPP_df_common_RPK, Tyr_PPP_df_common_RPK, by = "ENSEMBL_transcript_ID")
+#combine all Rpb1 reps
+all_PPP_RPK_df$NHS_Rpb1_RPK_avg <- (all_PPP_RPK_df$NHS_Rpb1_R6 + all_PPP_RPK_df$NHS_Rpb1_R7 + all_PPP_RPK_df$NHS_Rpb1_R8.y) /3
+all_PPP_RPK_df$HS_Rpb1_RPK_avg <- (all_PPP_RPK_df$HS_Rpb1_R6 + all_PPP_RPK_df$HS_Rpb1_R7 + all_PPP_RPK_df$HS_Rpb1_R8.y) /3
+#avg Ser2P and Tyr1P
+all_PPP_RPK_df$NHS_Ser2P_RPK_avg <- (all_PPP_RPK_df$NHS_Ser2P_R6 + all_PPP_RPK_df$NHS_Ser2P_R8) /2
+all_PPP_RPK_df$HS_Ser2P_RPK_avg <- (all_PPP_RPK_df$HS_Ser2P_R6 + all_PPP_RPK_df$HS_Ser2P_R8) /2
+all_PPP_RPK_df$NHS_Tyr1P_RPK_avg <- (all_PPP_RPK_df$NHS_Tyr1P_R7 + all_PPP_RPK_df$NHS_Tyr1P_R8) /2
+all_PPP_RPK_df$HS_Tyr1P_RPK_avg <- (all_PPP_RPK_df$HS_Tyr1P_R7 + all_PPP_RPK_df$HS_Tyr1P_R8) /2
+
+#save combined RPK df
+write_delim(all_gnbd_RPK_df, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/phos_accross_gene_regions/RPK/combined_gnbd_common_genes_RPK.tsv", delim = "\t", col_names = TRUE)
+write_delim(all_PPP_RPK_df, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/phos_accross_gene_regions/RPK/combined_PPP_common_genes_RPK.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+ratios R8 Ser / R8 Pol II etc (use RPK but doesn't actually matter since gene length cancels out)
+```{r ratios}
+#Ser_gnbd_ratios
+Ser_gnbd_ratios <- data.frame(transcript_ID = Ser_gnbd_df_common_RPK$ENSEMBL_transcript_ID,
+                NHS_R6=Ser_gnbd_df_common_RPK$NHS_Ser2P_R6 / Ser_gnbd_df_common_RPK$NHS_Rpb1_R6,
+                HS_R6=Ser_gnbd_df_common_RPK$HS_Ser2P_R6 / Ser_gnbd_df_common_RPK$HS_Rpb1_R6,
+                NHS_R8=Ser_gnbd_df_common_RPK$NHS_Ser2P_R8 / Ser_gnbd_df_common_RPK$NHS_Rpb1_R8,
+                HS_R8=Ser_gnbd_df_common_RPK$HS_Ser2P_R8 / Ser_gnbd_df_common_RPK$HS_Rpb1_R8
+           )
+
+#Ser_PPP_ratios
+Ser_PPP_ratios <- data.frame(transcript_ID = Ser_PPP_df_common_RPK$ENSEMBL_transcript_ID,
+                NHS_R6=Ser_PPP_df_common_RPK$NHS_Ser2P_R6 / Ser_PPP_df_common_RPK$NHS_Rpb1_R6,
+                HS_R6=Ser_PPP_df_common_RPK$HS_Ser2P_R6 / Ser_PPP_df_common_RPK$HS_Rpb1_R6,
+                NHS_R8=Ser_PPP_df_common_RPK$NHS_Ser2P_R8 / Ser_PPP_df_common_RPK$NHS_Rpb1_R8,
+                HS_R8=Ser_PPP_df_common_RPK$HS_Ser2P_R8 / Ser_PPP_df_common_RPK$HS_Rpb1_R8
+           )
+
+#Tyr_gnbd_ratios
+Tyr_gnbd_ratios <- data.frame(transcript_ID = Tyr_gnbd_df_common_RPK$ENSEMBL_transcript_ID,
+                NHS_R7=Tyr_gnbd_df_common_RPK$NHS_Tyr1P_R7 / Tyr_gnbd_df_common_RPK$NHS_Rpb1_R7,
+                HS_R7=Tyr_gnbd_df_common_RPK$HS_Tyr1P_R7 / Tyr_gnbd_df_common_RPK$HS_Rpb1_R7,
+                NHS_R8=Tyr_gnbd_df_common_RPK$NHS_Tyr1P_R8 / Tyr_gnbd_df_common_RPK$NHS_Rpb1_R8,
+                HS_R8=Tyr_gnbd_df_common_RPK$HS_Tyr1P_R8 / Tyr_gnbd_df_common_RPK$HS_Rpb1_R8
+           )
+
+#Tyr_PPP_ratios
+Tyr_PPP_ratios <- data.frame(transcript_ID = Tyr_PPP_df_common_RPK$ENSEMBL_transcript_ID,
+                NHS_R7=Tyr_PPP_df_common_RPK$NHS_Tyr1P_R7 / Tyr_PPP_df_common_RPK$NHS_Rpb1_R7,
+                HS_R7=Tyr_PPP_df_common_RPK$HS_Tyr1P_R7 / Tyr_PPP_df_common_RPK$HS_Rpb1_R7,
+                NHS_R8=Tyr_PPP_df_common_RPK$NHS_Tyr1P_R8 / Tyr_PPP_df_common_RPK$NHS_Rpb1_R8,
+                HS_R8=Tyr_PPP_df_common_RPK$HS_Tyr1P_R8 / Tyr_PPP_df_common_RPK$HS_Rpb1_R8
+           )
+
+
+#avg reps
+Ser_gnbd_ratios$S_NHS_avg <- (Ser_gnbd_ratios$NHS_R6 + Ser_gnbd_ratios$NHS_R8) /2
+Ser_gnbd_ratios$S_HS_avg <- (Ser_gnbd_ratios$HS_R6 + Ser_gnbd_ratios$HS_R8) /2
+
+Ser_PPP_ratios$S_NHS_avg <- (Ser_PPP_ratios$NHS_R6 + Ser_PPP_ratios$NHS_R8) /2
+Ser_PPP_ratios$S_HS_avg <- (Ser_PPP_ratios$HS_R6 + Ser_PPP_ratios$HS_R8) /2
+
+Tyr_gnbd_ratios$T_NHS_avg <- (Tyr_gnbd_ratios$NHS_R7 + Tyr_gnbd_ratios$NHS_R8) /2
+Tyr_gnbd_ratios$T_HS_avg <- (Tyr_gnbd_ratios$HS_R7 + Tyr_gnbd_ratios$HS_R8) /2
+
+Tyr_PPP_ratios$T_NHS_avg <- (Tyr_PPP_ratios$NHS_R7 + Tyr_PPP_ratios$NHS_R8) /2
+Tyr_PPP_ratios$T_HS_avg <- (Tyr_PPP_ratios$HS_R7 + Tyr_PPP_ratios$HS_R8) /2
+
+
+#save
+write_delim(Ser_gnbd_ratios, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/phos_accross_gene_regions/ratios/Ser2P_d_PolII_ratios_gnbd.tsv", delim = "\t", col_names = TRUE)
+write_delim(Ser_PPP_ratios, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/phos_accross_gene_regions/ratios/Ser2P_d_PolII_ratios_PPP.tsv", delim = "\t", col_names = TRUE)
+write_delim(Tyr_gnbd_ratios, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/phos_accross_gene_regions/ratios/Tyr1P_d_PolII_ratios_gnbd.tsv", delim = "\t", col_names = TRUE)
+write_delim(Tyr_PPP_ratios, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/phos_accross_gene_regions/ratios/Tyr1P_d_PolII_ratios_PPP.tsv", delim = "\t", col_names = TRUE)
+
+
+#combine Ser2P and Tyr1P
+combo_PPP_ratio_df <- inner_join(Ser_PPP_ratios[c(1,6,7)], Tyr_PPP_ratios[c(1,6,7)], by = "transcript_ID")
+combo_gnbd_ratio_df <- inner_join(Ser_gnbd_ratios[c(1,6,7)], Tyr_gnbd_ratios[c(1,6,7)], by = "transcript_ID")
+
+write_delim(combo_PPP_ratio_df, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/phos_accross_gene_regions/ratios/combo_avg_ratios_PPP.tsv", delim = "\t", col_names = TRUE)
+write_delim(combo_gnbd_ratio_df, "/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/phos_accross_gene_regions/ratios/combo_avg_ratios_gnbd.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+
+
+boxplots:
+  RPK for each sample (see above RPK boxplot for template)
+  ratios for Ser2P and Tyr1P
+  
+```{r plotting dfs: RPK}
+
+gnbd_bp_plotting_df <- pivot_longer(all_gnbd_RPK_df[c(1,19:24)], cols = c(2:7))
+#factor for right order
+gnbd_bp_plotting_df$name <- factor(gnbd_bp_plotting_df$name, c("input", "NHS_Rpb1_RPK_avg", "HS_Rpb1_RPK_avg", "NHS_Ser2P_RPK_avg", "HS_Ser2P_RPK_avg", "NHS_Tyr1P_RPK_avg", "HS_Tyr1P_RPK_avg") )
+
+PPP_bp_plotting_df <- pivot_longer(all_PPP_RPK_df[c(1,19:24)], cols = c(2:7))
+#factor for right order
+PPP_bp_plotting_df$name <- factor(PPP_bp_plotting_df$name, c("input", "NHS_Rpb1_RPK_avg", "HS_Rpb1_RPK_avg", "NHS_Ser2P_RPK_avg", "HS_Ser2P_RPK_avg", "NHS_Tyr1P_RPK_avg", "HS_Tyr1P_RPK_avg") )
+
+```
+
+```{r plot boxplot: RPK}
+#make boxplots
+b <- ggplot(gnbd_bp_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = 16, lwd=1) + 
+  #coord_cartesian(ylim = c(0,175)) +
+  ylab("RPK") + xlab("")+
+  ggtitle("Pol II in the gene body (TSS+250bp to TTS)") +
+  scale_x_discrete(labels=c("NHS\nTotal Pol II", "HS\nTotal Pol II", "NHS\nSer2P", "HS\nSer2P", "NHS\nTyr1P", "HS\nTyr1P"))+
+  theme(axis.title.y = element_text(size = 15), axis.text = element_text(size = 13), legend.position="none") + #change axis label size
+  theme(plot.title = element_text(size = 15, face = "bold")) + #change size of title
+  scale_colour_manual(values=c("#e86b5d","#a81707","#ba89c4", "#a35db3", "#f0b05d", "#e68c17"))
+
+#save png 
+png("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/phos_accross_gene_regions/figures/gnbd_RPK_common_genes_boxplot.png", 500, 350)
+print(b)
+dev.off()
+```
+
+```{r stats: RPK}
+# gnbd #
+#PolII NHS vs HS
+res <- wilcox.test(as.numeric(all_gnbd_RPK_df[,19]), as.numeric(all_gnbd_RPK_df[,17]) )
+res$p.value #1.013595e-91
+
+#Ser2P NHS vs HS
+res <- wilcox.test(as.numeric(all_gnbd_RPK_df[,21]), as.numeric(all_gnbd_RPK_df[,22]) )
+res$p.value #0.0003105938
+
+#Tyr1P NHS vs HS
+res <- wilcox.test(as.numeric(all_gnbd_RPK_df[,23]), as.numeric(all_gnbd_RPK_df[,24]) )
+res$p.value #0.4495691
+
+
+
+# PPP #
+#PolII NHS vs HS
+res <- wilcox.test(as.numeric(all_PPP_RPK_df[,19]), as.numeric(all_PPP_RPK_df[,17]) )
+res$p.value #1.172249e-86
+
+#Ser2P NHS vs HS
+res <- wilcox.test(as.numeric(all_PPP_RPK_df[,21]), as.numeric(all_PPP_RPK_df[,22]) )
+res$p.value #5.065663e-26
+
+#Tyr1P NHS vs HS
+res <- wilcox.test(as.numeric(all_PPP_RPK_df[,23]), as.numeric(all_PPP_RPK_df[,24]) )
+res$p.value #1.948352e-37
+
+```
+
+```{r put all stats into a df}
+#make a stats df
+RPK_NHSvHS_pval_df <- data.frame(comparison = c("Pol II", "Ser2P", "Tyr1P"),
+                                   gnbd_NHSvHS_p_values = c(1.013595e-91, 0.0003105938, 0.4495691),
+                                   PPP_NHSvHS_p_values = c(1.172249e-86, 5.065663e-26, 1.948352e-37))
+
+#save
+write_delim(RPK_NHSvHS_pval_df, "phos_accross_gene_regions/figures/RPK_NHSvHS_boxplot_pval_wilcox_test.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+
+b. +P / Pol II ratios NHS and HS
+
+```{r format for plotting}
+#read in
+combo_PPP_ratio_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/phos_accross_gene_regions/ratios/combo_avg_ratios_PPP.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+combo_gnbd_ratio_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/phos_accross_gene_regions/ratios/combo_avg_ratios_gnbd.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+
+ratio_gnbd_bp_plotting_df <- pivot_longer(combo_gnbd_ratio_df, cols = c(2:5))
+ratio_PPP_bp_plotting_df <- pivot_longer(combo_PPP_ratio_df, cols = c(2:5))
+
+#factor for right order
+ratio_gnbd_bp_plotting_df$name <- factor(ratio_gnbd_bp_plotting_df$name, c("S_NHS_avg", "S_HS_avg", "T_NHS_avg", "T_HS_avg") )
+ratio_PPP_bp_plotting_df$name <- factor(ratio_PPP_bp_plotting_df$name, c("S_NHS_avg", "S_HS_avg", "T_NHS_avg", "T_HS_avg") )
+
+
+```
+
+```{r plot boxplot: ratio}
+#make boxplots
+b <- ggplot(Ser_PPP_ratio_plotting, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd=1) + 
+  coord_cartesian(ylim = c(0,1.5)) +
+  ylab("Phospho Pol II normalized to total Pol II") + xlab("")+
+  ggtitle("Phosphorylation of Pol II in the promoter proximal peak\n(TSS to +250bp)") +
+  scale_x_discrete(labels=c("NHS\nSer2P", "HS\nSer2P", "NHS\nTyr1P", "HS\nTyr1P"))+
+  theme(axis.title.y = element_text(size = 15), axis.text = element_text(size = 13), legend.position="none") +
+  theme(plot.title = element_text(size = 15, face = "bold")) + #change size of title
+  scale_colour_manual(values=c("#ba89c4", "#a35db3", "#f0b05d", "#e68c17"))
+
+#saved as PDF manually for easier sizing
+#save png too
+png("phos_accross_gene_regions/figures/ratio_PPP_common_genes_boxplot_zoom.png", 400, 350)
+print(b)
+dev.off()
+```
+
+```{r plot Ser and Tyr separately}
+## need to plot PPP Ser and Tyr separately due to very different scale (did gnbd for good measure)
+Ser_gnbd_ratio_plotting <- pivot_longer(combo_gnbd_ratio_df, cols = c(2:3))
+Tyr_gnbd_ratio_plotting <- pivot_longer(combo_gnbd_ratio_df, cols = c(4:5))
+#factor for right order
+Ser_gnbd_ratio_plotting$name <- factor(Ser_gnbd_ratio_plotting$name, c("S_NHS_avg", "S_HS_avg", "T_NHS_avg", "T_HS_avg") )
+Tyr_gnbd_ratio_plotting$name <- factor(Tyr_gnbd_ratio_plotting$name, c("S_NHS_avg", "S_HS_avg", "T_NHS_avg", "T_HS_avg") )
+
+Ser_PPP_ratio_plotting <- pivot_longer(combo_PPP_ratio_df, cols = c(2:3))
+Tyr_PPP_ratio_plotting <- pivot_longer(combo_PPP_ratio_df, cols = c(4:5))
+#factor for right order
+Ser_PPP_ratio_plotting$name <- factor(Ser_PPP_ratio_plotting$name, c("S_NHS_avg", "S_HS_avg", "T_NHS_avg", "T_HS_avg") )
+Tyr_PPP_ratio_plotting$name <- factor(Tyr_PPP_ratio_plotting$name, c("S_NHS_avg", "S_HS_avg", "T_NHS_avg", "T_HS_avg") )
+
+ggplot(Ser_PPP_ratio_plotting, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.85, outlier.shape = NA, lwd=1) + 
+  coord_cartesian(ylim = c(0,0.3)) +
+  ylab("Ser2P Pol II / Total Pol II") + xlab("")+
+  ggtitle("Ser2P Pol II in the PPP\n(TSS to +250bp)") +
+  scale_x_discrete(labels=c("NHS", "HS"))+ #"NHS\nSer2P", "HS\nSer2P", "NHS\nTyr1P", "HS\nTyr1P"
+  theme(axis.title.y = element_text(size = 12), axis.text = element_text(size = 12), legend.position="none") +
+  theme(plot.title = element_text(size = 12, face = "bold")) + #change size of title
+  scale_colour_manual(values=c("#cbbecf", "#b49eba")) #Ser2P: "#ba89c4", "#a35db3" Tyr1P:"#f0b05d", "#e68c17"
+
+#saved as PDF manually for easier sizing
+
+```
+
+PPP and Term window separate (no gnbd)
+fun sized for figures
+  Ser2P: "#ac93b8", "#5a1766",  Tyr1P: "#fac30f", "#d18d04"
+```{r PPP ratio boxplots}
+#make boxplots
+sb <- ggplot(Ser_PPP_ratio_plotting, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd=1) + 
+  coord_cartesian(ylim = c(0,0.3), clip = "off") + #clip off allows annotate outside of plot area
+  ylab("Ser2P Pol II / Total Pol II") + xlab("")+
+  #ggtitle("Phosphorylation of Ser2 Pol II accross the gene") +
+  scale_x_discrete(labels=c("NHS", "HS"))+
+  #  annotate("text", x=1.5, y=-0.35, label="PPP", size = 5, color = "black", fontface=2) +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13),  #change axis title size
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(10, 10, 25, 10),                                 #add white space
+        axis.title.y = element_text(size = 14),                               #y-axis label text size 
+        plot.caption = element_text(size = 12, color = "gray40")              #caption font and color
+        ) +  
+  scale_colour_manual(values=c("#ac93b8", "#5a1766")) +
+  #Ser2P: "#ac93b8", "#5a1766",  Tyr1P: "#fac30f", "#d18d04"
+  annotate("text", x=1.5, y=0.3, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 1, xend = 2, y = 0.3, yend = 0.3, colour = "gray40") #left line and * for stats
+  #labs(caption = "") #+#add caption specifying pval (one caption when plotting together)
+  #annotate("text", x=5.75, y=-0.44, label="****p<0.0001", size = 4, color = "gray40") #place caption manually because labels overlap
+
+#save
+jpeg("phos_accross_gene_regions/figures/Ser2P_PPP.jpeg", width=2, height=3, units="in", res=300)
+print(sb)
+dev.off()
+
+
+tb <- ggplot(Tyr_PPP_ratio_plotting, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd=1) + 
+  coord_cartesian(ylim = c(0,2), clip = "off") + #clip off allows annotate outside of plot area
+  #scale_y_continuous(breaks = c(0.5,1,1.5)) +
+  ylab("Tyr1P Pol II / Total Pol II") + xlab("")+
+  #ggtitle("Phosphorylation of Tyr1 Pol II accross the gene") +
+  scale_x_discrete(labels=c("NHS", "HS"))+
+  #  annotate("text", x=1.5, y=-0.57, label="PPP", size = 5, color = "black", fontface=2) +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13),  #change axis title size
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(10, 10, 25, 10),                                 #add white space
+        axis.title.y = element_text(size = 14),                               #y-axis label text size 
+        plot.caption = element_text(size = 12, color = "gray40")              #caption font and color
+        ) +  
+  scale_colour_manual(values=c("#fac30f", "#d18d04")) +
+  #Ser2P: "#ac93b8", "#5a1766",  Tyr1P: "#fac30f", "#d18d04"
+  annotate("text", x=1.5, y=1.75, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 1, xend = 2, y = 1.75, yend = 1.75, colour = "gray40") #left line and * for stats
+  #labs(caption = "") +#add caption specifying pval (one caption when plotting together)
+  #annotate("text", x=5.5, y=-0.75, label="****p<0.0001", size = 4, color = "gray40") #place caption manually because labels overlap
+
+#save
+jpeg("phos_accross_gene_regions/figures/Tyr1P_PPP_zoom.jpeg", width=2, height=3, units="in", res=300)
+print(tb)
+dev.off()
+
+
+```
+
+```{r stats: ratio}
+# gnbd #
+#Ser2P NHS vs HS
+res <- wilcox.test(as.numeric(combo_gnbd_ratio_df[,2]), as.numeric(combo_gnbd_ratio_df[,3]) )
+res$p.value #1.293721e-30
+
+#Tyr1P NHS vs HS
+res <- wilcox.test(as.numeric(combo_gnbd_ratio_df[,4]), as.numeric(combo_gnbd_ratio_df[,5]) )
+res$p.value #5.444971e-92
+
+# PPP #
+#Ser2P NHS vs HS
+res <- wilcox.test(as.numeric(combo_PPP_ratio_df[,2]), as.numeric(combo_PPP_ratio_df[,3]) )
+res$p.value #3.469801e-07
+
+#Tyr1P NHS vs HS
+res <- wilcox.test(as.numeric(combo_PPP_ratio_df[,4]), as.numeric(combo_PPP_ratio_df[,5]) )
+res$p.value #3.097271e-69
+
+
+
+#make a stats df
+ratio_NHSvHS_pval_df <- data.frame(comparison = c("Ser2P", "Tyr1P"),
+                                   gnbd_NHSvHS_p_values = c( 1.293721e-30, 5.444971e-92),
+                                   PPP_NHSvHS_p_values = c( 3.469801e-07, 3.097271e-69))
+
+#save
+write_delim(ratio_NHSvHS_pval_df, "phos_accross_gene_regions/figures/ratio_NHSvHS_boxplot_pval_wilcox_test.tsv", delim = "\t", col_names = TRUE)
+```
+
+
+what about Ser2P or Tyr1P with all three gene regions on one plot? (ratios)
+```{r make all regions dfs}
+TTS_common_ratio_boxplot_df <- read.table("/Users/goodrichlab/Desktop/Katy/Tyr1P_ChIPseq_2024/07_paper_figures/phos_boxplots/boxplots_ratio_df.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+#rename to "transcript_ID" for join
+colnames(TTS_common_ratio_boxplot_df) <- c( "transcript_ID", colnames(TTS_common_ratio_boxplot_df[c(2:5)]))
+
+
+#Ser2P all regions
+t <- data.frame(transcript_ID = combo_PPP_ratio_df$transcript_ID,
+                                PPP_NHS = combo_PPP_ratio_df$S_NHS_avg,
+                                PPP_HS = combo_PPP_ratio_df$S_HS_avg)
+t2 <- inner_join(t, combo_gnbd_ratio_df[c(1:3)], by = "transcript_ID")
+all_regions_Ser2P <- inner_join(t2, TTS_common_ratio_boxplot_df[c(1:3)], by = "transcript_ID")
+colnames(all_regions_Ser2P) <- c("transcript_ID", "PPP_NHS", "PPP_HS", "gnbd_NHS", "gnbd_HS", "term_NHS", "term_HS")
+
+                                
+#Tyr1P all regions
+t <- data.frame(transcript_ID = combo_PPP_ratio_df$transcript_ID,
+                                PPP_NHS = combo_PPP_ratio_df$T_NHS_avg,
+                                PPP_HS = combo_PPP_ratio_df$T_HS_avg)
+t2 <- inner_join(t, combo_gnbd_ratio_df[c(1,4,5)], by = "transcript_ID")
+all_regions_Tyr1P <- inner_join(t2, TTS_common_ratio_boxplot_df[c(1,4,5)], by = "transcript_ID")
+colnames(all_regions_Tyr1P) <- c("transcript_ID", "PPP_NHS", "PPP_HS", "gnbd_NHS", "gnbd_HS", "term_NHS", "term_HS")
+
+#save
+write_delim(all_regions_Ser2P, "phos_accross_gene_regions/ratios/all_regions_Ser2P_d_PolII.tsv", delim = "\t", col_names = TRUE)
+write_delim(all_regions_Tyr1P, "phos_accross_gene_regions/ratios/all_regions_Tyr1P_d_PolII.tsv", delim = "\t", col_names = TRUE)
+
+```
+
+```{r format for plotting: all regions}
+all_regions_Ser2P <- read.table("phos_accross_gene_regions/ratios/all_regions_Ser2P_d_PolII.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+all_regions_Tyr1P <- read.table("phos_accross_gene_regions/ratios/all_regions_Tyr1P_d_PolII.tsv", header = TRUE, sep="\t", stringsAsFactors = FALSE, quote = "")
+
+all_regions_Ser2P_plotting_df <- pivot_longer(all_regions_Ser2P, cols = c(2:7))
+all_regions_Tyr1P_plotting_df <- pivot_longer(all_regions_Tyr1P, cols = c(2:7))
+
+#factor for right order
+all_regions_Ser2P_plotting_df$name <- factor(all_regions_Ser2P_plotting_df$name, c("PPP_NHS", "PPP_HS", "gnbd_NHS", "gnbd_HS", "term_NHS", "term_HS") )
+all_regions_Tyr1P_plotting_df$name <- factor(all_regions_Tyr1P_plotting_df$name, c("PPP_NHS", "PPP_HS", "gnbd_NHS", "gnbd_HS", "term_NHS", "term_HS") )
+
+
+```
+
+```{r plot boxplot: all regions}
+#make boxplots
+sb <- ggplot(all_regions_Ser2P_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd=1) + 
+  coord_cartesian(ylim = c(0,1.5), clip = "off") + #clip off allows annotate outside of plot area
+  ylab("Ser2P Pol II / Total Pol II") + xlab("")+
+  #ggtitle("Phosphorylation of Ser2 Pol II accross the gene") +
+  scale_x_discrete(labels=c("NHS", "HS", "NHS", "HS", "NHS", "HS"))+
+    annotate("text", x=1.5, y=-0.35, label="PPP", size = 5, color = "black", fontface=2) +
+    annotate("text", x=3.5, y=-0.35, label="Gene", size = 5, color = "black", fontface=2) +
+    annotate("text", x=5.5, y=-0.35, label="5kb DS", size = 5, color = "black", fontface=2) +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13),  #change axis title size
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(10, 10, 25, 10),                                 #add white space
+        axis.title.y = element_text(size = 14),                               #y-axis label text size 
+        plot.caption = element_text(size = 12, color = "gray40")              #caption font and color
+        ) +  
+  scale_colour_manual(values=c("#cbbecf", "#b49eba", "#ba89c4", "#a35db3", "#702e80", "#3d064a")) +
+  #Tyr1P oranges: "#cfb593", "#d6ac76", "#f0b05d", "#e68c17", "#b56b0b", "#8a4e01"
+  #Ser2P purples: "#b4a5b8", "#b399ba", "#ba89c4", "#a35db3", "#702e80", "#3d064a"
+  annotate("text", x=1.5, y=0.4, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 1, xend = 2, y = 0.4, yend = 0.4, colour = "gray40")+ #left line and * for stats
+  annotate("text", x=3.5, y=1.4, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 3, xend = 4, y = 1.35, yend = 1.35, colour = "gray40")+ #middle line and * for stats
+  annotate("text", x=5.5, y=1.4, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 5, xend = 6, y = 1.35, yend = 1.35, colour = "gray40") #+ #right line and * for stats
+  #labs(caption = "") #+#add caption specifying pval (one caption when plotting together)
+  #annotate("text", x=5.75, y=-0.44, label="****p<0.0001", size = 4, color = "gray40") #place caption manually because labels overlap
+
+#save
+jpeg("phos_accross_gene_regions/figures/Ser2P_all_gene_regions.jpeg", width=4, height=3, units="in", res=300)
+print(sb)
+dev.off()
+
+
+tb <- ggplot(all_regions_Tyr1P_plotting_df, aes(y=value, x=name, color = name ) ) +
+  geom_boxplot(width=0.75, outlier.shape = NA, lwd=1) + 
+  coord_cartesian(ylim = c(0,2.5), clip = "off") + #clip off allows annotate outside of plot area
+  ylab("Tyr1P Pol II / Total Pol II") + xlab("")+
+  #ggtitle("Phosphorylation of Tyr1 Pol II accross the gene") +
+  scale_x_discrete(labels=c("NHS", "HS", "NHS", "HS", "NHS", "HS"))+
+    annotate("text", x=1.5, y=-0.57, label="PPP", size = 5, color = "black", fontface=2) +
+    annotate("text", x=3.5, y=-0.57, label="Gene", size = 5, color = "black", fontface=2) +
+    annotate("text", x=5.5, y=-0.57, label="5kb DS", size = 5, color = "black", fontface=2) +
+  theme(axis.title.x = element_blank(), axis.text = element_text(size = 13),  #change axis title size
+        #axis.text.x = element_text(angle = -45, vjust=1, hjust = 0),         #change x label angle and position
+        legend.position = "none",                                             #no legend 
+        #plot.title = element_text(size = 12, face = "bold"),                 #change size of title
+        plot.margin = margin(10, 10, 25, 10),                                 #add white space
+        axis.title.y = element_text(size = 14),                               #y-axis label text size 
+        plot.caption = element_text(size = 12, color = "gray40")              #caption font and color
+        ) +  
+  scale_colour_manual(values=c("#cfb593", "#d6ac76", "#f0b05d", "#e68c17", "#b56b0b", "#8a4e01")) +
+  #Tyr1P oranges: "#cfb593", "#d6ac76", "#f0b05d", "#e68c17", "#b56b0b", "#8a4e01"
+  #Ser2P purples: "#b4a5b8", "#b399ba", "#ba89c4", "#a35db3", "#702e80", "#3d064a"
+  annotate("text", x=1.5, y=1.65, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 1, xend = 2, y = 1.65, yend = 1.65, colour = "gray40")+ #left line and * for stats
+  annotate("text", x=3.5, y=2.45, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 3, xend = 4, y = 2.45, yend = 2.45, colour = "gray40")+ #middle line and * for stats
+  annotate("text", x=5.5, y=2, label= "****", colour = "gray40", size = 6) + 
+      annotate("segment", x = 5, xend = 6, y = 2, yend = 2, colour = "gray40") #+ #right line and * for stats
+  #labs(caption = "") +#add caption specifying pval (one caption when plotting together)
+  #annotate("text", x=5.5, y=-0.75, label="****p<0.0001", size = 4, color = "gray40") #place caption manually because labels overlap
+
+#save
+jpeg("phos_accross_gene_regions/figures/Tyr1P_all_gene_regions.jpeg", width=4, height=3, units="in", res=300)
+print(tb)
+dev.off()
+
+
+
+gg <- ggarrange(sb, tb, ncol = 2, nrow = 1)
+jpeg("phos_accross_gene_regions/figures/both_all_gene_regions.jpeg", width=8, height=3, units="in", res=300)
+print(gg)
+dev.off()
+
+```
+
+```{r stats: all regions}
+# PPP #
+#Ser2P NHS vs HS
+res <- wilcox.test(as.numeric(all_regions_Ser2P[,2]), as.numeric(all_regions_Ser2P[,3]), paired = TRUE )
+res$p.value #3.469801e-07 **** (3.402538e-08 paired)
+
+#Tyr1P NHS vs HS
+res <- wilcox.test(as.numeric(all_regions_Tyr1P[,2]), as.numeric(all_regions_Tyr1P[,3]), paired = TRUE )
+res$p.value #3.097271e-69 **** (95.944243e-92)
+
+# gnbd #
+#Ser2P NHS vs HS
+res <- wilcox.test(as.numeric(all_regions_Ser2P[,4]), as.numeric(all_regions_Ser2P[,5]), paired = TRUE )
+res$p.value #1.293721e-30 **** (6.867455e-66)
+
+#Tyr1P NHS vs HS
+res <- wilcox.test(as.numeric(all_regions_Tyr1P[,4]), as.numeric(all_regions_Tyr1P[,5]), paired = TRUE )
+res$p.value #5.444971e-92 **** (6.219389e-107)
+
+# ds #
+#Ser2P NHS vs HS
+res <- wilcox.test(as.numeric(all_regions_Ser2P[,6]), as.numeric(all_regions_Ser2P[,7]), paired = TRUE )
+res$p.value #6.063718e-67 **** (4.343767e-78)
+
+#Tyr1P NHS vs HS
+res <- wilcox.test(as.numeric(all_regions_Tyr1P[,6]), as.numeric(all_regions_Tyr1P[,7]), paired = TRUE )
+res$p.value #1.169328e-57 **** (3.813011e-71)
+
+
+#make a stats df
+all_ratio_NHSvHS_pval_df <- data.frame(comparison = c("Ser2P", "Tyr1P"),
+                                   PPP_NHSvHS_p_values = c( 3.469801e-07, 3.097271e-69),
+                                   gnbd_NHSvHS_p_values = c( 1.293721e-30, 5.444971e-92),
+                                   ds_NHSvHS_p_values = c( 6.063718e-67, 1.169328e-57))
+
+#save
+write_delim(all_ratio_NHSvHS_pval_df, "phos_accross_gene_regions/figures/all_cats_ratio_NHSvHS_boxplot_pval_wilcox_test.tsv", delim = "\t", col_names = TRUE)
+```
+
+
+
+
+
+
